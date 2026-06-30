@@ -1,13 +1,13 @@
 class NvmRust < Formula
   desc "A blazing-fast Node version manager written in Rust"
   homepage "https://github.com/mose-x/nvm-rust"
-  version "0.1.0"
+  version "1.0.0"
   license "MIT"
 
   depends_on "rust" => :build
 
   stable do
-    url "https://github.com/mose-x/nvm-rust/archive/refs/tags/v0.1.0.tar.gz"
+    url "https://github.com/mose-x/nvm-rust/archive/refs/tags/v1.0.0.tar.gz"
     sha256 "TO_BE_FILLED"
   end
 
