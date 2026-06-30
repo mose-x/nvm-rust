@@ -35,8 +35,8 @@ _nvm_completion() {
     local cur prev words cword
     _init_completion -n=: || return
 
-    local commands="install uninstall remove use list ls ls-remote remote current dir which run exec alias unalias mirror auto deactivate unload install-latest-npm reinstall-packages version version-remote cache language lang proxy completion corepack migrate help"
-    local options="--lts --latest --lts-old --offline --source --latest-npm --lts-newer --install-if-missing --save --use-on-cd --filter --sort --page"
+    local commands="install uninstall remove use list ls ls-remote remote current dir which run exec alias unalias mirror auto deactivate unload install-latest-npm install-latest-yarn install-latest-pnpm reinstall-packages version version-remote cache language lang proxy completion corepack migrate help"
+    local options="--lts --latest --lts-old --offline --source --latest-npm --latest-yarn --latest-pnpm --lts-newer --install-if-missing --save --use-on-cd --filter --sort --page"
 
     case "$cur" in
         -*)
@@ -47,7 +47,7 @@ _nvm_completion() {
                 COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
             elif [[ ${#words[@]} -eq 3 ]]; then
                 case "${words[2]}" in
-                    install|use|uninstall|remove|run|exec|which|alias|unalias|reinstall-packages|install-latest-npm)
+                    install|use|uninstall|remove|run|exec|which|alias|unalias|reinstall-packages|install-latest-npm|install-latest-yarn|install-latest-pnpm)
                         COMPREPLY=( $(compgen -W "20 18 16 14 12 lts node stable" -- "$cur") )
                         ;;
                     mirror)
@@ -125,6 +125,8 @@ _nvm_commands() {
         'deactivate:Restore PATH'
         'unload:Remove from shell'
         'install-latest-npm:Upgrade npm'
+        'install-latest-yarn:Install latest yarn'
+        'install-latest-pnpm:Install latest pnpm'
         'reinstall-packages:Migrate packages'
         'version:Show version info'
         'version-remote:Show remote versions'
@@ -148,6 +150,8 @@ _nvm_install_opts() {
         '--offline[Install from cache only]'
         '--source[Compile from source]'
         '--latest-npm[Upgrade npm after install]'
+        '--latest-yarn[Install latest yarn after install]'
+        '--latest-pnpm[Install latest pnpm after install]'
         '--reinstall-packages-from=[Migrate packages from version]'
     )
     _describe 'option' opts
@@ -182,7 +186,7 @@ _nvm() {
                 remote|ls-remote)
                     _nvm_remote_opts
                     ;;
-                use|uninstall|remove|run|exec|which|alias|unalias|reinstall-packages|install-latest-npm)
+                use|uninstall|remove|run|exec|which|alias|unalias|reinstall-packages|install-latest-npm|install-latest-yarn|install-latest-pnpm)
                     _message 'version'
                     ;;
                 mirror)
@@ -259,6 +263,8 @@ complete -c nvm -n '__fish_use_subcommand' -a 'auto' -d 'Auto-switch via .nvmrc'
 complete -c nvm -n '__fish_use_subcommand' -a 'deactivate' -d 'Restore PATH'
 complete -c nvm -n '__fish_use_subcommand' -a 'unload' -d 'Remove from shell'
 complete -c nvm -n '__fish_use_subcommand' -a 'install-latest-npm' -d 'Upgrade npm'
+complete -c nvm -n '__fish_use_subcommand' -a 'install-latest-yarn' -d 'Install latest yarn'
+complete -c nvm -n '__fish_use_subcommand' -a 'install-latest-pnpm' -d 'Install latest pnpm'
 complete -c nvm -n '__fish_use_subcommand' -a 'reinstall-packages' -d 'Migrate packages'
 complete -c nvm -n '__fish_use_subcommand' -a 'version' -d 'Show version info'
 complete -c nvm -n '__fish_use_subcommand' -a 'version-remote' -d 'Show remote versions'
@@ -276,6 +282,8 @@ complete -c nvm -n '__fish_seen_subcommand_from install' -l latest -d 'Install l
 complete -c nvm -n '__fish_seen_subcommand_from install' -l offline -d 'Install from cache'
 complete -c nvm -n '__fish_seen_subcommand_from install' -l source -d 'Compile from source'
 complete -c nvm -n '__fish_seen_subcommand_from install' -l latest-npm -d 'Upgrade npm'
+complete -c nvm -n '__fish_seen_subcommand_from install' -l latest-yarn -d 'Install latest yarn'
+complete -c nvm -n '__fish_seen_subcommand_from install' -l latest-pnpm -d 'Install latest pnpm'
 
 complete -c nvm -n '__fish_seen_subcommand_from use' -l install-if-missing -d 'Install if missing'
 complete -c nvm -n '__fish_seen_subcommand_from use' -l save -d 'Persist as default'
@@ -358,6 +366,8 @@ $commands = @(
     'deactivate',
     'unload',
     'install-latest-npm',
+    'install-latest-yarn',
+    'install-latest-pnpm',
     'reinstall-packages',
     'version',
     'version-remote',
@@ -378,6 +388,8 @@ $options = @(
     '--offline',
     '--source',
     '--latest-npm',
+    '--latest-yarn',
+    '--latest-pnpm',
     '--install-if-missing',
     '--save',
     '--use-on-cd',

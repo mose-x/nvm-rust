@@ -249,6 +249,8 @@ pub fn install(
     offline: bool,
     reinstall_packages_from: Option<String>,
     latest_npm: bool,
+    latest_yarn: bool,
+    latest_pnpm: bool,
     source: bool,
 ) -> Result<()> {
     let config = load_config()?;
@@ -492,7 +494,18 @@ pub fn install(
     // --latest-npm after install (skip for io.js: npm is bundled)
     if latest_npm && !is_iojs {
         println!();
-        install_latest_npm_inner(&target_version)?;
+        install_latest_package_inner(&target_version, "npm")?;
+    }
+    // --latest-yarn / --latest-pnpm after install. Unlike npm, yarn and pnpm
+    // are not bundled with node, so installing them right after `nvm install`
+    // is a common setup step and applies to io.js installs too.
+    if latest_yarn {
+        println!();
+        install_latest_package_inner(&target_version, "yarn")?;
+    }
+    if latest_pnpm {
+        println!();
+        install_latest_package_inner(&target_version, "pnpm")?;
     }
 
     // --reinstall-packages-from after install
@@ -529,7 +542,19 @@ pub fn install(
     Ok(())
 }
 
-fn install_latest_npm_inner(version: &str) -> Result<()> {
+/// Upgrade a globally-installed package manager (`npm`, `yarn`, or `pnpm`)
+/// to its latest release, using the bundled npm in `version`'s bin dir as the
+/// installer.
+///
+/// The flow mirrors `nvm install-latest-npm`:
+///   1. Resolve + validate the target version (must be installed, must ship npm).
+///   2. Print an "Upgrading X for vX.Y.Z" banner.
+///   3. Run `npm install -g <package>@latest` with that version's bin on PATH.
+///   4. On failure for `npm` only: retry via `npm exec --yes npm@latest --`
+///      to dodge npm 10.x's self-upgrade bug. yarn/pnpm don't have this bug
+///      (they install into their own dirs, npm doesn't replace itself), so
+///      their first-attempt failure is a real failure and we bail.
+fn install_latest_package_inner(version: &str, package: &str) -> Result<()> {
     let nvm_dir = get_nvm_dir();
     let resolved = version.to_string();
     let version_dir = nvm_dir.join(&resolved);
@@ -540,60 +565,70 @@ fn install_latest_npm_inner(version: &str) -> Result<()> {
     if !npm_path.exists() {
         anyhow::bail!("{}", format_t("version_no_npm", &[resolved.clone()]));
     }
+    // Per-package i18n keys so each tool reports its own name in messages.
+    let (upgrading_key, upgraded_key, failed_key) = match package {
+        "yarn" => ("upgrading_yarn", "yarn_upgraded", "yarn_upgrade_failed"),
+        "pnpm" => ("upgrading_pnpm", "pnpm_upgraded", "pnpm_upgrade_failed"),
+        _ => ("upgrading_npm", "npm_upgraded", "npm_upgrade_failed"),
+    };
     println!(
         "  {} {}",
         "▶".cyan().bold(),
-        format_t("upgrading_npm", &[resolved.clone()]).cyan()
+        format_t(upgrading_key, &[resolved.clone()]).cyan()
     );
     let path_env = format!(
         "{}:{}",
         version_dir.join("bin").display(),
         env::var("PATH").unwrap_or_default()
     );
-    // First attempt: plain `npm install -g npm@latest`. Works for npm 11+
-    // (whose reify no longer moves its own deps out from under itself).
+    // First attempt: plain `npm install -g <package>@latest`. Works for
+    // yarn/pnpm (they don't replace themselves) and for npm 11+ (whose
+    // reify no longer moves its own deps out from under itself).
+    let pkg_spec = format!("{}@latest", package);
     let status = Command::new(&npm_path)
-        .args(["install", "-g", "npm@latest"])
+        .args(["install", "-g", &pkg_spec])
         .env("PATH", &path_env)
         .status()
-        .context("npm upgrade failed")?;
+        .context(format!("{} upgrade failed", package))?;
     if status.success() {
         println!(
             "    {} {}",
             "✓".green().bold(),
-            T("npm_upgraded").green()
+            T(upgraded_key).green()
         );
         return Ok(());
     }
-    // Retry via `npm exec` (npx): downloads a fresh npm@latest to a temp
-    // dir and runs it from there, bypassing npm 10.x's self-upgrade bug
-    // (reify moves its own node_modules, then crashes with
-    // "Cannot find module 'promise-retry'" when creating bin links).
-    eprintln!(
-        "  {} {}",
-        "↻".yellow().bold(),
-        T("npm_upgrade_retry_npx").yellow()
-    );
-    let status = Command::new(&npm_path)
-        .args([
-            "exec", "--yes", "npm@latest", "--",
-            "install", "-g", "npm@latest",
-            "--prefix",
-        ])
-        .arg(version_dir.display().to_string())
-        .env("PATH", &path_env)
-        .status()
-        .context("npm upgrade failed")?;
-    if status.success() {
-        println!(
-            "    {} {}",
-            "✓".green().bold(),
-            T("npm_upgraded").green()
+    // npm-specific retry: npm 10.x has a self-upgrade bug (reify moves its
+    // own node_modules, then crashes with "Cannot find module
+    // 'promise-retry'" when creating bin links). Retry via `npm exec --yes
+    // npm@latest --` which downloads a fresh npm to a temp dir and runs it
+    // from there. yarn/pnpm don't have this bug, so we bail immediately.
+    if package == "npm" {
+        eprintln!(
+            "  {} {}",
+            "↻".yellow().bold(),
+            T("npm_upgrade_retry_npx").yellow()
         );
-    } else {
-        anyhow::bail!("{}", T("npm_upgrade_failed"));
+        let status = Command::new(&npm_path)
+            .args([
+                "exec", "--yes", "npm@latest", "--",
+                "install", "-g", "npm@latest",
+                "--prefix",
+            ])
+            .arg(version_dir.display().to_string())
+            .env("PATH", &path_env)
+            .status()
+            .context("npm upgrade failed")?;
+        if status.success() {
+            println!(
+                "    {} {}",
+                "✓".green().bold(),
+                T("npm_upgraded").green()
+            );
+            return Ok(());
+        }
     }
-    Ok(())
+    anyhow::bail!("{}", T(failed_key));
 }
 
 fn reinstall_packages_inner(from: &str, to: &str) -> Result<()> {
@@ -1275,7 +1310,7 @@ pub fn use_version_silent(
                 );
             }
             // Install the version
-            install(Some(resolved.clone()), false, false, false, false, None, false, false)?;
+            install(Some(resolved.clone()), false, false, false, false, None, false, false, false, false)?;
             // Check if installation succeeded
             if !nvm_dir.join(&resolved).exists() {
                 anyhow::bail!("{}", format_t("install_failed", &[resolved.clone()]));
@@ -2061,10 +2096,11 @@ fn get_installed_version(version: &str) -> Result<String> {
     Ok(resolved)
 }
 
-pub fn install_latest_npm(version: Option<&str>) -> Result<()> {
-    // With no argument, act on the *current* version (matches nvm-sh
-    // behavior). Only fall back to `default` when there's no current set —
-    // `nvm install-latest-npm` with no current and no default is a setup error.
+/// Resolve the target version for a package-upgrade command. With no
+/// argument, act on the *current* version (matches nvm-sh behavior). Only
+/// fall back to `default` when there's no current set — `nvm install-latest-<pkg>`
+/// with no current and no default is a setup error.
+fn resolve_install_target(version: Option<&str>) -> Result<String> {
     let target = match version {
         Some(v) => v.to_string(),
         None => match get_current_version()? {
@@ -2078,8 +2114,22 @@ pub fn install_latest_npm(version: Option<&str>) -> Result<()> {
             }
         },
     };
-    let resolved = get_installed_version(&target)?;
-    install_latest_npm_inner(&resolved)
+    get_installed_version(&target)
+}
+
+pub fn install_latest_npm(version: Option<&str>) -> Result<()> {
+    let resolved = resolve_install_target(version)?;
+    install_latest_package_inner(&resolved, "npm")
+}
+
+pub fn install_latest_yarn(version: Option<&str>) -> Result<()> {
+    let resolved = resolve_install_target(version)?;
+    install_latest_package_inner(&resolved, "yarn")
+}
+
+pub fn install_latest_pnpm(version: Option<&str>) -> Result<()> {
+    let resolved = resolve_install_target(version)?;
+    install_latest_package_inner(&resolved, "pnpm")
 }
 
 pub fn reinstall_packages(from_version: &str) -> Result<()> {

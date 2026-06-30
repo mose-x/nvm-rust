@@ -36,8 +36,8 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(cmd) => match cmd {
-            Commands::Install { version, lts, latest, lts_newer, offline, reinstall_packages_from, latest_npm, source } => {
-                commands::install(version, lts, latest, lts_newer, offline, reinstall_packages_from, latest_npm, source)
+            Commands::Install { version, lts, latest, lts_newer, offline, reinstall_packages_from, latest_npm, latest_yarn, latest_pnpm, source } => {
+                commands::install(version, lts, latest, lts_newer, offline, reinstall_packages_from, latest_npm, latest_yarn, latest_pnpm, source)
             }
             Commands::Use { version, install_if_missing, save, use_on_cd } => commands::use_version(version.as_deref(), install_if_missing, save, use_on_cd),
             Commands::List => commands::list_versions(),
@@ -66,6 +66,12 @@ fn main() -> Result<()> {
             Commands::Unload => commands::unload(),
             Commands::InstallLatestNpm { version } => {
                 commands::install_latest_npm(version.as_deref())
+            }
+            Commands::InstallLatestYarn { version } => {
+                commands::install_latest_yarn(version.as_deref())
+            }
+            Commands::InstallLatestPnpm { version } => {
+                commands::install_latest_pnpm(version.as_deref())
             }
             Commands::ReinstallPackages { from } => commands::reinstall_packages(&from),
             Commands::Version => commands::show_version_info(),
