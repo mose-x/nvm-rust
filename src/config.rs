@@ -204,6 +204,15 @@ pub fn list_all_aliases() -> Result<()> {
 }
 
 pub fn resolve_alias(name: &str) -> Result<String> {
+    // Reject empty / whitespace-only input early. Without this, `nvm use ""`
+    // would fall through to `resolve_version`, which prepends "v" to the
+    // empty string and produces the confusing "Version v is not installed"
+    // instead of a clear "specify a version" message. Trim once so every
+    // comparison below uses the cleaned form.
+    let name = name.trim();
+    if name.is_empty() {
+        anyhow::bail!("{}", T("alias_name_empty"));
+    }
     // A user-defined alias named "default" (via `nvm alias default X`) takes
     // precedence over the --save'd default_version, so the alias isn't dead.
     if name == "default" {

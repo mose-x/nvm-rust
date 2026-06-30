@@ -244,6 +244,7 @@ lazy_static::lazy_static! {
         m.insert("no_active_use", "No active version, run 'nvm use <version>' to set one");
         m.insert("no_current_version_set", "No current version set");
         m.insert("specify_command", "Specify a command to run");
+        m.insert("exec_command_not_found", "Command not found: {0}");
         m.insert("specify_version_or_lts", "Specify a version or use --lts flag");
         m.insert("found_engines_node", "Found engines.node in package.json:");
         m.insert("no_nvmrc_found", "No .nvmrc, .node-version, or package.json with engines.node found");
@@ -605,6 +606,7 @@ lazy_static::lazy_static! {
         m.insert("no_active_use", "没有激活的版本，运行 'nvm use <version>' 设置一个");
         m.insert("no_current_version_set", "未设置当前版本");
         m.insert("specify_command", "请指定要运行的命令");
+        m.insert("exec_command_not_found", "找不到命令：{0}");
         m.insert("specify_version_or_lts", "请指定版本或使用 --lts 标志");
         m.insert("found_engines_node", "在 package.json 中找到 engines.node：");
         m.insert("no_nvmrc_found", "未找到 .nvmrc、.node-version 或包含 engines.node 的 package.json");

@@ -1221,11 +1221,17 @@ pub fn use_version_silent(
     // package.json#engines.node lookup, mirroring nvm-sh. If none of those
     // are found, surface a clear error rather than the clap "missing
     // required argument" usage message.
+    //
+    // Lookup priority matches nvm-sh user expectations: an explicit .nvmrc
+    // wins over a package.json engines.node range, because .nvmrc is the
+    // nvm-native config file and the user put it there on purpose. Only
+    // when neither .nvmrc nor .node-version is present do we consult
+    // package.json (a project-wide constraint, not a per-developer choice).
     let version = match version {
         Some(v) => v.to_string(),
-        None => match find_package_json_node_version(silent)? {
+        None => match find_nvmrc_recursive(silent)? {
             Some(v) => v,
-            None => match find_nvmrc_recursive(silent)? {
+            None => match find_package_json_node_version(silent)? {
                 Some(v) => v,
                 None => {
                     if !silent {
@@ -1593,11 +1599,22 @@ pub fn exec_version(version: &str, args: &[String]) -> Result<()> {
     let path = env::var("PATH").unwrap_or_default();
     let new_path = format!("{}:{}", bin_dir.display(), path);
 
+    // `Command::new(cmd).status()` fails synchronously when `cmd` is not on
+    // PATH (or is not an executable). The raw io::Error surfaces as
+    // "No such file or directory (os error 2)", which is confusing because it
+    // doesn't name the command the user typed. Detect that specific case and
+    // bail with an i18n message that includes `cmd`.
     let status = Command::new(cmd)
         .args(cmd_args)
         .env("PATH", &new_path)
         .status()
-        .context("Execution failed")?;
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                anyhow::anyhow!("{}", format_t("exec_command_not_found", &[cmd.clone()]))
+            } else {
+                anyhow::Error::new(e).context("Execution failed")
+            }
+        })?;
 
     std::process::exit(status.code().unwrap_or(1));
 }
@@ -1646,11 +1663,31 @@ fn find_nvmrc_recursive(silent: bool) -> Result<Option<String>> {
     let current_dir = std::env::current_dir()?;
     let mut dir = current_dir.as_path();
 
+    // Read the first non-comment, non-empty line from a .nvmrc /
+    // .node-version file. nvm-sh itself only reads the first line, but many
+    // real-world .nvmrc files start with a `# comment` (editor templates,
+    // per-project docs) — without this filter the comment text would be
+    // passed to resolve_alias and produce a confusing error like
+    // "Version v# comment\nv18.20.4 is not installed".
+    let read_first_version_line = |path: &Path| -> Option<String> {
+        let content = fs::read_to_string(path).ok()?;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if trimmed.starts_with('#') {
+                continue;
+            }
+            return Some(trimmed.to_string());
+        }
+        None
+    };
+
     loop {
         let nvmrc = dir.join(".nvmrc");
         if nvmrc.exists() {
-            let version = fs::read_to_string(&nvmrc)?.trim().to_string();
-            if !version.is_empty() {
+            if let Some(version) = read_first_version_line(&nvmrc) {
                 if !silent {
                     println!(
                         "{} {} {}",
@@ -1665,8 +1702,7 @@ fn find_nvmrc_recursive(silent: bool) -> Result<Option<String>> {
 
         let node_version = dir.join(".node-version");
         if node_version.exists() {
-            let version = fs::read_to_string(&node_version)?.trim().to_string();
-            if !version.is_empty() {
+            if let Some(version) = read_first_version_line(&node_version) {
                 if !silent {
                     println!(
                         "{} {} {}",
@@ -2387,30 +2423,22 @@ fn resolve_migration_source(source: &str) -> Option<PathBuf> {
     }
 }
 
-/// Link (or copy) a source version directory into the nvm-rust store.
+/// Copy a source version directory into the nvm-rust store.
 /// Returns true if the version was newly imported, false if already present.
+///
+/// Always performs a deep copy (never a symlink). A symlinked import would
+/// dangle as soon as the user removes the source tree — e.g. after running
+/// `rm -rf ~/.nvm` to clean up nvm-sh, every imported version would turn
+/// into a broken symlink and `nvm use <version>` would fail with
+/// "No such file or directory" instead of the expected "version not
+/// installed". Copying makes the import self-contained, matching nvm-sh's
+/// own `nvm install` semantics where the version lives entirely under
+/// `NVM_DIR`.
 fn import_version(src: &Path, dest: &Path) -> Result<bool> {
     if dest.exists() {
         return Ok(false);
     }
 
-    // Try symlink first (cheap, shares disk space). Fall back to a deep copy.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::symlink;
-        if symlink(src, dest).is_ok() {
-            return Ok(true);
-        }
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::symlink_dir;
-        if symlink_dir(src, dest).is_ok() {
-            return Ok(true);
-        }
-    }
-
-    // Fallback: recursively copy the directory.
     copy_dir_recursive(src, dest).context("Failed to copy version directory")?;
     Ok(true)
 }
@@ -2434,9 +2462,10 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
 
 /// Migrate installed Node.js versions from nvm-sh or nvm-windows.
 ///
-/// Versions are linked (symlink) into the nvm-rust store so no disk space is
-/// duplicated. Already-present versions are skipped. The `default` alias from
-/// nvm-sh is also carried over when present.
+/// Versions are deep-copied into the nvm-rust store (see `import_version`) so
+/// the import is self-contained and survives deletion of the source tree.
+/// Already-present versions are skipped. The `default` alias from nvm-sh is
+/// also carried over when present.
 pub fn cmd_migrate(source: &str) -> Result<()> {
     let src_dir = resolve_migration_source(source).ok_or_else(|| {
         anyhow::anyhow!("{}", format_t("migrate_source_not_found", &[source.to_string()]))
