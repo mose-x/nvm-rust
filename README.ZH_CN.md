@@ -32,6 +32,89 @@
 - **package.json engines.node** — 从 package.json 读取 Node.js 版本要求
 - **多 Shell 支持** — bash、zsh、Fish、PowerShell，带自动切换
 
+## 与 fnm、nvm-sh 的对比
+
+| 功能 | nvm-rust（本项目） | fnm | nvm-sh |
+|------|------|------|------|
+| **实现语言** | Rust | Rust | Bash |
+| **启动开销** | 低（原生二进制） | 低（原生二进制） | 高（shell 解析） |
+| **单一二进制无运行时依赖** | ✅ | ✅ | ❌（需 bash） |
+| **Linux x86_64 (glibc)** | ✅ | ✅ | ✅（shell） |
+| **Linux aarch64 (glibc)** | ✅ | ✅ | ✅（shell） |
+| **Linux x86_64 (musl/Alpine 静态)** | ✅ | ✅ | ❌（需 bash+coreutils） |
+| **macOS x86_64 / aarch64** | ✅ | ✅ | ✅ |
+| **Windows 原生** | ❌ | ✅ | ❌（用 nvm-windows） |
+| **bash 集成** | ✅ | ✅ | ✅ |
+| **zsh 集成** | ✅ | ✅ | ✅ |
+| **fish 集成** | ✅ | ✅ | ✅ |
+| **PowerShell 集成** | ✅ | ✅ | ❌ |
+| **安装指定版本 `install 20`** | ✅ | ✅ | ✅ |
+| **安装 LTS `install --lts`** | ✅ | ✅ | ✅ |
+| **安装最新版 `install --latest`** | ✅ | ✅ | ✅ |
+| **仅未安装时装 LTS `--lts-newer`** | ✅ | ❌ | ❌ |
+| **版本号简写 `20` → 最新 20.x** | ✅ | ✅ | ✅ |
+| **`lts/*`、`lts/iron` 代号解析** | ✅ | ✅ | ✅ |
+| **从源码编译 `--source`** | ✅ | ❌ | ❌ |
+| **离线安装 `--offline`（用缓存）** | ✅ | ❌ | ❌ |
+| **io.js 安装** | ✅ | ❌ | ✅ |
+| **卸载 `uninstall` / `--lts` / `--latest`** | ✅ | ✅ | ✅（仅指定版本） |
+| **进度条下载** | ✅（indicatif） | ✅ | ✅（curl/wget） |
+| **断点续传** | ✅（HTTP Range + .part） | ❌ | ❌ |
+| **镜像源切换 `mirror`** | ✅（taobao/official/自定义） | ❌（靠 env） | ✅（`NVM_NODEJS_ORG_MIRROR`） |
+| **本地缓存复用** | ✅ | ✅ | ❌ |
+| **缓存 dir/list/clear** | ✅ | ❌ | ❌ |
+| **SHA-256 校验** | ✅ | ✅ | ✅ |
+| **GPG 签名验证 `SHASUMS256.txt.sig`** | ✅（按需导入公钥） | ❌ | ✅ |
+| **跳过验证 `--no-gpg-verify`** | ✅ | — | ❌ |
+| **离线自动跳过校验** | ✅ | — | ❌ |
+| **装完升级 npm `--latest-npm`** | ✅ | ❌ | ❌ |
+| **装完装 yarn `--latest-yarn`** | ✅ | ❌ | ❌ |
+| **装完装 pnpm `--latest-pnpm`** | ✅ | ❌ | ❌ |
+| **独立命令 `install-latest-npm/yarn/pnpm`** | ✅ | ❌ | ❌ |
+| **全局包迁移 `reinstall-packages`** | ✅ | ❌ | ✅ |
+| **跨版本迁移 `migrate`（从 nvm-sh/nvm-windows）** | ✅ | ❌ | ❌ |
+| **corepack 启用/禁用/状态** | ✅ | ❌ | ❌ |
+| **`use <ver>` 切换** | ✅ | ✅ | ✅ |
+| **`use` 读 `.nvmrc`/`.node-version`/`package.json#engines`** | ✅ | ✅（`.nvmrc`/`.node-version`） | ✅（`.nvmrc`） |
+| **`use --install-if-missing`** | ✅ | ✅ | ✅（`nvm install` 自动） |
+| **`use --save` 持久化为默认** | ✅ | ❌ | ✅（`nvm alias default`） |
+| **`use --use-on-cd` 装 cd 钩子** | ✅ | ❌（靠 shell 集成） | ❌ |
+| **`run <ver> <script>`** | ✅ | ❌ | ✅ |
+| **`exec <ver> <cmd>`** | ✅ | ❌ | ✅ |
+| **`which [ver]`** | ✅ | ✅ | ✅ |
+| **`current` 当前版本** | ✅ | ✅ | ✅ |
+| **`deactivate` 还原 PATH** | ✅ | ❌ | ✅ |
+| **`unload` 移除 shell 配置** | ✅ | ❌ | ✅ |
+| **`alias <name> <ver>`** | ✅ | ✅（`default`/别名） | ✅ |
+| **`unalias`** | ✅ | ✅ | ✅ |
+| **内置 `node`/`stable`/`unstable`** | ✅ | ❌ | ✅ |
+| **内置 `lts`/`lts/<codename>`** | ✅ | ✅ | ✅ |
+| **内置 `system`/`default`** | ✅ | ✅ | ✅ |
+| **`auto` 按 `.nvmrc` 自动切换** | ✅ | ✅（`--use-on-cd`） | ✅（shell 函数） |
+| **`auto --silent` 静默** | ✅ | ❌ | ❌ |
+| **`remote`/`ls-remote` 列远程版本** | ✅ | ✅ | ✅ |
+| **`--lts` 仅 LTS** | ✅ | ✅ | ✅ |
+| **`--lts-old` 仅 LTS ≤18** | ✅ | ❌ | ❌ |
+| **`--filter <pattern>` 过滤** | ✅ | ❌ | ❌ |
+| **`--sort desc/asc`** | ✅ | ❌ | ✅（默认降序） |
+| **`--page <n>` 分页** | ✅ | ❌ | ❌ |
+| **美观表格输出（边框/对齐/CJK 宽度）** | ✅ | ❌ | ❌ |
+| **`proxy on/off/status` 命令** | ✅ | ❌ | ❌ |
+| **自动检测系统代理** | ✅ | ❌ | ❌ |
+| **连通性测试（google/baidu）** | ✅ | ❌ | ❌ |
+| **自定义 HTTP client** | ✅（reqwest） | ✅ | ❌（curl/wget） |
+| **中英文双语 `language en/cn`** | ✅ | ❌ | ❌ |
+| **彩色输出** | ✅（colored） | ✅ | ❌ |
+| **i18n 帮助文本** | ✅ | ❌ | ❌ |
+| **Shell 补全生成 `completion`** | ✅（bash/zsh/fish/powershell） | ✅ | ❌ |
+| **统一 `dir` 路径展示** | ✅ | ❌ | ✅（`NVM_DIR`） |
+| **GitHub Actions 多平台自动构建** | ✅（6 target） | ✅ | ❌（手动/脚本） |
+| **Release 自动生成 + sha256sums** | ✅ | ✅ | ❌ |
+| **Homebrew formula** | ✅ | ✅ | ❌（tap 安装脚本） |
+| **并发安全** | ✅ | ✅ | ⚠️（shell 依赖） |
+| **大版本列表渲染速度** | 快 | 快 | 慢 |
+| **nvm-sh 生态成熟度** | — | — | ✅（社区最广、文档最多） |
+
 ## 安装
 
 ### 一键安装（macOS / Linux）

@@ -34,6 +34,89 @@ A simple Node.js version manager written in Rust — a drop-in replacement for t
 - **package.json engines.node** — reads Node.js version requirement from package.json
 - **Multi-shell support** — bash, zsh, Fish, PowerShell with auto-switch
 
+## Comparison with fnm and nvm-sh
+
+| Feature | nvm-rust (this project) | fnm | nvm-sh |
+|------|------|------|------|
+| **Implementation language** | Rust | Rust | Bash |
+| **Startup overhead** | Low (native binary) | Low (native binary) | High (shell parsing) |
+| **Single binary, no runtime deps** | ✅ | ✅ | ❌ (needs bash) |
+| **Linux x86_64 (glibc)** | ✅ | ✅ | ✅ (shell) |
+| **Linux aarch64 (glibc)** | ✅ | ✅ | ✅ (shell) |
+| **Linux x86_64 (musl/Alpine static)** | ✅ | ✅ | ❌ (needs bash+coreutils) |
+| **macOS x86_64 / aarch64** | ✅ | ✅ | ✅ |
+| **Windows native** | ❌ | ✅ | ❌ (use nvm-windows) |
+| **bash integration** | ✅ | ✅ | ✅ |
+| **zsh integration** | ✅ | ✅ | ✅ |
+| **fish integration** | ✅ | ✅ | ✅ |
+| **PowerShell integration** | ✅ | ✅ | ❌ |
+| **Install specific version `install 20`** | ✅ | ✅ | ✅ |
+| **Install LTS `install --lts`** | ✅ | ✅ | ✅ |
+| **Install latest `install --latest`** | ✅ | ✅ | ✅ |
+| **Install LTS only if missing `--lts-newer`** | ✅ | ❌ | ❌ |
+| **Fuzzy version `20` → latest 20.x** | ✅ | ✅ | ✅ |
+| **`lts/*`, `lts/iron` codename resolution** | ✅ | ✅ | ✅ |
+| **Compile from source `--source`** | ✅ | ❌ | ❌ |
+| **Offline install `--offline` (cache only)** | ✅ | ❌ | ❌ |
+| **io.js install** | ✅ | ❌ | ✅ |
+| **Uninstall `uninstall` / `--lts` / `--latest`** | ✅ | ✅ | ✅ (version only) |
+| **Progress bar download** | ✅ (indicatif) | ✅ | ✅ (curl/wget) |
+| **Resumable download** | ✅ (HTTP Range + .part) | ❌ | ❌ |
+| **Mirror switching `mirror`** | ✅ (taobao/official/custom) | ❌ (via env) | ✅ (`NVM_NODEJS_ORG_MIRROR`) |
+| **Local cache reuse** | ✅ | ✅ | ❌ |
+| **Cache dir/list/clear** | ✅ | ❌ | ❌ |
+| **SHA-256 verification** | ✅ | ✅ | ✅ |
+| **GPG signature verification `SHASUMS256.txt.sig`** | ✅ (auto key import) | ❌ | ✅ |
+| **Skip verification `--no-gpg-verify`** | ✅ | — | ❌ |
+| **Auto-skip verification when offline** | ✅ | — | ❌ |
+| **Upgrade npm after install `--latest-npm`** | ✅ | ❌ | ❌ |
+| **Install yarn after install `--latest-yarn`** | ✅ | ❌ | ❌ |
+| **Install pnpm after install `--latest-pnpm`** | ✅ | ❌ | ❌ |
+| **Standalone `install-latest-npm/yarn/pnpm`** | ✅ | ❌ | ❌ |
+| **Global package migration `reinstall-packages`** | ✅ | ❌ | ✅ |
+| **Cross-tool migration `migrate` (from nvm-sh/nvm-windows)** | ✅ | ❌ | ❌ |
+| **corepack enable/disable/status** | ✅ | ❌ | ❌ |
+| **`use <ver>` switch** | ✅ | ✅ | ✅ |
+| **`use` reads `.nvmrc`/`.node-version`/`package.json#engines`** | ✅ | ✅ (`.nvmrc`/`.node-version`) | ✅ (`.nvmrc`) |
+| **`use --install-if-missing`** | ✅ | ✅ | ✅ (auto via `nvm install`) |
+| **`use --save` persist as default** | ✅ | ❌ | ✅ (`nvm alias default`) |
+| **`use --use-on-cd` install cd hook** | ✅ | ❌ (via shell integration) | ❌ |
+| **`run <ver> <script>`** | ✅ | ❌ | ✅ |
+| **`exec <ver> <cmd>`** | ✅ | ❌ | ✅ |
+| **`which [ver]`** | ✅ | ✅ | ✅ |
+| **`current` active version** | ✅ | ✅ | ✅ |
+| **`deactivate` restore PATH** | ✅ | ❌ | ✅ |
+| **`unload` remove shell config** | ✅ | ❌ | ✅ |
+| **`alias <name> <ver>`** | ✅ | ✅ (`default`/aliases) | ✅ |
+| **`unalias`** | ✅ | ✅ | ✅ |
+| **Built-in `node`/`stable`/`unstable`** | ✅ | ❌ | ✅ |
+| **Built-in `lts`/`lts/<codename>`** | ✅ | ✅ | ✅ |
+| **Built-in `system`/`default`** | ✅ | ✅ | ✅ |
+| **`auto` switch via `.nvmrc`** | ✅ | ✅ (`--use-on-cd`) | ✅ (shell function) |
+| **`auto --silent`** | ✅ | ❌ | ❌ |
+| **`remote`/`ls-remote` list remote versions** | ✅ | ✅ | ✅ |
+| **`--lts` LTS only** | ✅ | ✅ | ✅ |
+| **`--lts-old` LTS ≤18 only** | ✅ | ❌ | ❌ |
+| **`--filter <pattern>`** | ✅ | ❌ | ❌ |
+| **`--sort desc/asc`** | ✅ | ❌ | ✅ (default desc) |
+| **`--page <n>` pagination** | ✅ | ❌ | ❌ |
+| **Pretty table output (border/align/CJK width)** | ✅ | ❌ | ❌ |
+| **`proxy on/off/status` command** | ✅ | ❌ | ❌ |
+| **Auto-detect system proxy** | ✅ | ❌ | ❌ |
+| **Connectivity test (google/baidu)** | ✅ | ❌ | ❌ |
+| **Custom HTTP client** | ✅ (reqwest) | ✅ | ❌ (curl/wget) |
+| **Bilingual EN/CN `language en/cn`** | ✅ | ❌ | ❌ |
+| **Colored output** | ✅ (colored) | ✅ | ❌ |
+| **i18n help text** | ✅ | ❌ | ❌ |
+| **Shell completion generation `completion`** | ✅ (bash/zsh/fish/powershell) | ✅ | ❌ |
+| **Unified `dir` path display** | ✅ | ❌ | ✅ (`NVM_DIR`) |
+| **GitHub Actions multi-platform build** | ✅ (6 targets) | ✅ | ❌ (manual/script) |
+| **Release auto-generation + sha256sums** | ✅ | ✅ | ❌ |
+| **Homebrew formula** | ✅ | ✅ | ❌ (tap install script) |
+| **Concurrency safety** | ✅ | ✅ | ⚠️ (shell-dependent) |
+| **Large version list render speed** | Fast | Fast | Slow |
+| **nvm-sh ecosystem maturity** | — | — | ✅ (largest community, most docs) |
+
 ## Installation
 
 ### One-liner install (macOS / Linux)
