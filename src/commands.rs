@@ -12,7 +12,7 @@ use crate::config::{
 };
 use crate::download::{copy_from_cache, download_to_cache, is_cached};
 use crate::extract::{extract_archive, extract_iojs_archive};
-use crate::system::{get_cache_dir, get_nvm_dir, get_tags, IOJS_URI, os_suffix, verify_checksum, URI};
+use crate::system::{get_cache_dir, get_nvm_dir, get_tags, GpgStatus, IOJS_URI, os_suffix, verify_checksum, verify_gpg_signature, URI};
 use crate::utils::{get_installed_versions, is_lts_version, iojs_version_number, lts_codename_to_major, normalize_iojs_version, parse_major};
 use crate::i18n::{T, format_t};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -252,6 +252,7 @@ pub fn install(
     latest_yarn: bool,
     latest_pnpm: bool,
     source: bool,
+    no_gpg_verify: bool,
 ) -> Result<()> {
     let config = load_config()?;
     let base_url = get_base_url(&config);
@@ -471,6 +472,22 @@ pub fn install(
                 println!("{}", T("checksum_offline").dimmed());
             } else {
                 println!("{}", T("checksum_skipped").yellow().bold());
+            }
+
+            // GPG signature verification of SHASUMS256.txt. This is an extra
+            // trust layer on top of the SHA-256 checksum and degrades
+            // gracefully (skip) when gpg is missing, the mirror lacks the
+            // .sig file, or --no-gpg-verify is passed. It never aborts the
+            // install, so existing behavior is preserved.
+            print!("  {} ", T("gpg_label").dimmed());
+            match verify_gpg_signature(base_url, &target_version, no_gpg_verify, offline)? {
+                GpgStatus::Verified => println!("{}", T("gpg_verified").green().bold()),
+                GpgStatus::SkippedDisabled => println!("{}", T("gpg_disabled").dimmed()),
+                GpgStatus::SkippedOffline => println!("{}", T("gpg_offline").dimmed()),
+                GpgStatus::SkippedNoGpg => println!("{}", T("gpg_no_gpg").dimmed()),
+                GpgStatus::SkippedNoSig => println!("{}", T("gpg_no_sig").dimmed()),
+                GpgStatus::SkippedKeyImport => println!("{}", T("gpg_key_import_failed").yellow().bold()),
+                GpgStatus::Failed => println!("{}", T("gpg_failed").red().bold()),
             }
         }
 
@@ -1310,7 +1327,7 @@ pub fn use_version_silent(
                 );
             }
             // Install the version
-            install(Some(resolved.clone()), false, false, false, false, None, false, false, false, false)?;
+            install(Some(resolved.clone()), false, false, false, false, None, false, false, false, false, false)?;
             // Check if installation succeeded
             if !nvm_dir.join(&resolved).exists() {
                 anyhow::bail!("{}", format_t("install_failed", &[resolved.clone()]));

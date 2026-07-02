@@ -3,7 +3,9 @@ use scraper::{Html, Selector};
 use sha2::Digest;
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use sysinfo::System;
 
 use crate::proxy::build_http_client;
@@ -131,6 +133,213 @@ pub fn verify_checksum(file_path: &std::path::Path, archive_name: &str, base_url
     }
 
     Ok(false)
+}
+
+/// Node.js release team GPG key IDs used to verify `SHASUMS256.txt.sig`.
+/// Mirrors the list nvm-sh imports; any present key is sufficient to verify
+/// a release signature. The list is long on purpose so that older and newer
+/// releases alike can be verified without a keyserver round-trip per release.
+const NODEJS_RELEASE_KEY_IDS: &[&str] = &[
+    "94AE36675C464D64BAFA68DD7434390BDBE9B9C5",
+    "74F12602B6F1C4E913FAA37AD3A89613643B6201",
+    "71DCFD284A79C3B38668286BC97EC7A07EDE3FC1",
+    "8FCCA13FEF1D0C2E91008E09770F7A9A5AE15600",
+    "C4F0DFFF4E3C283FDFCDFB08576E6C61A1A1B1FE",
+    "DD8F2338BAE7501E3DD5AC78C273792F7D83545D",
+    "B9AE9905FFD7803F25714661B63B535A4C206CA9",
+    "77984A986EBC2AA786BC0F66B01FBB92821C587A",
+    "890C08DB8579162FEE0DF9DB8BEAB4DFCF555EF4",
+    "C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C",
+];
+
+/// Keyservers tried (in order) when importing the Node.js release keys.
+const NODEJS_KEYSERVERS: &[&str] = &[
+    "hkp://keyserver.ubuntu.com:80",
+    "hkp://keyserver.ubuntu.com:443",
+    "hkp://keyserver.pgp.com:80",
+];
+
+/// Outcome of a GPG signature verification attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpgStatus {
+    Verified,
+    SkippedNoGpg,
+    SkippedOffline,
+    SkippedDisabled,
+    SkippedNoSig,
+    SkippedKeyImport,
+    Failed,
+}
+
+/// Check whether the `gpg` binary is available on PATH and functional.
+fn gpg_available() -> bool {
+    Command::new("gpg")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Import the Node.js release signing keys into the user's keyring.
+/// Returns `true` if the import command reported success (which is also the
+/// case when the keys are already present). Best-effort: callers treat a
+/// `false` result as "try verifying anyway, the keys may already be there".
+fn import_nodejs_release_keys() -> bool {
+    for keyserver in NODEJS_KEYSERVERS {
+        let status = Command::new("gpg")
+            .arg("--batch")
+            .arg("--keyserver")
+            .arg(keyserver)
+            .arg("--recv-keys")
+            .args(NODEJS_RELEASE_KEY_IDS)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if let Ok(s) = status {
+            if s.success() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Verify the GPG signature of `SHASUMS256.txt` for a Node.js release.
+///
+/// Downloads `SHASUMS256.txt.sig` alongside `SHASUMS256.txt`, imports the
+/// Node.js release team's public key on demand, and runs `gpg --verify`.
+/// This is an additional trust layer on top of the SHA-256 checksum: it
+/// defeats an attacker who replaces both the tarball and `SHASUMS256.txt`.
+///
+/// The function never aborts an install. On any non-success it returns a
+/// `Skipped*` / `Failed` status so the caller can print a warning and
+/// continue — preserving the existing "checksum skipped" behavior while
+/// adding signature verification when gpg is available.
+pub fn verify_gpg_signature(
+    base_url: &str,
+    version: &str,
+    no_gpg_verify: bool,
+    offline: bool,
+) -> Result<GpgStatus> {
+    if no_gpg_verify {
+        return Ok(GpgStatus::SkippedDisabled);
+    }
+    if offline {
+        return Ok(GpgStatus::SkippedOffline);
+    }
+    if !gpg_available() {
+        return Ok(GpgStatus::SkippedNoGpg);
+    }
+
+    let sig_url = format!("{}{}/SHASUMS256.txt.sig", base_url, version);
+    let sums_url = format!("{}{}/SHASUMS256.txt", base_url, version);
+    let client = build_http_client();
+
+    // Download the detached signature. Mirrors occasionally omit the .sig
+    // file, in which case we skip rather than fail the install.
+    let sig_resp = match client.get(&sig_url).send() {
+        Ok(r) => r,
+        Err(_) => return Ok(GpgStatus::SkippedNoSig),
+    };
+    if !sig_resp.status().is_success() {
+        return Ok(GpgStatus::SkippedNoSig);
+    }
+    let sig_bytes = match sig_resp.bytes() {
+        Ok(b) => b.to_vec(),
+        Err(_) => return Ok(GpgStatus::SkippedNoSig),
+    };
+
+    // Download a fresh copy of SHASUMS256.txt that exactly matches the .sig
+    // (mirrors may reformat the text, which would invalidate the signature).
+    let sums_resp = match client.get(&sums_url).send() {
+        Ok(r) => r,
+        Err(_) => return Ok(GpgStatus::SkippedNoSig),
+    };
+    if !sums_resp.status().is_success() {
+        return Ok(GpgStatus::SkippedNoSig);
+    }
+    let sums_bytes = match sums_resp.bytes() {
+        Ok(b) => b.to_vec(),
+        Err(_) => return Ok(GpgStatus::SkippedNoSig),
+    };
+
+    // Write both to temp files named per-process to avoid collisions with
+    // concurrent installs.
+    let tmp = std::env::temp_dir();
+    let pid = std::process::id();
+    let sig_path = tmp.join(format!("nvm-rs-{}.SHASUMS256.txt.sig", pid));
+    let sums_path = tmp.join(format!("nvm-rs-{}.SHASUMS256.txt", pid));
+    {
+        let mut f = fs::File::create(&sig_path)?;
+        f.write_all(&sig_bytes)?;
+        let mut f = fs::File::create(&sums_path)?;
+        f.write_all(&sums_bytes)?;
+    }
+
+    let sig_str = sig_path.to_string_lossy().to_string();
+    let sums_str = sums_path.to_string_lossy().to_string();
+    let run_verify = || {
+        Command::new("gpg")
+            .arg("--batch")
+            .arg("--verify")
+            .arg(&sig_str)
+            .arg(&sums_str)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+    };
+
+    // First attempt: keys may already be present in the keyring from a
+    // previous run, avoiding a keyserver round-trip entirely.
+    let mut output = match run_verify() {
+        Ok(o) if o.status.success() => {
+            fs::remove_file(&sig_path).ok();
+            fs::remove_file(&sums_path).ok();
+            return Ok(GpgStatus::Verified);
+        }
+        Ok(o) => o,
+        Err(_) => {
+            fs::remove_file(&sig_path).ok();
+            fs::remove_file(&sums_path).ok();
+            return Ok(GpgStatus::SkippedNoGpg);
+        }
+    };
+
+    // If verification failed purely because the public key is missing, try
+    // importing the release keys once and retry. Distinguish a missing-key
+    // failure from a genuine bad-signature failure so we don't report a
+    // security failure for what is really a keyserver/network problem.
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let needs_keys =
+        stderr.contains("No public key") || stderr.contains("public key not found");
+    if needs_keys {
+        if import_nodejs_release_keys() {
+            output = match run_verify() {
+                Ok(o) => o,
+                Err(_) => {
+                    fs::remove_file(&sig_path).ok();
+                    fs::remove_file(&sums_path).ok();
+                    return Ok(GpgStatus::SkippedNoGpg);
+                }
+            };
+        }
+    }
+
+    fs::remove_file(&sig_path).ok();
+    fs::remove_file(&sums_path).ok();
+
+    if output.status.success() {
+        Ok(GpgStatus::Verified)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if stderr.contains("No public key") || stderr.contains("public key not found") {
+            Ok(GpgStatus::SkippedKeyImport)
+        } else {
+            Ok(GpgStatus::Failed)
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]

@@ -23,6 +23,9 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             archive: tar.gz
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            archive: tar.gz
           - os: macos-latest
             target: x86_64-apple-darwin
             archive: tar.gz
@@ -52,16 +55,29 @@ jobs:
           EOF
           echo "  Static liblzma via lzma-sys static feature"
 
-      - name: Build
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+      - name: Install musl toolchain (Linux musl)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          mkdir -p .cargo
+          cat >> .cargo/config.toml <<EOF
+          [target.x86_64-unknown-linux-musl]
+          linker = "musl-gcc"
+          rustflags = ["-C", "target-feature=+crt-static"]
+          EOF
+          echo "  Static musl build (fully static binary for Alpine/distroless)"
+
+      - name: Build (static link)
+        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'x86_64-unknown-linux-musl'
         run: cargo build --release --target ${{ matrix.target }}
         env:
           LZMA_API_STATIC: "1"
           PKG_CONFIG_ALL_STATIC: "1"
           PKG_CONFIG_ALLOW_CROSS: "1"
 
-      - name: Build
-        if: matrix.target != 'aarch64-unknown-linux-gnu'
+      - name: Build (default)
+        if: matrix.target != 'aarch64-unknown-linux-gnu' && matrix.target != 'x86_64-unknown-linux-musl'
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package (Unix tar.gz)

@@ -120,6 +120,14 @@ lazy_static::lazy_static! {
         m.insert("run_use", "Run: nvm use {0}");
         m.insert("url_label", "URL:");
         m.insert("checksum_label", "Checksum:");
+        m.insert("gpg_label", "Signature:");
+        m.insert("gpg_verified", "✓ verified");
+        m.insert("gpg_disabled", "⊘ skipped (--no-gpg-verify)");
+        m.insert("gpg_offline", "⊘ skipped (offline)");
+        m.insert("gpg_no_gpg", "⊘ gpg not found");
+        m.insert("gpg_no_sig", "⊘ no signature");
+        m.insert("gpg_key_import_failed", "⚠ key import failed");
+        m.insert("gpg_failed", "✗ signature invalid");
         m.insert("cache_dir_label", "Cache directory:");
         m.insert("cache_empty", "Cache is empty.");
         m.insert("cache_cleared", "Cache cleared, freed {0}");
@@ -375,6 +383,7 @@ lazy_static::lazy_static! {
         m.insert("help_install_latest_yarn", "Install the latest yarn after install");
         m.insert("help_install_latest_pnpm", "Install the latest pnpm after install");
         m.insert("help_install_source", "Compile and install from source (requires compiler toolchain)");
+        m.insert("help_install_no_gpg_verify", "Skip GPG signature verification of SHASUMS256.txt");
         m.insert("help_use_about", "Switch to a specific Node.js version");
         m.insert("help_use_usage", "Usage: nvm use [OPTIONS] <VERSION>");
         m.insert("help_use_version_arg", "Version number or alias");
@@ -498,6 +507,14 @@ lazy_static::lazy_static! {
         m.insert("run_use", "执行：nvm use {0}");
         m.insert("url_label", "下载地址：");
         m.insert("checksum_label", "校验和：");
+        m.insert("gpg_label", "签名：");
+        m.insert("gpg_verified", "✓ 验证通过");
+        m.insert("gpg_disabled", "⊘ 已跳过（--no-gpg-verify）");
+        m.insert("gpg_offline", "⊘ 已跳过（离线模式）");
+        m.insert("gpg_no_gpg", "⊘ 未找到 gpg");
+        m.insert("gpg_no_sig", "⊘ 无签名");
+        m.insert("gpg_key_import_failed", "⚠ 公钥导入失败");
+        m.insert("gpg_failed", "✗ 签名无效");
         m.insert("cache_dir_label", "缓存目录：");
         m.insert("cache_empty", "缓存为空。");
         m.insert("cache_cleared", "缓存已清理，释放 {0}");
@@ -753,6 +770,7 @@ lazy_static::lazy_static! {
         m.insert("help_install_latest_yarn", "安装后安装最新版 yarn");
         m.insert("help_install_latest_pnpm", "安装后安装最新版 pnpm");
         m.insert("help_install_source", "从源码编译并安装（需要编译工具链）");
+        m.insert("help_install_no_gpg_verify", "跳过 SHASUMS256.txt 的 GPG 签名验证");
         m.insert("help_use_about", "切换到指定 Node.js 版本");
         m.insert("help_use_usage", "用法：nvm use [选项] <VERSION>");
         m.insert("help_use_version_arg", "版本号或别名");

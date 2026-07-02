@@ -97,6 +97,9 @@ pub enum Commands {
         /// Compile and install from source (requires compiler toolchain)
         #[clap(long, short)]
         source: bool,
+        /// Skip GPG signature verification of SHASUMS256.txt
+        #[clap(long)]
+        no_gpg_verify: bool,
     },
     /// Switch to a specific Node.js version
     Use {
@@ -387,6 +390,7 @@ pub fn print_command_help(cmd: &str) {
             println!("      --latest-yarn                    {}", T("help_install_latest_yarn"));
             println!("      --latest-pnpm                    {}", T("help_install_latest_pnpm"));
             println!("  -s, --source                         {}", T("help_install_source"));
+            println!("      --no-gpg-verify                  {}", T("help_install_no_gpg_verify"));
             println!("  -h, --help                           {}", hf);
         }
         "use" => {

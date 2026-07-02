@@ -36,8 +36,8 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(cmd) => match cmd {
-            Commands::Install { version, lts, latest, lts_newer, offline, reinstall_packages_from, latest_npm, latest_yarn, latest_pnpm, source } => {
-                commands::install(version, lts, latest, lts_newer, offline, reinstall_packages_from, latest_npm, latest_yarn, latest_pnpm, source)
+            Commands::Install { version, lts, latest, lts_newer, offline, reinstall_packages_from, latest_npm, latest_yarn, latest_pnpm, source, no_gpg_verify } => {
+                commands::install(version, lts, latest, lts_newer, offline, reinstall_packages_from, latest_npm, latest_yarn, latest_pnpm, source, no_gpg_verify)
             }
             Commands::Use { version, install_if_missing, save, use_on_cd } => commands::use_version(version.as_deref(), install_if_missing, save, use_on_cd),
             Commands::List => commands::list_versions(),
