@@ -2,7 +2,7 @@
 
 [![中文文档](https://img.shields.io/badge/Documentation-Chinese-brightgreen?style=for-the-badge)](./README.ZH_CN.md)
 
-A simple Node.js version manager written in Rust — a drop-in replacement for the [nvm](https://github.com/nvm-sh/nvm) shell script.
+A fast, feature-rich Node.js version manager written in Rust — a Rust-native reimagining of [nvm](https://github.com/nvm-sh/nvm). Delivered as a single static binary with sub-millisecond startup, bilingual UI, and 15 features nvm and fnm don't offer: GPG-verified downloads, resumable transfers, source builds, offline installs, and built-in yarn/pnpm/corepack integration. Built for modern workflows.
 
 ## Features
 

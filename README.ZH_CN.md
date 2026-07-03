@@ -1,6 +1,6 @@
 # nvm-rs
 
-用 Rust 编写的 Node.js 版本管理器 —— [nvm](https://github.com/nvm-sh/nvm) Shell 脚本的替代实现。
+nvm-rs 是一个用 Rust 编写、高性能且功能丰富的 Node.js 版本管理器 —— [nvm](https://github.com/nvm-sh/nvm) 的 Rust 原生重写。以单一静态二进制交付，亚毫秒级启动，中英双语界面，并具备 15 项 nvm 和 fnm 都没有的独有功能：GPG 签名校验、断点续传、源码编译、离线安装，以及内置 yarn/pnpm/corepack 集成。为现代工作流而生。
 
 ## 特性
 
