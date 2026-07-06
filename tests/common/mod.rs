@@ -12,6 +12,7 @@
 
 use std::env;
 use std::ffi::OsString;
+use std::path::Path;
 use std::process::{Command, Output};
 use tempfile::TempDir;
 
@@ -47,6 +48,23 @@ pub fn run_isolated(args: &[&str]) -> (Output, TempDir) {
     (output, dir)
 }
 
+/// Run `nvm` with both `NVM_DIR` and `HOME` pointed at isolated tempdirs.
+///
+/// Used by tests that must also isolate `~/.nvm` lookups (e.g. `migrate`,
+/// which resolves the nvm-sh source under `~/.nvm/versions/node` via
+/// `get_home_dir()`). Returns both guards so the caller can keep them alive.
+pub fn run_isolated_with_home(args: &[&str]) -> (Output, TempDir, TempDir) {
+    let nvm = TempDir::new().expect("tempdir for NVM_DIR");
+    let home = TempDir::new().expect("tempdir for HOME");
+    let output = Command::new(nvm_bin())
+        .args(args)
+        .env("NVM_DIR", nvm.path())
+        .env("HOME", home.path())
+        .output()
+        .expect("failed to run nvm binary");
+    (output, nvm, home)
+}
+
 /// Run `nvm` inheriting the current process's environment (used for pure
 /// help/version checks that never touch NVM_DIR).
 pub fn run(args: &[&str]) -> Output {
@@ -54,6 +72,18 @@ pub fn run(args: &[&str]) -> Output {
         .args(args)
         .output()
         .expect("failed to run nvm binary")
+}
+
+/// Create a fake installed version directory (e.g. `NVM_DIR/v20.0.0/bin/`)
+/// so commands that check `version_dir.exists()` succeed without a real
+/// download. Optionally place a (empty) `node` binary under `bin/`.
+pub fn create_fake_version(nvm_dir: &Path, version: &str, with_node: bool) {
+    let bin = nvm_dir.join(version).join("bin");
+    std::fs::create_dir_all(&bin).expect("create fake version bin/");
+    if with_node {
+        std::fs::write(bin.join("node"), b"#!/bin/sh\nexit 0\n")
+            .expect("write fake node");
+    }
 }
 
 /// Decode a `Output`'s stdout as UTF-8 (lossy), for substring assertions.
@@ -64,4 +94,15 @@ pub fn stdout(out: &Output) -> String {
 /// Decode a `Output`'s stderr as UTF-8 (lossy).
 pub fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).to_string()
+}
+
+/// Decode stdout + stderr concatenated (lossy). Use this when the test
+/// only cares that some message appeared somewhere, because anyhow's
+/// `Error: ...` report is written to stderr while normal `println!` output
+/// goes to stdout — assertions that scan only one of the two are brittle.
+pub fn combined_output(out: &Output) -> String {
+    let mut s = String::from_utf8_lossy(&out.stdout).to_string();
+    s.push('\n');
+    s.push_str(&String::from_utf8_lossy(&out.stderr));
+    s
 }

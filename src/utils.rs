@@ -300,4 +300,62 @@ mod tests {
         assert_eq!(compare_semver("20.5.0", "20.20.2"), Ordering::Less);
         assert_eq!(compare_semver("20.20.2", "20.5.0"), Ordering::Greater);
     }
+
+    #[test]
+    fn test_compare_semver_iojs_vs_node_tiebreak() {
+        use std::cmp::Ordering;
+        // Documented contract: for the same major.minor.patch, io.js is
+        // treated as newer than Node.js (mirrors compare_versions legacy
+        // behavior). Lock this so a refactor doesn't silently flip it.
+        assert_eq!(compare_semver("v3.3.1", "iojs-v3.3.1"), Ordering::Less);
+        assert_eq!(compare_semver("iojs-v3.3.1", "v3.3.1"), Ordering::Greater);
+        // io.js prefix variants compare equal to each other for the same
+        // version numbers.
+        assert_eq!(compare_semver("iojs-3.3.1", "io.js-3.3.1"), Ordering::Equal);
+    }
+
+    #[test]
+    fn test_compare_semver_malformed_input_silently_zeros() {
+        use std::cmp::Ordering;
+        // Malformed inputs must not panic: unparseable numeric parts fall
+        // back to 0 (parse_v uses `.unwrap_or(0)`). Lock this behavior so
+        // a future strict-parse change is a conscious decision.
+        assert_eq!(compare_semver("", "v1.0.0"), Ordering::Less);
+        assert_eq!(compare_semver("v", "v1.0.0"), Ordering::Less);
+        assert_eq!(compare_semver("abc", "v1.0.0"), Ordering::Less);
+        // Two malformed inputs are Equal (both parse to all-zeros, non-iojs).
+        assert_eq!(compare_semver("", ""), Ordering::Equal);
+        assert_eq!(compare_semver("garbage", "v"), Ordering::Equal);
+    }
+
+    #[test]
+    fn test_is_version_dir_name_iojs_without_v_prefix() {
+        // The function explicitly accepts `iojs-1.0.0` and `io.js-1.0.0`
+        // (no `v` after the dash) — cover those branches directly.
+        assert!(is_version_dir_name("iojs-1.0.0"));
+        assert!(is_version_dir_name("io.js-1.0.0"));
+    }
+
+    #[test]
+    fn test_backup_file_copies_existing_file() {
+        use std::fs;
+        use std::path::PathBuf;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("a.txt");
+        fs::write(&path, b"hello").expect("write");
+        backup_file(&path).expect("backup_file should succeed for existing file");
+        let backup = file_backup_path(&path);
+        assert_eq!(backup, PathBuf::from(dir.path()).join("a.txt.bak"));
+        assert_eq!(fs::read(&backup).expect("read backup"), b"hello");
+    }
+
+    #[test]
+    fn test_backup_file_no_op_for_missing_file() {
+        // For a non-existent path, backup_file is a no-op (Ok(())) and must
+        // NOT create a .bak file.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("missing.txt");
+        backup_file(&path).expect("backup_file should be Ok for missing file");
+        assert!(!dir.path().join("missing.txt.bak").exists());
+    }
 }

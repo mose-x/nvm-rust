@@ -107,3 +107,46 @@ fn flatten_dir(src: &Path, dest: &Path) -> Result<()> {
     fs::remove_dir(src)?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flatten_dir_moves_contents_and_removes_source() {
+        // Build a src dir with two entries and flatten it into dest.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        std::fs::create_dir_all(&src).expect("create src");
+        std::fs::create_dir_all(&dest).expect("create dest");
+        std::fs::write(src.join("a.txt"), b"a").expect("write a");
+        std::fs::write(src.join("b.txt"), b"b").expect("write b");
+
+        flatten_dir(&src, &dest).expect("flatten_dir should succeed");
+
+        // Contents moved into dest.
+        assert!(dest.join("a.txt").exists(), "a.txt should be in dest");
+        assert!(dest.join("b.txt").exists(), "b.txt should be in dest");
+        // Source directory removed.
+        assert!(!src.exists(), "src should be removed after flatten");
+    }
+
+    #[test]
+    fn flatten_dir_empty_source_is_removed() {
+        // An empty source dir should still be removed (read_dir yields none,
+        // then remove_dir runs unconditionally).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let src = tmp.path().join("empty_src");
+        let dest = tmp.path().join("dest");
+        std::fs::create_dir_all(&src).expect("create empty src");
+        std::fs::create_dir_all(&dest).expect("create dest");
+
+        flatten_dir(&src, &dest).expect("flatten_dir on empty src should succeed");
+        assert!(!src.exists(), "empty src should still be removed");
+    }
+}
