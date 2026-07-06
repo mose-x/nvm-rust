@@ -6,7 +6,7 @@
 //! and a working node/npm and are not tested here.
 
 mod common;
-use common::{combined_output, run_isolated, run_isolated_with_home, stdout};
+use common::{combined_output, run_isolated, run_isolated_with_home};
 
 // --- `nvm migrate` --------------------------------------------------------
 

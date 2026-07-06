@@ -10,7 +10,7 @@ tempfile = "3"
 # CLI argument parsing
 clap = { version = "4.5.4", features = ["derive"] }
 # HTTP client
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "charset"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "charset", "socks"] }
 # HTML parser
 scraper = "0.19.0"
 # Cross-platform system info
