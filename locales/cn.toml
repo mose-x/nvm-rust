@@ -371,3 +371,7 @@ help_root_usage = "用法：nvm [COMMAND]"
 help_root_commands = "子命令："
 help_root_print_help = "显示此消息或指定子命令的帮助"
 help_version_flag = "显示版本号"
+
+[_meta]
+display_name = "中文"
+aliases = ["zh", "zh-cn", "zh-hans", "chinese", "中文"]
