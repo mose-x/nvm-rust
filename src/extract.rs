@@ -1,8 +1,6 @@
 use anyhow::{Context, Result};
 use std::fs::{self, File};
 use std::path::Path;
-#[cfg(target_os = "windows")]
-use std::process::Command;
 use tar::Archive;
 use xz2::read::XzDecoder;
 
@@ -17,17 +15,10 @@ pub fn extract_archive(archive_path: &Path, dest_dir: &Path, version: &str) -> R
 
     #[cfg(target_os = "windows")]
     {
-        let status = Command::new("7z")
-            .arg("x")
-            .arg("-y")
-            .arg(format!("-o{}", dest_dir.display()))
-            .arg(archive_path)
-            .status()
-            .context("Extraction failed, ensure 7z is installed")?;
-
-        if !status.success() {
-            anyhow::bail!("Extraction failed");
-        }
+        let _ = file; // .7z path reads via path, not the opened File handle.
+        // Pure-Rust 7z decompression — no external 7z.exe needed.
+        sevenz_rust::decompress_file(archive_path, dest_dir)
+            .map_err(|e| anyhow::anyhow!("Extraction failed: {e}"))?;
 
         let extracted = dest_dir.join(format!("node-{}-win-x64", version));
         if extracted.exists() {
@@ -65,17 +56,10 @@ pub fn extract_iojs_archive(archive_path: &Path, dest_dir: &Path, version: &str)
 
     #[cfg(target_os = "windows")]
     {
-        let status = Command::new("7z")
-            .arg("x")
-            .arg("-y")
-            .arg(format!("-o{}", dest_dir.display()))
-            .arg(archive_path)
-            .status()
-            .context("Extraction failed, ensure 7z is installed")?;
-
-        if !status.success() {
-            anyhow::bail!("Extraction failed");
-        }
+        let _ = file; // .7z path reads via path, not the opened File handle.
+        // Pure-Rust 7z decompression — no external 7z.exe needed.
+        sevenz_rust::decompress_file(archive_path, dest_dir)
+            .map_err(|e| anyhow::anyhow!("Extraction failed: {e}"))?;
 
         let extracted = dest_dir.join(format!("iojs-v{}-win-x64", ver_num));
         if extracted.exists() {

@@ -556,7 +556,7 @@ Config files inside `NVM_DIR`:
 
 - Linux x64 / arm64
 - macOS x64 (Intel) / arm64 (Apple Silicon)
-- Windows x64 (requires 7-Zip installed)
+- Windows x64
 
 ## License
 

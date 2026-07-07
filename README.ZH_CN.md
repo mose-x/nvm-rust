@@ -548,7 +548,7 @@ nvm corepack disable          # 禁用当前版本
 
 - Linux x64 / arm64
 - macOS x64（Intel） / arm64（Apple Silicon）
-- Windows x64（需先安装 7-Zip）
+- Windows x64
 
 ## 许可证
 

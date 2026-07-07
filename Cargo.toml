@@ -23,6 +23,9 @@ toml = "0.8"
 # Archive extraction
 tar = "0.4"
 xz2 = { version = "0.1", features = ["static"] }
+# Pure-Rust 7z decompression for Windows Node.js packages (.7z),
+# so users don't need to install 7-Zip separately.
+sevenz-rust = "0.6"
 # Progress bar
 indicatif = "0.17"
 # Error handling
