@@ -2270,7 +2270,14 @@ pub fn cmd_mirror(mirror: Option<&str>) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 pub fn cmd_language(lang: Option<&str>) -> Result<()> {
-    use crate::i18n::{get_language, set_language, Lang};
+    use crate::i18n::{available_lang_codes, get_language, set_language, Lang};
+
+    // Build the `<en|cn|jp>` hint and the `en, cn, jp` list once; both are
+    // rendered from LANG_CODES so they stay in sync with whatever locale
+    // files are present at build time.
+    let codes = available_lang_codes();
+    let usage_hint = codes.join("|");
+    let available_list = codes.join(", ");
 
     match lang {
         Some(l) => {
@@ -2283,7 +2290,10 @@ pub fn cmd_language(lang: Option<&str>) -> Result<()> {
                     parsed.display_name().white().bold()
                 );
             } else {
-                anyhow::bail!("{}", format_t("lang_unknown", &[l.to_string()]));
+                anyhow::bail!(
+                    "{}",
+                    format_t("lang_unknown", &[l.to_string(), available_list.to_string()])
+                );
             }
         }
         None => {
@@ -2298,7 +2308,7 @@ pub fn cmd_language(lang: Option<&str>) -> Result<()> {
             println!(
                 "  {} {}",
                 "→".dimmed(),
-                T("lang_usage").dimmed()
+                format_t("lang_usage", &[usage_hint.to_string()]).dimmed()
             );
             println!();
         }

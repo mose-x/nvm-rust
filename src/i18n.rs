@@ -111,6 +111,16 @@ pub fn set_language(lang: Lang) -> Result<()> {
     Ok(())
 }
 
+/// Return every available language code, with `en` always first.
+///
+/// Drawn from the build-script-generated `LANG_CODES` table, so it
+/// automatically reflects whatever `*.toml` files are in `locales/` at
+/// build time. Used to render the `<en|cn|jp>` hint in `nvm language`
+/// output and the "available: ..." list in the unknown-language error.
+pub fn available_lang_codes() -> &'static [&'static str] {
+    LANG_CODES
+}
+
 #[allow(non_snake_case)]
 #[allow(dead_code)]
 pub fn T(key: &str) -> String {
