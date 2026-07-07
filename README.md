@@ -26,7 +26,7 @@ A fast, feature-rich Node.js version manager written in Rust — a Rust-native r
 - **Source compile** — `nvm install -s` (compile from source tarball)
 - **Compound install flags** — `--latest-npm` and `--reinstall-packages-from=<ver>`
 - **LTS uninstall** — `nvm uninstall --lts`
-- **i18n** — `nvm language <en|cn>` (English / 中文)
+- **i18n** — `nvm language <en|cn>` (English / 中文, pluggable via `locales/*.toml`)
 - **Proxy management** — `nvm proxy on/off` (leverages system proxy env vars)
 - **Shell completions** — `nvm completion <bash|zsh|fish|powershell>`
 - **Corepack support** — `nvm corepack <enable|disable|status>`
@@ -105,7 +105,7 @@ A fast, feature-rich Node.js version manager written in Rust — a Rust-native r
 | **Auto-detect system proxy** | ✅ | ❌ | ❌ |
 | **Connectivity test (google/baidu)** | ✅ | ❌ | ❌ |
 | **Custom HTTP client** | ✅ (reqwest) | ✅ | ❌ (curl/wget) |
-| **Bilingual EN/CN `language en/cn`** | ✅ | ❌ | ❌ |
+| **Bilingual EN/CN `language en/cn`** | ✅ (pluggable, drop-in `locales/*.toml`) | ❌ | ❌ |
 | **Colored output** | ✅ (colored) | ✅ | ❌ |
 | **i18n help text** | ✅ | ❌ | ❌ |
 | **Shell completion generation `completion`** | ✅ (bash/zsh/fish/powershell) | ✅ | ❌ |
@@ -376,15 +376,78 @@ nvm install 22 --reinstall-packages-from=20  # migrate global packages from 20
 nvm install 22 --latest-npm --reinstall-packages-from=20  # both
 ```
 
-### Language
+### Language / i18n
 
-Switch display language between English and Chinese:
+Switch the display language. nvm-rs ships with English and Chinese built in,
+and supports adding new languages with **zero source code changes**.
 
 ```bash
 nvm language                      # show current language
 nvm language cn                   # switch to Chinese
 nvm lang en                       # switch to English (alias)
+nvm language zh                   # alias for Chinese
+nvm lang en-us                    # alias for English
 ```
+
+The setting persists in `~/.nvm.rust/config.json`.
+
+#### Adding a new language (convention over configuration)
+
+Drop a `xx.toml` file into the `locales/` directory and rebuild — that's it.
+`build.rs` scans `locales/*.toml` at compile time and auto-registers the new
+language. No edits to `i18n.rs`, `Cargo.toml`, or `build.rs` are needed.
+
+1. **Create the locale file.** Copy `locales/en.toml` to `locales/xx.toml`
+   (where `xx` is the language code, e.g. `jp`, `ca`, `de`) and translate
+   every value. The key set must match `en.toml` exactly — `cargo test`
+   enforces this (the `all_locales_have_same_keys_as_en` test fails on drift).
+
+2. **Add a `[_meta]` table** at the end of the file (optional but recommended):
+
+   ```toml
+   [_meta]
+   display_name = "日本語"            # shown in `nvm language` listing
+   aliases      = ["ja", "jpn"]       # accepted by `nvm language <alias>`
+   ```
+
+   - `display_name` — human-readable name shown in `nvm language` output
+   - `aliases` — alternative codes/names that resolve to this language
+
+   If `_meta` is omitted, `display_name` defaults to the file stem and no
+   aliases are registered.
+
+3. **Rebuild** — `cargo build`. The new language is now available:
+
+   ```
+   $ nvm language
+     ▶ Current language: English
+     → Usage: nvm language <en|cn|jp>
+
+   $ nvm language jp
+     ✓ Language set to: 日本語
+   ```
+
+#### Fallback behavior
+
+- Missing keys in a non-English locale fall back to the English value,
+  then to the raw key name — so a partially translated locale never shows
+  broken strings.
+- `en.toml` is the mandatory baseline; `build.rs` fails the build if it's
+  missing.
+- Malformed TOML in one locale prints a warning at runtime and skips that
+  language, rather than crashing the whole binary.
+
+#### How it works
+
+- `build.rs` parses each `locales/*.toml` at compile time, extracts the
+  `[_meta]` table, and emits `OUT_DIR/locales_generated.rs` containing four
+  `&'static` arrays: `LANG_CODES`, `LANG_DISPLAY_NAMES`, `LANG_ALIASES`,
+  `LANG_STRINGS` (the latter embeds each TOML via `include_str!`).
+- `src/i18n.rs` `include!`s that generated file and exposes `Lang`,
+  `from_str`, `T`, `format_t`, and `available_lang_codes`.
+- Locale files are parsed into a `HashMap<String, String>` on first use
+  (lazy_static); the `[_meta]` table is filtered out so it never appears
+  as a translatable string.
 
 ### Proxy
 
@@ -477,7 +540,7 @@ Config files inside `NVM_DIR`:
 | `nvm cache dir` | Show cache directory |
 | `nvm cache list` | List cached files |
 | `nvm cache clear` | Clear all cached files |
-| `nvm language / lang [en\|cn]` | Show or set display language |
+| `nvm language / lang [en\|cn\|...]` | Show or set display language (pluggable via `locales/*.toml`) |
 | `nvm proxy [on\|off]` | Manage proxy settings |
 | `nvm completion <shell>` | Generate shell completions |
 | `nvm corepack <enable\|disable\|status>` | Corepack management |
