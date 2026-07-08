@@ -4,10 +4,11 @@ use std::path::Path;
 use tar::Archive;
 use xz2::read::XzDecoder;
 
+use crate::i18n::T;
 use crate::system::os_type_name;
 
 pub fn extract_archive(archive_path: &Path, dest_dir: &Path, version: &str) -> Result<()> {
-    println!("Extracting...");
+    println!("{}", T("extracting"));
 
     fs::create_dir_all(dest_dir).context("Cannot create directory")?;
 
@@ -43,7 +44,7 @@ pub fn extract_archive(archive_path: &Path, dest_dir: &Path, version: &str) -> R
 
 /// Extract an io.js tarball. io.js archives use "iojs-vX.Y.Z-platform-arch" prefix.
 pub fn extract_iojs_archive(archive_path: &Path, dest_dir: &Path, version: &str) -> Result<()> {
-    println!("Extracting...");
+    println!("{}", T("extracting"));
 
     fs::create_dir_all(dest_dir).context("Cannot create directory")?;
 

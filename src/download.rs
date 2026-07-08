@@ -4,6 +4,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{copy, Write};
 use std::path::{Path, PathBuf};
 
+use crate::i18n::T;
 use crate::proxy::build_http_client;
 use crate::system::{ensure_cache_dir, get_cache_dir};
 
@@ -28,11 +29,11 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
     let part_path = cache_dir.join(format!("{}{}", filename, PART_SUFFIX));
 
     if cache_path.exists() {
-        println!("  [cache] using cached file");
+        println!("  {}", T("cached_file"));
         return Ok(cache_path);
     }
 
-    println!("Downloading...");
+    println!("{}", T("downloading"));
 
     let client = build_http_client();
 
@@ -106,7 +107,7 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
     copy(&mut source, &mut dest_file).context("Write failed")?;
     dest_file.flush().ok();
 
-    pb.finish_with_message("Done");
+    pb.finish_with_message(T("progress_done"));
 
     // Atomically promote .part to the final name. On success the file becomes
     // visible to the cache-hit check above; on failure the .part is left in
@@ -114,7 +115,7 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
     fs::rename(&part_path, &cache_path)
         .with_context(|| format!("Cannot rename .part to {}", cache_path.display()))?;
 
-    println!("  [cache] saved to cache");
+    println!("  {}", T("cached_saved"));
     Ok(cache_path)
 }
 

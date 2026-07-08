@@ -315,8 +315,8 @@ pub fn install(
                 );
                 println!(
                     "  {} {}",
-                    "Run:".dimmed(),
-                    format!("nvm use {}", target).yellow().bold()
+                    T("run_label").dimmed(),
+                    format_t("run_command", &[target.to_string()]).yellow().bold()
                 );
                 return Ok(());
             }
@@ -368,8 +368,8 @@ pub fn install(
             );
             println!(
                 "  {} {}",
-                "Run:".dimmed(),
-                format!("nvm use {}", target_version).yellow().bold()
+                T("run_label").dimmed(),
+                format_t("run_command", &[target_version.to_string()]).yellow().bold()
             );
             return Ok(());
         }
@@ -552,8 +552,8 @@ pub fn install(
 
     println!(
         "  {} {}",
-        "Run:".dimmed(),
-        format!("nvm use {}", target_version).yellow().bold()
+        T("run_label").dimmed(),
+        format_t("run_command", &[target_version.to_string()]).yellow().bold()
     );
 
     Ok(())
@@ -982,7 +982,7 @@ fn download_prebuilt_npm(version_dir: &Path, version: &str) -> Result<()> {
         let mut src = pb.wrap_read(response);
         let mut dest = std::fs::File::create(&npm_tar_path)?;
         std::io::copy(&mut src, &mut dest).context("Failed to write npm tarball")?;
-        pb.finish_with_message("Done");
+        pb.finish_with_message(T("progress_done"));
     }
 
     // Extract npm tarball into lib/node_modules
