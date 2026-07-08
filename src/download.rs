@@ -4,7 +4,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{copy, Write};
 use std::path::{Path, PathBuf};
 
-use crate::i18n::T;
+use crate::i18n::{T, format_t};
 use crate::proxy::build_http_client;
 use crate::system::{ensure_cache_dir, get_cache_dir};
 
@@ -59,9 +59,9 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
         req = req.header("Range", format!("bytes={}-", start_offset));
     }
 
-    let response = req.send().context("Download failed")?;
+    let response = req.send().context(T("download_failed"))?;
     if !response.status().is_success() {
-        anyhow::bail!("Download failed: HTTP {}", response.status());
+        anyhow::bail!("{}", format_t("download_http_failed", &[response.status().to_string()]));
     }
 
     let supports_resume = start_offset > 0 && response.status().as_u16() == 206;
@@ -88,9 +88,9 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
         OpenOptions::new()
             .append(true)
             .open(&part_path)
-            .context("Cannot open .part for append")?
+            .context(T("cannot_open_part_append"))?
     } else {
-        File::create(&part_path).context("Cannot create .part file")?
+        File::create(&part_path).context(T("cannot_create_part"))?
     };
 
     // Progress bar starts at the resume offset so the user sees it continue.
@@ -104,7 +104,7 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
     );
 
     let mut source = pb.wrap_read(response);
-    copy(&mut source, &mut dest_file).context("Write failed")?;
+    copy(&mut source, &mut dest_file).context(T("write_failed"))?;
     dest_file.flush().ok();
 
     pb.finish_with_message(T("progress_done"));
@@ -113,7 +113,7 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
     // visible to the cache-hit check above; on failure the .part is left in
     // place so the next attempt can resume again.
     fs::rename(&part_path, &cache_path)
-        .with_context(|| format!("Cannot rename .part to {}", cache_path.display()))?;
+        .with_context(|| format_t("cannot_rename_part", &[cache_path.display().to_string()]))?;
 
     println!("  {}", T("cached_saved"));
     Ok(cache_path)
@@ -123,9 +123,9 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
 pub fn copy_from_cache(filename: &str, dest: &Path) -> Result<()> {
     let cache_path = get_cache_dir().join(filename);
     if !cache_path.exists() {
-        anyhow::bail!("File not found in cache: {}", filename);
+        anyhow::bail!("{}", format_t("file_not_in_cache", &[filename.to_string()]));
     }
-    fs::copy(&cache_path, dest).context("Failed to copy from cache")?;
+    fs::copy(&cache_path, dest).context(T("copy_from_cache_failed"))?;
     Ok(())
 }
 

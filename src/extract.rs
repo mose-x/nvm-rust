@@ -10,16 +10,16 @@ use crate::system::os_type_name;
 pub fn extract_archive(archive_path: &Path, dest_dir: &Path, version: &str) -> Result<()> {
     println!("{}", T("extracting"));
 
-    fs::create_dir_all(dest_dir).context("Cannot create directory")?;
+    fs::create_dir_all(dest_dir).context(T("cannot_create_dir"))?;
 
-    let file = File::open(archive_path).context("Cannot open archive")?;
+    let file = File::open(archive_path).context(T("cannot_open_archive"))?;
 
     #[cfg(target_os = "windows")]
     {
         let _ = file; // .7z path reads via path, not the opened File handle.
         // Pure-Rust 7z decompression — no external 7z.exe needed.
         sevenz_rust::decompress_file(archive_path, dest_dir)
-            .map_err(|e| anyhow::anyhow!("Extraction failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("{}", crate::i18n::format_t("extraction_failed", &[e.to_string()])))?;
 
         let extracted = dest_dir.join(format!("node-{}-win-x64", version));
         if extracted.exists() {
@@ -31,7 +31,7 @@ pub fn extract_archive(archive_path: &Path, dest_dir: &Path, version: &str) -> R
     {
         let decoder = XzDecoder::new(file);
         let mut archive = Archive::new(decoder);
-        archive.unpack(dest_dir).context("Extraction failed")?;
+        archive.unpack(dest_dir).context(T("extraction_failed_short"))?;
 
         let extracted = dest_dir.join(format!("node-{}-{}-x64", version, os_type_name()));
         if extracted.exists() {
@@ -46,21 +46,21 @@ pub fn extract_archive(archive_path: &Path, dest_dir: &Path, version: &str) -> R
 pub fn extract_iojs_archive(archive_path: &Path, dest_dir: &Path, version: &str) -> Result<()> {
     println!("{}", T("extracting"));
 
-    fs::create_dir_all(dest_dir).context("Cannot create directory")?;
+    fs::create_dir_all(dest_dir).context(T("cannot_create_dir"))?;
 
     let ver_num = version
         .trim_start_matches("iojs-v")
         .trim_start_matches("io.js-v")
         .trim_start_matches('v');
 
-    let file = File::open(archive_path).context("Cannot open archive")?;
+    let file = File::open(archive_path).context(T("cannot_open_archive"))?;
 
     #[cfg(target_os = "windows")]
     {
         let _ = file; // .7z path reads via path, not the opened File handle.
         // Pure-Rust 7z decompression — no external 7z.exe needed.
         sevenz_rust::decompress_file(archive_path, dest_dir)
-            .map_err(|e| anyhow::anyhow!("Extraction failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("{}", crate::i18n::format_t("extraction_failed", &[e.to_string()])))?;
 
         let extracted = dest_dir.join(format!("iojs-v{}-win-x64", ver_num));
         if extracted.exists() {
@@ -72,7 +72,7 @@ pub fn extract_iojs_archive(archive_path: &Path, dest_dir: &Path, version: &str)
     {
         let decoder = XzDecoder::new(file);
         let mut archive = Archive::new(decoder);
-        archive.unpack(dest_dir).context("Extraction failed")?;
+        archive.unpack(dest_dir).context(T("extraction_failed_short"))?;
 
         let extracted = dest_dir.join(format!("iojs-v{}-{}-x64", ver_num, os_type_name()));
         if extracted.exists() {

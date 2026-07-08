@@ -375,6 +375,46 @@ help_root_commands = "子命令："
 help_root_print_help = "显示此消息或指定子命令的帮助"
 help_version_flag = "显示版本号"
 
+# --- i18n audit: previously hardcoded strings ---
+# Proxy status states
+proxy_state_on = "开"
+proxy_state_off = "关"
+# Remote version listing total count
+remote_total_count = "（共 {0} 个）"
+# OS check
+unsupported_os = "不支持的操作系统：{0}"
+# Download errors
+download_failed = "下载失败"
+download_http_failed = "下载失败：HTTP {0}"
+file_not_in_cache = "缓存中找不到文件：{0}"
+cannot_open_part_append = "无法以追加模式打开 .part 文件"
+cannot_create_part = "无法创建 .part 文件"
+write_failed = "写入失败"
+cannot_rename_part = "无法将 .part 重命名为 {0}"
+# Extraction errors
+extraction_failed = "解压失败：{0}"
+extraction_failed_short = "解压失败"
+cannot_create_dir = "无法创建目录"
+cannot_open_archive = "无法打开归档文件"
+# Source build spawn errors
+tar_extract_failed = "tar 解压失败"
+configure_spawn_failed = "configure 失败：需要 Python 3 和 C++ 编译器"
+# Package manager upgrade
+package_upgrade_spawn_failed = "{0} 升级失败"
+list_global_packages_failed = "无法列出全局包"
+copy_from_cache_failed = "无法从缓存复制"
+# npm tarball
+npm_tarball_download_failed = "无法下载 npm tarball"
+npm_tarball_write_failed = "无法写入 npm tarball"
+npm_extract_failed = "无法解压 npm tarball"
+# Version lifecycle
+uninstall_failed = "卸载失败"
+cannot_write_current = "无法写入 current 版本文件"
+execution_failed = "执行失败"
+copy_version_dir_failed = "无法复制版本目录"
+cannot_create_nvm_dir = "无法创建 nvm 目录"
+cannot_update_shell_config = "无法更新 shell 配置"
+
 [_meta]
 display_name = "中文"
 aliases = ["zh", "zh-cn", "zh-hans", "chinese", "中文"]

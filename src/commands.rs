@@ -210,7 +210,7 @@ fn version_codename_colored(version: &str) -> String {
 
 fn version_lts_colored(version: &str) -> String {
     if is_lts_version(version) {
-        "✓ LTS".green().to_string()
+        T("lts_badge").green().to_string()
     } else {
         "".to_string()
     }
@@ -407,7 +407,7 @@ pub fn install(
         println!("  {} {}", "›".dimmed(), T("source_extract"));
         let status = Command::new("tar")
             .arg("xf").arg(&src_tmp).arg("-C").arg(&build_dir).arg("--strip-components=1")
-            .status().context("tar extraction failed")?;
+            .status().context(T("tar_extract_failed"))?;
         if !status.success() { anyhow::bail!("{}", T("extract_source_failed")); }
         fs::remove_file(&src_tmp).ok();
 
@@ -416,17 +416,17 @@ pub fn install(
             .arg(format!("--prefix={}", version_dir.display()))
             .current_dir(&build_dir)
             .status()
-            .context("configure failed: need Python 3 and a C++ compiler")?;
+            .context(T("configure_spawn_failed"))?;
         if !cfg.success() { anyhow::bail!("{}", T("configure_failed")); }
 
         println!("  {} {}", "›".dimmed(), format_t("source_make", &[ncpus.to_string()]));
         let m = Command::new("make").args(["-j", &ncpus.to_string()])
-            .current_dir(&build_dir).status().context("make failed")?;
+            .current_dir(&build_dir).status().context(T("make_failed"))?;
         if !m.success() { anyhow::bail!("{}", T("make_failed")); }
 
         println!("  {} {}", "›".dimmed(), T("source_install"));
         let mi = Command::new("make").arg("install")
-            .current_dir(&build_dir).status().context("make install failed")?;
+            .current_dir(&build_dir).status().context(T("make_install_failed"))?;
         if !mi.success() { anyhow::bail!("{}", T("make_install_failed")); }
 
         fs::remove_dir_all(&build_dir).ok();
@@ -460,7 +460,7 @@ pub fn install(
         } else {
             let cached_path = download_to_cache(&download_url, &archive_name)?;
             if cached_path != temp_file {
-                fs::copy(&cached_path, &temp_file).context("Failed to copy from cache")?;
+                fs::copy(&cached_path, &temp_file).context(T("copy_from_cache_failed"))?;
             }
         }
 
@@ -606,7 +606,7 @@ fn install_latest_package_inner(version: &str, package: &str) -> Result<()> {
         .args(["install", "-g", &pkg_spec])
         .env("PATH", &path_env)
         .status()
-        .context(format!("{} upgrade failed", package))?;
+        .context(format_t("package_upgrade_spawn_failed", &[package.to_string()]))?;
     if status.success() {
         println!(
             "    {} {}",
@@ -635,7 +635,7 @@ fn install_latest_package_inner(version: &str, package: &str) -> Result<()> {
             .arg(version_dir.display().to_string())
             .env("PATH", &path_env)
             .status()
-            .context("npm upgrade failed")?;
+            .context(T("npm_upgrade_failed"))?;
         if status.success() {
             println!(
                 "    {} {}",
@@ -675,7 +675,7 @@ fn reinstall_packages_inner(from: &str, to: &str) -> Result<()> {
             ),
         )
         .output()
-        .context("Failed to list global packages")?;
+        .context(T("list_global_packages_failed"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_default();
@@ -967,7 +967,7 @@ fn download_prebuilt_npm(version_dir: &Path, version: &str) -> Result<()> {
         let response = client
             .get(&npm_url)
             .send()
-            .context("Failed to download npm tarball")?;
+            .context(T("npm_tarball_download_failed"))?;
         if !response.status().is_success() {
             anyhow::bail!("{}", format_t("npm_download_failed", &[npm_url.clone()]));
         }
@@ -981,7 +981,7 @@ fn download_prebuilt_npm(version_dir: &Path, version: &str) -> Result<()> {
         );
         let mut src = pb.wrap_read(response);
         let mut dest = std::fs::File::create(&npm_tar_path)?;
-        std::io::copy(&mut src, &mut dest).context("Failed to write npm tarball")?;
+        std::io::copy(&mut src, &mut dest).context(T("npm_tarball_write_failed"))?;
         pb.finish_with_message(T("progress_done"));
     }
 
@@ -996,9 +996,9 @@ fn download_prebuilt_npm(version_dir: &Path, version: &str) -> Result<()> {
         .arg(&node_modules)
         .arg("--strip-components=1")
         .status()
-        .context("Failed to extract npm tarball")?;
+        .context(T("npm_extract_failed"))?;
     if !status.success() {
-        anyhow::bail!("Failed to extract npm tarball");
+        anyhow::bail!("{}", T("npm_extract_failed"));
     }
 
     // Symlink bin
@@ -1038,7 +1038,7 @@ pub fn uninstall(version: &str) -> Result<()> {
 
     print!("{} {} ", "▶".red().bold(), T("uninstalling_label").red().bold());
     print!("{}", resolved.white().bold());
-    fs::remove_dir_all(&version_dir).context("Uninstall failed")?;
+    fs::remove_dir_all(&version_dir).context(T("uninstall_failed"))?;
     println!(" {}", "✓".green().bold());
 
     // Clear `current` if we just removed the active version, so subsequent
@@ -1242,10 +1242,10 @@ pub fn remote_versions(lts_only: bool, lts_old: bool, filter: Option<&str>, sort
     // Navigation hints
     let mut nav_parts: Vec<String> = Vec::new();
     if page_num > 1 {
-        nav_parts.push(format!("{} {}", "←".yellow().bold(), format!("nvm remote {}", page_num - 1).yellow()));
+        nav_parts.push(format_t("prev_page", &[(page_num - 1).to_string()]).yellow().to_string());
     }
     if page_num < total_pages {
-        nav_parts.push(format!("{} {}", format!("nvm remote {}", page_num + 1).yellow(), "→".yellow().bold()));
+        nav_parts.push(format_t("next_page", &[(page_num + 1).to_string()]).yellow().to_string());
     }
     if !nav_parts.is_empty() {
         println!("  {}", nav_parts.join("    "));
@@ -1303,7 +1303,7 @@ pub fn use_version_silent(
 
     if resolved.starts_with("system:") {
         let current_file = nvm_dir.join("current");
-        fs::write(&current_file, &resolved).context("Cannot write current version")?;
+        fs::write(&current_file, &resolved).context(T("cannot_write_current"))?;
         if !silent {
             println!(
                 "{} {} {}",
@@ -1341,7 +1341,7 @@ pub fn use_version_silent(
     }
 
     let current_file = nvm_dir.join("current");
-    fs::write(&current_file, &resolved).context("Cannot write current version")?;
+    fs::write(&current_file, &resolved).context(T("cannot_write_current"))?;
 
     // Determine if cd hook should be written: explicit --use-on-cd or config has it on
     let cd_hook = if use_on_cd {
@@ -1608,7 +1608,7 @@ pub fn run_version(version: &str, args: &[String]) -> Result<()> {
     let status = Command::new(&node_path)
         .args(args)
         .status()
-        .context("Execution failed")?;
+        .context(T("execution_failed"))?;
 
     std::process::exit(status.code().unwrap_or(1));
 }
@@ -1664,7 +1664,7 @@ pub fn exec_version(version: &str, args: &[String]) -> Result<()> {
             if e.kind() == std::io::ErrorKind::NotFound {
                 anyhow::anyhow!("{}", format_t("exec_command_not_found", &[cmd.clone()]))
             } else {
-                anyhow::Error::new(e).context("Execution failed")
+                anyhow::Error::new(e).context(T("execution_failed"))
             }
         })?;
 
@@ -2224,15 +2224,13 @@ pub fn show_remote_version_info() -> Result<()> {
     print!("  ");
     print!("{}", T("latest_remote_versions").cyan().bold());
     print!("  ");
-    print!("{}", "(".dimmed());
-    print!("{}", versions.len().to_string().white().bold());
-    print!("{}", " total)".dimmed());
+    print!("{}", format_t("remote_total_count", &[versions.len().to_string()]).dimmed());
     println!();
 
     for v in versions.iter().take(5) {
         let is_lts = is_lts_version(v);
         let lts_mark = if is_lts {
-            format!("  {} ", "✓ LTS".green())
+            format!("  {} ", T("lts_badge").green())
         } else {
             "       ".to_string()
         };
@@ -2401,9 +2399,9 @@ pub fn cmd_proxy(action: Option<&str>) -> Result<()> {
 
             // NVM proxy toggle
             let nvm_state = if status.nvm_proxy_enabled {
-                "ON".green().bold().to_string()
+                T("proxy_state_on").green().bold().to_string()
             } else {
-                "OFF".red().bold().to_string()
+                T("proxy_state_off").red().bold().to_string()
             };
             println!(
                 "    {} {}{}",
@@ -2516,7 +2514,7 @@ fn import_version(src: &Path, dest: &Path) -> Result<bool> {
         return Ok(false);
     }
 
-    copy_dir_recursive(src, dest).context("Failed to copy version directory")?;
+    copy_dir_recursive(src, dest).context(T("copy_version_dir_failed"))?;
     Ok(true)
 }
 
@@ -2742,7 +2740,7 @@ fn detect_nvm_sh_default(nvm_sh_root: &Path) -> Option<String> {
 fn ensure_nvm_dir_or_fail() -> Result<()> {
     let nvm_dir = get_nvm_dir();
     if !nvm_dir.exists() {
-        fs::create_dir_all(&nvm_dir).context("Cannot create nvm directory")?;
+        fs::create_dir_all(&nvm_dir).context(T("cannot_create_nvm_dir"))?;
     }
     Ok(())
 }

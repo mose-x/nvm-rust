@@ -375,6 +375,46 @@ help_root_commands = "Commands:"
 help_root_print_help = "Print this message or the help of the given subcommand(s)"
 help_version_flag = "Print version"
 
+# --- i18n audit: previously hardcoded strings ---
+# Proxy status states
+proxy_state_on = "ON"
+proxy_state_off = "OFF"
+# Remote version listing total count
+remote_total_count = "({0} total)"
+# OS check
+unsupported_os = "Unsupported operating system: {0}"
+# Download errors
+download_failed = "Download failed"
+download_http_failed = "Download failed: HTTP {0}"
+file_not_in_cache = "File not found in cache: {0}"
+cannot_open_part_append = "Cannot open .part for append"
+cannot_create_part = "Cannot create .part file"
+write_failed = "Write failed"
+cannot_rename_part = "Cannot rename .part to {0}"
+# Extraction errors
+extraction_failed = "Extraction failed: {0}"
+extraction_failed_short = "Extraction failed"
+cannot_create_dir = "Cannot create directory"
+cannot_open_archive = "Cannot open archive"
+# Source build spawn errors
+tar_extract_failed = "tar extraction failed"
+configure_spawn_failed = "configure failed: need Python 3 and a C++ compiler"
+# Package manager upgrade
+package_upgrade_spawn_failed = "{0} upgrade failed"
+list_global_packages_failed = "Failed to list global packages"
+copy_from_cache_failed = "Failed to copy from cache"
+# npm tarball
+npm_tarball_download_failed = "Failed to download npm tarball"
+npm_tarball_write_failed = "Failed to write npm tarball"
+npm_extract_failed = "Failed to extract npm tarball"
+# Version lifecycle
+uninstall_failed = "Uninstall failed"
+cannot_write_current = "Cannot write current version"
+execution_failed = "Execution failed"
+copy_version_dir_failed = "Failed to copy version directory"
+cannot_create_nvm_dir = "Cannot create nvm directory"
+cannot_update_shell_config = "Cannot update shell config"
+
 [_meta]
 display_name = "English"
 aliases = ["en-us", "english"]

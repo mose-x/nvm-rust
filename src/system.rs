@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use sysinfo::System;
 
+use crate::i18n::format_t;
 use crate::proxy::build_http_client;
 
 pub const URI: &str = "https://nodejs.org/dist/";
@@ -39,7 +40,7 @@ pub fn os_check() {
     match os_name.as_str() {
         "Windows" | "Linux" | "Ubuntu" | "Darwin" => {}
         _ => {
-            eprintln!("Unsupported operating system: {}", os_name);
+            eprintln!("{}", format_t("unsupported_os", &[os_name.clone()]));
             std::process::exit(1);
         }
     }

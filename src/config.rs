@@ -600,7 +600,7 @@ pub fn update_shell_config(version: &str, use_on_cd: bool) -> Result<()> {
         new_config.push_str(&cd_hook_code(shell_type));
     }
 
-    fs::write(config_path, new_config).context("Cannot update shell config")?;
+    fs::write(config_path, new_config).context(T("cannot_update_shell_config"))?;
 
     Ok(())
 }
