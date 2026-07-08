@@ -2178,23 +2178,55 @@ pub fn show_version_info() -> Result<()> {
         Some(v) => {
             let nvm_dir = get_nvm_dir();
             let bin = nvm_dir.join(&v).join("bin");
+            let node_bin = bin.join("node");
             println!(
                 "{} {}",
                 T("active_node_label").green().bold(),
                 v.white().bold()
             );
-            if let Ok(out) = Command::new(bin.join("node")).arg("--version").output() {
-                println!(
-                    "  {} {}",
-                    T("node_label").dimmed(),
-                    String::from_utf8_lossy(&out.stdout).trim().white()
-                );
+
+            // LTS badge + codename (cheap, no spawn).
+            if is_lts_version(&v) {
+                let codename = get_codename(&v);
+                let codename_str = if codename == "-" {
+                    String::new()
+                } else {
+                    format!("  {} {}", T("version_codename_label").dimmed(), codename.magenta().bold())
+                };
+                println!("  {}{}", T("lts_badge").green(), codename_str);
             }
-            if let Ok(out) = Command::new(bin.join("npm")).arg("--version").output() {
+
+            // Single node invocation to get both node and npm versions.
+            // `process.versions.npm` is undefined when npm is absent, so guard
+            // with a ternary and emit a marker the caller can detect.
+            if let Ok(out) = Command::new(&node_bin)
+                .arg("-p")
+                .arg("process.version + '|' + (process.versions.npm || 'none')")
+                .output()
+            {
+                let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if let Some((node_ver, npm_ver)) = line.split_once('|') {
+                    println!(
+                        "  {} {}",
+                        T("node_label").dimmed(),
+                        node_ver.white()
+                    );
+                    if npm_ver != "none" {
+                        println!(
+                            "  {} {}",
+                            T("npm_label").dimmed(),
+                            npm_ver.white()
+                        );
+                    }
+                }
+            }
+
+            // Binary path (reuse which-style output, no extra spawn).
+            if node_bin.exists() {
                 println!(
                     "  {} {}",
-                    T("npm_label").dimmed(),
-                    String::from_utf8_lossy(&out.stdout).trim().white()
+                    T("version_path_label").dimmed(),
+                    node_bin.display().to_string().white()
                 );
             }
         }
