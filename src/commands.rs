@@ -2196,27 +2196,57 @@ pub fn show_version_info() -> Result<()> {
                 println!("  {}{}", T("lts_badge").green(), codename_str);
             }
 
-            // Single node invocation to get both node and npm versions.
-            // `process.versions.npm` is undefined when npm is absent, so guard
-            // with a ternary and emit a marker the caller can detect.
+            // Single node invocation to get node + npm + yarn + pnpm versions.
+            // Each tool is probed via require.resolve: if the package is
+            // installed globally (in node_modules), resolve returns its path
+            // and we read the version from require().version; otherwise we
+            // emit "none" so the caller can show an install hint.
+            let probe_script = concat!(
+                "(",
+                "function(){",
+                "function v(name){",
+                "try{",
+                "var p=require.resolve(name+'/package.json');",
+                "return require(p).version||'none';",
+                "}catch(e){return 'none'}",
+                "}",
+                "return [process.version,",
+                "(process.versions.npm||'none'),",
+                "v('yarn'),v('pnpm')].join('|')",
+                "}()",
+                ")"
+            );
             if let Ok(out) = Command::new(&node_bin)
-                .arg("-p")
-                .arg("process.version + '|' + (process.versions.npm || 'none')")
+                .arg("-e")
+                .arg(probe_script)
                 .output()
             {
                 let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if let Some((node_ver, npm_ver)) = line.split_once('|') {
-                    println!(
-                        "  {} {}",
-                        T("node_label").dimmed(),
-                        node_ver.white()
-                    );
-                    if npm_ver != "none" {
-                        println!(
-                            "  {} {}",
-                            T("npm_label").dimmed(),
-                            npm_ver.white()
-                        );
+                let parts: Vec<&str> = line.split('|').collect();
+                if parts.len() == 4 {
+                    // node
+                    println!("  {} {}", T("node_label").dimmed(), parts[0].white());
+                    // npm
+                    if parts[1] != "none" {
+                        println!("  {} {}", T("npm_label").dimmed(), parts[1].white());
+                    }
+                    // yarn
+                    if parts[2] != "none" {
+                        println!("  {} {}", T("yarn_label").dimmed(), parts[2].white());
+                    } else {
+                        println!("  {} {} {}",
+                            T("yarn_label").dimmed(),
+                            T("version_not_installed").yellow(),
+                            T("version_install_hint_yarn").dimmed());
+                    }
+                    // pnpm
+                    if parts[3] != "none" {
+                        println!("  {} {}", T("pnpm_label").dimmed(), parts[3].white());
+                    } else {
+                        println!("  {} {} {}",
+                            T("pnpm_label").dimmed(),
+                            T("version_not_installed").yellow(),
+                            T("version_install_hint_pnpm").dimmed());
                     }
                 }
             }
