@@ -241,6 +241,7 @@ fn get_base_url(config: &Config) -> &str {
     config.mirror.as_deref().unwrap_or(URI)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn install(
     version: Option<String>,
     lts: bool,
@@ -311,7 +312,7 @@ pub fn install(
                 println!(
                     "{} {}",
                     "ℹ".cyan().bold(),
-                    format_t("already_installed", &[target.clone()]).cyan()
+                    format_t("already_installed", std::slice::from_ref(&target)).cyan()
                 );
                 println!(
                     "  {} {}",
@@ -364,7 +365,7 @@ pub fn install(
             println!(
                 "{} {}",
                 "ℹ".cyan().bold(),
-                format_t("already_installed", &[target_version.clone()]).cyan()
+                format_t("already_installed", std::slice::from_ref(&target_version)).cyan()
             );
             println!(
                 "  {} {}",
@@ -390,7 +391,7 @@ pub fn install(
             if !is_cached(&archive_name) {
                 anyhow::bail!(
                     "{}",
-                    format_t("offline_source_no_cache", &[archive_name.clone()])
+                    format_t("offline_source_no_cache", std::slice::from_ref(&archive_name))
                 );
             }
             println!("  {} {}", "ℹ".cyan().bold(), T("using_cache").cyan());
@@ -442,7 +443,7 @@ pub fn install(
             "{} {} {}",
             "✓".green().bold(),
             product_name.green().bold(),
-            format_t("compiled", &[target_version.clone()]).white().bold()
+            format_t("compiled", std::slice::from_ref(&target_version)).white().bold()
         );
     } else {
         // Binary install
@@ -504,7 +505,7 @@ pub fn install(
             "{} {} {}",
             "✓".green().bold(),
             product_name.green().bold(),
-            format_t("installed_exclaim", &[target_version.clone()]).white().bold()
+            format_t("installed_exclaim", std::slice::from_ref(&target_version)).white().bold()
         );
     }
 
@@ -576,11 +577,11 @@ fn install_latest_package_inner(version: &str, package: &str) -> Result<()> {
     let resolved = version.to_string();
     let version_dir = nvm_dir.join(&resolved);
     if !version_dir.exists() {
-        anyhow::bail!("{}", format_t("not_installed", &[resolved.clone()]));
+        anyhow::bail!("{}", format_t("not_installed", std::slice::from_ref(&resolved)));
     }
     let npm_path = version_dir.join("bin").join("npm");
     if !npm_path.exists() {
-        anyhow::bail!("{}", format_t("version_no_npm", &[resolved.clone()]));
+        anyhow::bail!("{}", format_t("version_no_npm", std::slice::from_ref(&resolved)));
     }
     // Per-package i18n keys so each tool reports its own name in messages.
     let (upgrading_key, upgraded_key, failed_key) = match package {
@@ -591,7 +592,7 @@ fn install_latest_package_inner(version: &str, package: &str) -> Result<()> {
     println!(
         "  {} {}",
         "▶".cyan().bold(),
-        format_t(upgrading_key, &[resolved.clone()]).cyan()
+        format_t(upgrading_key, std::slice::from_ref(&resolved)).cyan()
     );
     let path_env = format!(
         "{}:{}",
@@ -741,7 +742,7 @@ fn resolve_version(input: &str, base_url: &str) -> Result<String> {
     if input.starts_with('v') && input.matches('.').count() >= 2 {
         return Ok(input.to_string());
     }
-    if input.matches('.').count() >= 2 && input.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+    if input.matches('.').count() >= 2 && input.chars().next().is_some_and(|c| c.is_ascii_digit()) {
         return Ok(format!("v{}", input));
     }
 
@@ -969,7 +970,7 @@ fn download_prebuilt_npm(version_dir: &Path, version: &str) -> Result<()> {
             .send()
             .context(T("npm_tarball_download_failed"))?;
         if !response.status().is_success() {
-            anyhow::bail!("{}", format_t("npm_download_failed", &[npm_url.clone()]));
+            anyhow::bail!("{}", format_t("npm_download_failed", std::slice::from_ref(&npm_url)));
         }
         let total = response.content_length().unwrap_or(0);
         let pb = ProgressBar::new(total);
@@ -1021,7 +1022,7 @@ pub fn uninstall(version: &str) -> Result<()> {
     let version_dir = nvm_dir.join(&resolved);
 
     if !version_dir.exists() {
-        anyhow::bail!("{}", format_t("not_installed", &[resolved.clone()]));
+        anyhow::bail!("{}", format_t("not_installed", std::slice::from_ref(&resolved)));
     }
 
     let is_current_active = match get_current_version()? {
@@ -1323,14 +1324,14 @@ pub fn use_version_silent(
                     "{} {} {}",
                     "ℹ".cyan().bold(),
                     T("version").cyan(),
-                    format_t("version_not_installed_installing", &[resolved.clone()]).cyan()
+                    format_t("version_not_installed_installing", std::slice::from_ref(&resolved)).cyan()
                 );
             }
             // Install the version
             install(Some(resolved.clone()), false, false, false, false, None, false, false, false, false, false)?;
             // Check if installation succeeded
             if !nvm_dir.join(&resolved).exists() {
-                anyhow::bail!("{}", format_t("install_failed", &[resolved.clone()]));
+                anyhow::bail!("{}", format_t("install_failed", std::slice::from_ref(&resolved)));
             }
         } else {
             anyhow::bail!(
@@ -1364,7 +1365,7 @@ pub fn use_version_silent(
             println!(
                 "  {} {}",
                 "✓".green().bold(),
-                format_t("default_saved", &[resolved.clone()]).green()
+                format_t("default_saved", std::slice::from_ref(&resolved)).green()
             );
         }
     }
@@ -1602,7 +1603,7 @@ pub fn run_version(version: &str, args: &[String]) -> Result<()> {
     };
 
     if !resolved.starts_with("system:") && !node_path.exists() {
-        anyhow::bail!("{}", format_t("not_installed", &[resolved.clone()]));
+        anyhow::bail!("{}", format_t("not_installed", std::slice::from_ref(&resolved)));
     }
 
     let status = Command::new(&node_path)
@@ -1662,7 +1663,7 @@ pub fn exec_version(version: &str, args: &[String]) -> Result<()> {
         .status()
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                anyhow::anyhow!("{}", format_t("exec_command_not_found", &[cmd.clone()]))
+                anyhow::anyhow!("{}", format_t("exec_command_not_found", std::slice::from_ref(cmd)))
             } else {
                 anyhow::Error::new(e).context(T("execution_failed"))
             }
@@ -1695,7 +1696,7 @@ pub fn which_version(version: Option<&str>) -> Result<()> {
     let node_path = nvm_dir.join(&resolved).join("bin").join("node");
 
     if !node_path.exists() {
-        anyhow::bail!("{}", format_t("not_installed", &[resolved.clone()]));
+        anyhow::bail!("{}", format_t("not_installed", std::slice::from_ref(&resolved)));
     }
 
     println!("{}", node_path.display().to_string().white().bold());
@@ -1785,10 +1786,10 @@ fn find_nvmrc_recursive(silent: bool) -> Result<Option<String>> {
 /// Find Node.js version from package.json engines.node field.
 ///
 /// `engines.node` may be:
-///   - a bare version:        `"22.0.0"` or `"v22.0.0"`
-///   - a range expression:    `">=18.0.0"`, `"^20.11.0"`, `"~22.0.0"`,
-///                            `"22.x"`, `"22 || 20"`, etc.
-///   - the wildcard `"*"` / `"x"` / `""`  (no preference)
+/// - a bare version:        `"22.0.0"` or `"v22.0.0"`
+/// - a range expression:    `">=18.0.0"`, `"^20.11.0"`, `"~22.0.0"`,
+///   `"22.x"`, `"22 || 20"`, etc.
+/// - the wildcard `"*"` / `"x"` / `""`  (no preference)
 ///
 /// For ranges we pick the newest locally installed version that satisfies the
 /// range. If none is installed we return the range expression itself verbatim,
@@ -2108,7 +2109,7 @@ fn get_installed_version(version: &str) -> Result<String> {
     let nvm_dir = get_nvm_dir();
     let version_dir = nvm_dir.join(&resolved);
     if !version_dir.exists() {
-        anyhow::bail!("{}", format_t("not_installed", &[resolved.clone()]));
+        anyhow::bail!("{}", format_t("not_installed", std::slice::from_ref(&resolved)));
     }
     Ok(resolved)
 }
@@ -2159,7 +2160,7 @@ pub fn reinstall_packages(from_version: &str) -> Result<()> {
     let nvm_dir = get_nvm_dir();
     let from_dir = nvm_dir.join(&resolved_from);
     if !from_dir.exists() {
-        anyhow::bail!("{}", format_t("source_not_installed", &[resolved_from.clone()]));
+        anyhow::bail!("{}", format_t("source_not_installed", std::slice::from_ref(&resolved_from)));
     }
     let current = get_current_version()?
         .ok_or_else(|| anyhow::anyhow!("{}", T("no_current_version_set")))?;

@@ -103,24 +103,19 @@ pub fn parse_major(version: &str) -> Option<u32> {
 /// - `iojs-vX.Y.Z` / `iojs-X.Y.Z`
 /// - `io.js-vX.Y.Z` / `io.js-X.Y.Z`
 pub fn is_version_dir_name(name: &str) -> bool {
-    if name.starts_with("iojs-v") {
-        let rest = &name[6..];
+    if let Some(rest) = name.strip_prefix("iojs-v") {
         return !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit() || c == '.');
     }
-    if name.starts_with("iojs-") {
-        let rest = &name[5..];
+    if let Some(rest) = name.strip_prefix("iojs-") {
         return !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit() || c == '.');
     }
-    if name.starts_with("io.js-v") {
-        let rest = &name[7..];
+    if let Some(rest) = name.strip_prefix("io.js-v") {
         return !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit() || c == '.');
     }
-    if name.starts_with("io.js-") {
-        let rest = &name[6..];
+    if let Some(rest) = name.strip_prefix("io.js-") {
         return !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit() || c == '.');
     }
-    if name.starts_with('v') {
-        let rest = &name[1..];
+    if let Some(rest) = name.strip_prefix('v') {
         return !rest.is_empty()
             && rest.chars().all(|c| c.is_ascii_digit() || c == '.')
             && rest.chars().any(|c| c.is_ascii_digit());

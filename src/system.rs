@@ -40,7 +40,7 @@ pub fn os_check() {
     match os_name.as_str() {
         "Windows" | "Linux" | "Ubuntu" | "Darwin" => {}
         _ => {
-            eprintln!("{}", format_t("unsupported_os", &[os_name.clone()]));
+            eprintln!("{}", format_t("unsupported_os", std::slice::from_ref(&os_name)));
             std::process::exit(1);
         }
     }
@@ -315,8 +315,8 @@ pub fn verify_gpg_signature(
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let needs_keys =
         stderr.contains("No public key") || stderr.contains("public key not found");
-    if needs_keys {
-        if import_nodejs_release_keys() {
+    if needs_keys
+        && import_nodejs_release_keys() {
             output = match run_verify() {
                 Ok(o) => o,
                 Err(_) => {
@@ -326,7 +326,6 @@ pub fn verify_gpg_signature(
                 }
             };
         }
-    }
 
     fs::remove_file(&sig_path).ok();
     fs::remove_file(&sums_path).ok();

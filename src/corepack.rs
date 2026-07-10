@@ -15,7 +15,7 @@ pub fn corepack_status(version: Option<&str>) -> anyhow::Result<()> {
             let node_path = nvm_dir.join(&resolved).join("bin").join("node");
 
             if !node_path.exists() {
-                anyhow::bail!("{}", format_t("not_installed", &[resolved.clone()]));
+                anyhow::bail!("{}", format_t("not_installed", std::slice::from_ref(&resolved)));
             }
 
             let corepack_path = nvm_dir.join(&resolved).join("bin").join("corepack");
@@ -29,7 +29,7 @@ pub fn corepack_status(version: Option<&str>) -> anyhow::Result<()> {
                     resolved.white().bold()
                 );
                 println!();
-                println!("  {}: {}", T("tip_label").dimmed(), format_t("corepack_install_tip", &[resolved.clone()]));
+                println!("  {}: {}", T("tip_label").dimmed(), format_t("corepack_install_tip", std::slice::from_ref(&resolved)));
                 return Ok(());
             }
 
@@ -56,7 +56,7 @@ pub fn corepack_status(version: Option<&str>) -> anyhow::Result<()> {
                 println!(
                     "  {} {}",
                     T("tip_label").dimmed(),
-                    format_t("corepack_install_tip", &[resolved.clone()]).dimmed()
+                    format_t("corepack_install_tip", std::slice::from_ref(&resolved)).dimmed()
                 );
             } else {
                 println!(
@@ -134,7 +134,7 @@ pub fn corepack_enable(version: Option<&str>) -> anyhow::Result<()> {
     let version_bin = nvm_dir.join(&resolved).join("bin");
     let node_path = version_bin.join("node");
     if !node_path.exists() {
-        anyhow::bail!("{}", format_t("not_installed", &[resolved.clone()]));
+        anyhow::bail!("{}", format_t("not_installed", std::slice::from_ref(&resolved)));
     }
 
     // `corepack enable` writes pnpm/yarn/... shims. By default it targets a
@@ -186,7 +186,7 @@ pub fn corepack_enable(version: Option<&str>) -> anyhow::Result<()> {
                 }
             }
         } else {
-            anyhow::bail!("{}", format_t("npm_not_found", &[resolved.clone()]));
+            anyhow::bail!("{}", format_t("npm_not_found", std::slice::from_ref(&resolved)));
         }
     }
 
@@ -212,7 +212,7 @@ pub fn corepack_enable(version: Option<&str>) -> anyhow::Result<()> {
             resolved.white().bold()
         );
     } else {
-        anyhow::bail!("{}", format_t("corepack_enable_failed", &[resolved.clone()]));
+        anyhow::bail!("{}", format_t("corepack_enable_failed", std::slice::from_ref(&resolved)));
     }
 
     Ok(())
@@ -234,7 +234,7 @@ pub fn corepack_disable(version: Option<&str>) -> anyhow::Result<()> {
 
     let node_path = nvm_dir.join(&resolved).join("bin").join("node");
     if !node_path.exists() {
-        anyhow::bail!("{}", format_t("not_installed", &[resolved.clone()]));
+        anyhow::bail!("{}", format_t("not_installed", std::slice::from_ref(&resolved)));
     }
 
     // First try the official `corepack disable` with an install-directory scoped

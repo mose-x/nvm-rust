@@ -88,7 +88,7 @@ pub fn set_alias(name: &str, version: Option<&str>) -> Result<()> {
             let resolved = resolve_alias(v)?;
             let version_dir = get_nvm_dir().join(&resolved);
             if !version_dir.exists() {
-                anyhow::bail!("{}", format_t("not_installed", &[resolved.clone()]));
+                anyhow::bail!("{}", format_t("not_installed", std::slice::from_ref(&resolved)));
             }
 
             aliases.aliases.insert(name.to_string(), resolved.clone());
@@ -581,11 +581,11 @@ pub fn update_shell_config(version: &str, use_on_cd: bool) -> Result<()> {
         .lines()
         .filter(|line| {
             let l = line.trim();
-            !l.contains("NVM_HOME=")
-                && !l.contains("nvm.rust")
-                && !l.contains(".nvm.rust")
-                && !l.contains("# NVM Rust")
-                && !(l.starts_with("export PATH=") && l.contains(&nvm_dir_str))
+            !(l.contains("NVM_HOME=")
+                || l.contains("nvm.rust")
+                || l.contains(".nvm.rust")
+                || l.contains("# NVM Rust")
+                || (l.starts_with("export PATH=") && l.contains(&nvm_dir_str)))
         })
         .collect();
 
@@ -629,11 +629,11 @@ pub fn remove_from_shell_config() -> Result<()> {
             .lines()
             .filter(|line| {
                 let l = line.trim();
-                !l.contains("NVM_HOME=")
-                    && !l.contains("nvm.rust")
-                    && !l.contains(".nvm.rust")
-                    && !l.contains("# NVM Rust")
-                    && !(l.starts_with("export PATH=") && l.contains(&nvm_dir_str))
+                !(l.contains("NVM_HOME=")
+                    || l.contains("nvm.rust")
+                    || l.contains(".nvm.rust")
+                    || l.contains("# NVM Rust")
+                    || (l.starts_with("export PATH=") && l.contains(&nvm_dir_str)))
             })
             .collect();
         fs::write(config_path, lines.join("\n"))?;
@@ -662,12 +662,13 @@ mod tests {
 
     #[test]
     fn test_config_serialization() {
-        let mut config = Config::default();
-        config.mirror = Some("https://example.com".to_string());
-        config.default_version = Some("v20.0.0".to_string());
-        config.language = Some("cn".to_string());
-        config.proxy = Some(true);
-        config.use_on_cd = Some(true);
+        let config = Config {
+            mirror: Some("https://example.com".to_string()),
+            default_version: Some("v20.0.0".to_string()),
+            language: Some("cn".to_string()),
+            proxy: Some(true),
+            use_on_cd: Some(true),
+        };
 
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: Config = serde_json::from_str(&json).unwrap();
