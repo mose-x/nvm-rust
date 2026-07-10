@@ -1,4 +1,4 @@
-//! Integration tests for `nvm migrate`, `nvm install-latest-npm/yarn/pnpm`,
+//! Integration tests for `nvm migrate`, `nvm install-npm/yarn/pnpm`,
 //! and `nvm reinstall-packages`.
 //!
 //! All cover offline error paths: source not found, no current version,
@@ -29,7 +29,7 @@ fn migrate_unknown_source_bails() {
     assert!(!out.status.success(), "migrate badsource should fail");
 }
 
-// --- `nvm install-latest-npm/yarn/pnpm` -----------------------------------
+// --- `nvm install-npm/yarn/pnpm` -----------------------------------
 //
 // All three share resolve_install_target(), which bails
 // `no_current_version_set` when there's no current and no default. We test
@@ -38,8 +38,8 @@ fn migrate_unknown_source_bails() {
 
 #[test]
 fn install_latest_npm_no_current_bails() {
-    let (out, _dir) = run_isolated(&["install-latest-npm"]);
-    assert!(!out.status.success(), "install-latest-npm (no current) should fail");
+    let (out, _dir) = run_isolated(&["install-npm"]);
+    assert!(!out.status.success(), "install-npm (no current) should fail");
     let s = combined_output(&out);
     assert!(
         s.to_lowercase().contains("current") || s.to_lowercase().contains("version") || s.to_lowercase().contains("no"),
@@ -49,20 +49,20 @@ fn install_latest_npm_no_current_bails() {
 
 #[test]
 fn install_latest_yarn_no_current_bails() {
-    let (out, _dir) = run_isolated(&["install-latest-yarn"]);
-    assert!(!out.status.success(), "install-latest-yarn (no current) should fail");
+    let (out, _dir) = run_isolated(&["install-yarn"]);
+    assert!(!out.status.success(), "install-yarn (no current) should fail");
 }
 
 #[test]
 fn install_latest_pnpm_no_current_bails() {
-    let (out, _dir) = run_isolated(&["install-latest-pnpm"]);
-    assert!(!out.status.success(), "install-latest-pnpm (no current) should fail");
+    let (out, _dir) = run_isolated(&["install-pnpm"]);
+    assert!(!out.status.success(), "install-pnpm (no current) should fail");
 }
 
 #[test]
 fn install_latest_npm_uninstalled_version_bails() {
-    let (out, _dir) = run_isolated(&["install-latest-npm", "v99.99.99"]);
-    assert!(!out.status.success(), "install-latest-npm v99.99.99 should fail");
+    let (out, _dir) = run_isolated(&["install-npm", "v99.99.99"]);
+    assert!(!out.status.success(), "install-npm v99.99.99 should fail");
     let s = combined_output(&out);
     assert!(
         s.to_lowercase().contains("not installed") || s.to_lowercase().contains("99.99.99") || s.to_lowercase().contains("install"),

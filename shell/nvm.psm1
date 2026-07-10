@@ -55,7 +55,7 @@ function nvm {
         [ValidateSet('use', 'install', 'uninstall', 'ls', 'list', 'ls-remote', 'remote',
                      'current', 'which', 'run', 'exec', 'alias', 'unalias', 'auto',
                      'deactivate', 'unload', 'cache', 'language', 'proxy', 'completion',
-                     'corepack', 'install-latest-npm', 'reinstall-packages', 'version',
+                     'corepack', 'install-npm', 'reinstall-packages', 'version',
                      'version-remote', 'mirror', 'help')]
         [string]$Command,
 
@@ -145,8 +145,8 @@ function nvm {
         'corepack' {
             & $NvmExe corepack $Arguments
         }
-        'install-latest-npm' {
-            & $NvmExe install-latest-npm $Arguments
+        'install-npm' {
+            & $NvmExe install-npm $Arguments
         }
         'reinstall-packages' {
             & $NvmExe reinstall-packages $Arguments
@@ -196,7 +196,7 @@ Commands:
   proxy [on|off]         Proxy settings
   completion <shell>      Generate shell completions
   corepack <action>       Corepack support
-  install-latest-npm     Upgrade npm
+  install-npm            Upgrade npm
   reinstall-packages     Migrate packages
   mirror <source>        Set download mirror
   version                Show nvm version

@@ -563,7 +563,7 @@ pub fn install(
 /// to its latest release, using the bundled npm in `version`'s bin dir as the
 /// installer.
 ///
-/// The flow mirrors `nvm install-latest-npm`:
+/// The flow mirrors `nvm install-npm`:
 ///   1. Resolve + validate the target version (must be installed, must ship npm).
 ///   2. Print an "Upgrading X for vX.Y.Z" banner.
 ///   3. Run `npm install -g <package>@latest` with that version's bin on PATH.

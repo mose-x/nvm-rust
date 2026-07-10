@@ -64,13 +64,13 @@ fn main() -> Result<()> {
             Commands::Auto { silent } => commands::auto_switch(silent),
             Commands::Deactivate => commands::deactivate(),
             Commands::Unload => commands::unload(),
-            Commands::InstallLatestNpm { version } => {
+            Commands::InstallNpm { version } => {
                 commands::install_latest_npm(version.as_deref())
             }
-            Commands::InstallLatestYarn { version } => {
+            Commands::InstallYarn { version } => {
                 commands::install_latest_yarn(version.as_deref())
             }
-            Commands::InstallLatestPnpm { version } => {
+            Commands::InstallPnpm { version } => {
                 commands::install_latest_pnpm(version.as_deref())
             }
             Commands::ReinstallPackages { from } => commands::reinstall_packages(&from),

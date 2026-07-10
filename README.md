@@ -20,7 +20,7 @@ A fast, feature-rich Node.js version manager written in Rust — a Rust-native r
 - Resume from `NVM_DIR` environment variable
 - Shell integration: `nvm use` takes effect in current shell (via `nvm.sh`)
 - Migrate global npm packages between versions (`reinstall-packages`)
-- Upgrade npm to latest for a specific version (`install-latest-npm`)
+- Upgrade npm to latest for a specific version (`install-npm`)
 - **Cache management** — `nvm cache dir / list / clear`
 - **Offline install** — `nvm install --offline` (install from cache only)
 - **Source compile** — `nvm install -s` (compile from source tarball)
@@ -72,7 +72,7 @@ A fast, feature-rich Node.js version manager written in Rust — a Rust-native r
 | **Upgrade npm after install `--latest-npm`** | ✅ | ❌ | ❌ |
 | **Install yarn after install `--latest-yarn`** | ✅ | ❌ | ❌ |
 | **Install pnpm after install `--latest-pnpm`** | ✅ | ❌ | ❌ |
-| **Standalone `install-latest-npm/yarn/pnpm`** | ✅ | ❌ | ❌ |
+| **Standalone `install-npm/yarn/pnpm`** | ✅ | ❌ | ❌ |
 | **Global package migration `reinstall-packages`** | ✅ | ❌ | ✅ |
 | **Cross-tool migration `migrate` (from nvm-sh/nvm-windows)** | ✅ | ❌ | ❌ |
 | **corepack enable/disable/status** | ✅ | ❌ | ❌ |
@@ -319,8 +319,8 @@ nvm reinstall-packages 18         # install all global packages from 18 into 20
 ### Upgrade npm
 
 ```bash
-nvm install-latest-npm            # upgrade npm of the current version
-nvm install-latest-npm 20
+nvm install-npm            # upgrade npm of the current version
+nvm install-npm 20
 ```
 
 ### io.js
@@ -547,7 +547,7 @@ Config files inside `NVM_DIR`:
 | `nvm auto` | Auto-switch via .nvmrc/.node-version/package.json |
 | `nvm deactivate` | Restore PATH (revert `nvm use`) |
 | `nvm unload` | Remove nvm from shell config |
-| `nvm install-latest-npm [ver]` | Upgrade npm to latest |
+| `nvm install-npm [ver]` | Upgrade npm to latest |
 | `nvm reinstall-packages <ver>` | Migrate global packages |
 | `nvm version` | Show current node/npm |
 | `nvm version-remote` | Show recent remote versions |

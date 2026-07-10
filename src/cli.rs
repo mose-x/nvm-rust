@@ -17,8 +17,8 @@ pub enum HelpAction {
 const KNOWN_COMMANDS: &[&str] = &[
     "install", "use", "list", "ls", "remote", "ls-remote", "uninstall", "remove",
     "current", "dir", "alias", "unalias", "mirror", "run", "exec", "which", "auto",
-    "deactivate", "unload", "install-latest-npm", "install-latest-yarn",
-    "install-latest-pnpm", "reinstall-packages", "version",
+    "deactivate", "unload", "install-npm", "install-yarn",
+    "install-pnpm", "reinstall-packages", "version",
     "version-remote", "cache", "language", "lang", "proxy", "completion", "corepack",
     "migrate",
 ];
@@ -203,17 +203,17 @@ pub enum Commands {
     /// Remove NVM from shell config
     Unload,
     /// Upgrade npm to the latest for a version
-    InstallLatestNpm {
+    InstallNpm {
         /// Version number (defaults to current)
         version: Option<String>,
     },
     /// Install the latest yarn for a version
-    InstallLatestYarn {
+    InstallYarn {
         /// Version number (defaults to current)
         version: Option<String>,
     },
     /// Install the latest pnpm for a version
-    InstallLatestPnpm {
+    InstallPnpm {
         /// Version number (defaults to current)
         version: Option<String>,
     },
@@ -302,9 +302,9 @@ pub fn print_help() {
     println!("  nvm unload                   {}", T("help_desc_unload"));
     println!();
     println!("{}", T("help_package_commands"));
-    println!("  nvm install-latest-npm [ver]   {}", T("help_desc_install_npm"));
-    println!("  nvm install-latest-yarn [ver]  {}", T("help_desc_install_yarn"));
-    println!("  nvm install-latest-pnpm [ver]  {}", T("help_desc_install_pnpm"));
+    println!("  nvm install-npm [ver]   {}", T("help_desc_install_npm"));
+    println!("  nvm install-yarn [ver]  {}", T("help_desc_install_yarn"));
+    println!("  nvm install-pnpm [ver]  {}", T("help_desc_install_pnpm"));
     println!("  nvm reinstall-packages <ver>   {}", T("help_desc_reinstall"));
     println!();
     println!("{}", T("help_info_commands"));
@@ -346,9 +346,9 @@ pub fn print_root_help() {
     println!("  auto                {}", T("help_auto_about"));
     println!("  deactivate          {}", T("help_deactivate_about"));
     println!("  unload              {}", T("help_unload_about"));
-    println!("  install-latest-npm  {}", T("help_install_npm_about"));
-    println!("  install-latest-yarn {}", T("help_install_yarn_about"));
-    println!("  install-latest-pnpm {}", T("help_install_pnpm_about"));
+    println!("  install-npm  {}", T("help_install_npm_about"));
+    println!("  install-yarn {}", T("help_install_yarn_about"));
+    println!("  install-pnpm {}", T("help_install_pnpm_about"));
     println!("  reinstall-packages  {}", T("help_reinstall_about"));
     println!("  version             {}", T("help_version_about"));
     println!("  version-remote      {}", T("help_version_remote_about"));
@@ -552,7 +552,7 @@ pub fn print_command_help(cmd: &str) {
             println!("{}", opt);
             println!("  -h, --help  {}", hf);
         }
-        "install-latest-npm" => {
+        "install-npm" => {
             println!("{}", T("help_install_npm_about"));
             println!();
             println!("{}", T("help_install_npm_usage"));
@@ -563,7 +563,7 @@ pub fn print_command_help(cmd: &str) {
             println!("{}", opt);
             println!("  -h, --help  {}", hf);
         }
-        "install-latest-yarn" => {
+        "install-yarn" => {
             println!("{}", T("help_install_yarn_about"));
             println!();
             println!("{}", T("help_install_yarn_usage"));
@@ -574,7 +574,7 @@ pub fn print_command_help(cmd: &str) {
             println!("{}", opt);
             println!("  -h, --help  {}", hf);
         }
-        "install-latest-pnpm" => {
+        "install-pnpm" => {
             println!("{}", T("help_install_pnpm_about"));
             println!();
             println!("{}", T("help_install_pnpm_usage"));
