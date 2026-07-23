@@ -588,14 +588,29 @@ pub fn update_shell_config(version: &str, use_on_cd: bool) -> Result<()> {
     };
 
     let config_path = Path::new(&shell_config);
-    backup_file(config_path).ok();
+    // Backup MUST succeed before we touch the user's shell config. The
+    // previous `.ok()` silently dropped backup failures, and combined with
+    // `read_to_string(...).unwrap_or_default()` below could destroy the
+    // file: if both backup and read failed, we'd write a fresh config over
+    // an unreadable-but-still-present original, losing the user's existing
+    // rc content with no recovery copy.
+    backup_file(config_path).context(T("shell_config_backup_failed"))?;
 
     let shell_type = detect_shell_type(&shell_config);
 
     let nvm_export = format!(r#"export NVM_HOME="{}""#, nvm_dir.display());
     let node_export = format!(r#"export PATH="{}:$PATH""#, bin_dir.display());
 
-    let mut content = fs::read_to_string(config_path).unwrap_or_default();
+    // Read the existing config. A missing file is fine (first-time setup,
+    // we'll create it), but a present file that fails to read must abort —
+    // otherwise we'd overwrite content we couldn't see, with no safe way
+    // back. The previous `unwrap_or_default()` collapsed both cases into
+    // an empty string and proceeded to overwrite.
+    let mut content = if config_path.exists() {
+        fs::read_to_string(config_path).context(T("shell_config_read_failed"))?
+    } else {
+        String::new()
+    };
 
     // Remove any previously-written cd hook block as an exact substring.
     // We try all shell types so removal still works if the user switched shells.
@@ -647,33 +662,43 @@ pub fn remove_from_shell_config() -> Result<()> {
     };
 
     let config_path = Path::new(&shell_config);
-    backup_file(config_path).ok();
+    // Nothing to clean if the rc file isn't there. But if it IS there,
+    // backup must succeed before we overwrite — same rationale as
+    // update_shell_config.
+    if !config_path.exists() {
+        return Ok(());
+    }
+    backup_file(config_path).context(T("shell_config_backup_failed"))?;
 
     let nvm_dir_str = get_nvm_dir().display().to_string();
 
-    if let Ok(mut content) = fs::read_to_string(config_path) {
-        // Remove any cd hook block (any shell type) as an exact substring.
-        for st in &["bash", "zsh", "fish"] {
-            let hook = cd_hook_code(st);
-            if content.contains(&hook) {
-                content = content.replace(&hook, "");
-            }
+    // The previous `if let Ok(...) = read_to_string` silently returned
+    // Ok(()) on read failure, masking permission/IO errors as "nothing
+    // to remove" — the user's config would remain polluted with stale
+    // NVM lines and they'd never know. Surface the read error instead.
+    let mut content = fs::read_to_string(config_path).context(T("shell_config_read_failed"))?;
+
+    // Remove any cd hook block (any shell type) as an exact substring.
+    for st in &["bash", "zsh", "fish"] {
+        let hook = cd_hook_code(st);
+        if content.contains(&hook) {
+            content = content.replace(&hook, "");
         }
-        // Remove PATH export lines and markers line-by-line.
-        let lines: Vec<&str> = content
-            .lines()
-            .filter(|line| {
-                let l = line.trim();
-                !(l.contains("NVM_HOME=")
-                    || l.contains("nvm.rust")
-                    || l.contains(".nvm.rust")
-                    || l.contains("# NVM Rust")
-                    || (l.starts_with("export PATH=") && l.contains(&nvm_dir_str)))
-            })
-            .collect();
-        atomic_write(config_path, &lines.join("\n"))?;
-        println!("{}", crate::i18n::T("shell_config_removed").green());
     }
+    // Remove PATH export lines and markers line-by-line.
+    let lines: Vec<&str> = content
+        .lines()
+        .filter(|line| {
+            let l = line.trim();
+            !(l.contains("NVM_HOME=")
+                || l.contains("nvm.rust")
+                || l.contains(".nvm.rust")
+                || l.contains("# NVM Rust")
+                || (l.starts_with("export PATH=") && l.contains(&nvm_dir_str)))
+        })
+        .collect();
+    atomic_write(config_path, &lines.join("\n"))?;
+    println!("{}", crate::i18n::T("shell_config_removed").green());
     Ok(())
 }
 

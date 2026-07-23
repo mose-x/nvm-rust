@@ -436,6 +436,8 @@ execution_failed = "Execution failed"
 copy_version_dir_failed = "Failed to copy version directory"
 cannot_create_nvm_dir = "Cannot create nvm directory"
 cannot_update_shell_config = "Cannot update shell config"
+shell_config_backup_failed = "Failed to back up shell config (refusing to overwrite without a backup)"
+shell_config_read_failed = "Failed to read existing shell config (refusing to overwrite blindly)"
 
 [_meta]
 display_name = "English"

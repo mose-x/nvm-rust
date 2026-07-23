@@ -436,6 +436,8 @@ execution_failed = "执行失败"
 copy_version_dir_failed = "无法复制版本目录"
 cannot_create_nvm_dir = "无法创建 nvm 目录"
 cannot_update_shell_config = "无法更新 shell 配置"
+shell_config_backup_failed = "备份 shell 配置失败（拒绝在无备份情况下覆盖）"
+shell_config_read_failed = "读取现有 shell 配置失败（拒绝盲目覆盖）"
 
 [_meta]
 display_name = "中文"
