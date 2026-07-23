@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use sysinfo::System;
 
-use crate::i18n::format_t;
+use crate::i18n::{format_t, T};
 use crate::proxy::build_listing_client;
 
 pub const URI: &str = "https://nodejs.org/dist/";
@@ -217,25 +217,34 @@ pub fn fetch_lts_codename_map(base_url: &str) -> std::collections::BTreeMap<Stri
     map
 }
 
-/// Verify downloaded file against SHASUMS256.txt
+/// Verify downloaded file against SHASUMS256.txt.
+///
+/// Returns `Ok(())` only when `archive_name` is listed in `SHASUMS256.txt`
+/// AND its SHA-256 matches the local file. Any other outcome — network
+/// error, non-200 status, malformed body, archive not listed, hash mismatch
+/// — is an `Err`. This is a hard security boundary: a previous version
+/// returned `Ok(false)` for all of these and the caller merely printed
+/// "skipped" before extracting the tarball, which let a MITM drop the
+/// SHASUMS256.txt request (404) and ship a tampered tarball unchallenged.
+/// Callers that genuinely want to skip must do so explicitly (e.g. `--offline`).
 pub fn verify_checksum(
     file_path: &std::path::Path,
     archive_name: &str,
     base_url: &str,
     version: &str,
-) -> Result<bool> {
+) -> Result<()> {
     let sums_url = format!("{}{}/SHASUMS256.txt", base_url, version);
     let client = build_listing_client();
-    let response = match client.get(&sums_url).send() {
-        Ok(r) => r,
-        Err(_) => return Ok(false),
-    };
-
+    let response = client
+        .get(&sums_url)
+        .send()
+        .map_err(|e| anyhow::anyhow!("{}: {}", T("checksum_failed_abort"), e))?;
     if !response.status().is_success() {
-        return Ok(false);
+        anyhow::bail!("{}: HTTP {}", T("checksum_failed_abort"), response.status());
     }
-
-    let body = response.text().unwrap_or_default();
+    let body = response
+        .text()
+        .map_err(|e| anyhow::anyhow!("{}: {}", T("checksum_failed_abort"), e))?;
 
     for line in body.lines() {
         if line.contains(archive_name) {
@@ -246,12 +255,25 @@ pub fn verify_checksum(
                 let mut hasher = sha2::Sha256::new();
                 std::io::copy(&mut file, &mut hasher)?;
                 let actual = format!("{:x}", hasher.finalize());
-                return Ok(actual == expected);
+                if actual != expected {
+                    anyhow::bail!(
+                        "{}: {} (expected {}, got {})",
+                        T("checksum_failed_abort"),
+                        archive_name,
+                        expected,
+                        actual
+                    );
+                }
+                return Ok(());
             }
         }
     }
 
-    Ok(false)
+    anyhow::bail!(
+        "{}: {} not listed in SHASUMS256.txt",
+        T("checksum_failed_abort"),
+        archive_name
+    );
 }
 
 /// Node.js release team GPG key IDs used to verify `SHASUMS256.txt.sig`.
@@ -285,7 +307,6 @@ pub enum GpgStatus {
     SkippedNoGpg,
     SkippedOffline,
     SkippedDisabled,
-    SkippedNoSig,
     SkippedKeyImport,
     Failed,
 }
@@ -336,11 +357,14 @@ fn import_nodejs_release_keys() -> bool {
 /// This is an additional trust layer on top of the SHA-256 checksum: it
 /// defeats an attacker who replaces both the tarball and `SHASUMS256.txt`.
 ///
-/// Returns a `Skipped*` status (gpg missing, offline, no .sig, key import
-/// failed) when verification could not be performed — the caller may
-/// continue the install in those cases. A `Failed` status means gpg ran and
-/// explicitly rejected the signature: the caller should abort, since that
-/// indicates tampering.
+/// Returns `Ok(SkippedNoGpg)` only when the `gpg` binary is missing — the
+/// caller may continue in that case (checksum verification still ran). A
+/// `SkippedKeyImport` status means keyserver import failed: the signature
+/// was NOT verified, so the caller should abort. `Failed` means gpg ran and
+/// explicitly rejected the signature. Any network/HTTP failure fetching
+/// `.sig` or `SHASUMS256.txt` is an `Err` — a previous version returned
+/// `SkippedNoSig` for those, which let a MITM drop the `.sig` request and
+/// ship an unsigned (potentially tampered) `SHASUMS256.txt` unchallenged.
 pub fn verify_gpg_signature(
     base_url: &str,
     version: &str,
@@ -361,33 +385,39 @@ pub fn verify_gpg_signature(
     let sums_url = format!("{}{}/SHASUMS256.txt", base_url, version);
     let client = build_listing_client();
 
-    // Download the detached signature. Mirrors occasionally omit the .sig
-    // file, in which case we skip rather than fail the install.
-    let sig_resp = match client.get(&sig_url).send() {
-        Ok(r) => r,
-        Err(_) => return Ok(GpgStatus::SkippedNoSig),
-    };
+    // Download the detached signature. A missing/unreachable `.sig` is a
+    // hard failure — without it we cannot verify the authenticity of
+    // SHASUMS256.txt, and silently continuing would let a MITM ship a
+    // tampered sums file. Callers must pass `--no-gpg-verify` to bypass.
+    let sig_resp = client
+        .get(&sig_url)
+        .send()
+        .map_err(|e| anyhow::anyhow!("{}: {}", T("gpg_failed_abort"), e))?;
     if !sig_resp.status().is_success() {
-        return Ok(GpgStatus::SkippedNoSig);
+        anyhow::bail!("{}: .sig HTTP {}", T("gpg_failed_abort"), sig_resp.status());
     }
-    let sig_bytes = match sig_resp.bytes() {
-        Ok(b) => b.to_vec(),
-        Err(_) => return Ok(GpgStatus::SkippedNoSig),
-    };
+    let sig_bytes = sig_resp
+        .bytes()
+        .map_err(|e| anyhow::anyhow!("{}: {}", T("gpg_failed_abort"), e))?
+        .to_vec();
 
     // Download a fresh copy of SHASUMS256.txt that exactly matches the .sig
     // (mirrors may reformat the text, which would invalidate the signature).
-    let sums_resp = match client.get(&sums_url).send() {
-        Ok(r) => r,
-        Err(_) => return Ok(GpgStatus::SkippedNoSig),
-    };
+    let sums_resp = client
+        .get(&sums_url)
+        .send()
+        .map_err(|e| anyhow::anyhow!("{}: {}", T("gpg_failed_abort"), e))?;
     if !sums_resp.status().is_success() {
-        return Ok(GpgStatus::SkippedNoSig);
+        anyhow::bail!(
+            "{}: SHASUMS256.txt HTTP {}",
+            T("gpg_failed_abort"),
+            sums_resp.status()
+        );
     }
-    let sums_bytes = match sums_resp.bytes() {
-        Ok(b) => b.to_vec(),
-        Err(_) => return Ok(GpgStatus::SkippedNoSig),
-    };
+    let sums_bytes = sums_resp
+        .bytes()
+        .map_err(|e| anyhow::anyhow!("{}: {}", T("gpg_failed_abort"), e))?
+        .to_vec();
 
     // Write both to randomly-named temp files. Using NamedTempFile (rather
     // than a predictable `nvm-rs-{pid}` name) prevents symlink attacks where

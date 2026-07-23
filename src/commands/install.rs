@@ -313,35 +313,44 @@ fn install_binary(
 
     if !target.is_iojs {
         print!("  {} ", T("checksum_label").dimmed());
-        if !offline
-            && verify_checksum(
+        if offline {
+            println!("{}", T("checksum_offline").dimmed());
+        } else {
+            // Hard security boundary: verify_checksum now returns Err for
+            // any failure (network error, 404, archive not listed, hash
+            // mismatch). A previous version returned Ok(false) and the
+            // caller merely printed "skipped" — which let a MITM drop the
+            // SHASUMS256.txt request and ship a tampered tarball. Use
+            // --offline to bypass when the mirror is unreachable.
+            match verify_checksum(
                 &temp_file,
                 &target.archive_name,
                 base_url,
                 &target.target_version,
-            )?
-        {
-            println!("{}", T("checksum_verified").green().bold());
-        } else if offline {
-            println!("{}", T("checksum_offline").dimmed());
-        } else {
-            println!("{}", T("checksum_skipped").yellow().bold());
+            ) {
+                Ok(()) => println!("{}", T("checksum_verified").green().bold()),
+                Err(e) => {
+                    println!("{}", T("checksum_failed").red().bold());
+                    anyhow::bail!("{}", e);
+                }
+            }
         }
 
         // GPG signature verification of SHASUMS256.txt — extra trust layer
-        // on top of the SHA-256 checksum. Degrades gracefully (skip) when
-        // gpg is missing, the mirror lacks the .sig file, or --no-gpg-verify
-        // is passed. A *failed* signature (gpg ran and rejected it) aborts,
-        // since that indicates tampering.
+        // on top of the SHA-256 checksum. Skips only when gpg is missing,
+        // --no-gpg-verify is passed, or --offline is in effect. A *failed*
+        // signature (gpg ran and rejected it) or an unreachable .sig /
+        // SHASUMS256.txt (network error, 404) aborts, since either could
+        // indicate tampering or an active MITM stripping the signature.
         print!("  {} ", T("gpg_label").dimmed());
         match verify_gpg_signature(base_url, &target.target_version, no_gpg_verify, offline)? {
             GpgStatus::Verified => println!("{}", T("gpg_verified").green().bold()),
             GpgStatus::SkippedDisabled => println!("{}", T("gpg_disabled").dimmed()),
             GpgStatus::SkippedOffline => println!("{}", T("gpg_offline").dimmed()),
             GpgStatus::SkippedNoGpg => println!("{}", T("gpg_no_gpg").dimmed()),
-            GpgStatus::SkippedNoSig => println!("{}", T("gpg_no_sig").dimmed()),
             GpgStatus::SkippedKeyImport => {
-                println!("{}", T("gpg_key_import_failed").yellow().bold())
+                println!("{}", T("gpg_key_import_failed").yellow().bold());
+                anyhow::bail!("{}", T("gpg_key_import_failed_abort"));
             }
             GpgStatus::Failed => {
                 println!("{}", T("gpg_failed").red().bold());
