@@ -1,0 +1,503 @@
+use anyhow::Result;
+use colored::Colorize;
+use scraper::{Html, Selector};
+use sha2::Digest;
+use std::env;
+use std::fs;
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use sysinfo::System;
+
+use crate::i18n::format_t;
+use crate::proxy::build_listing_client;
+
+pub const URI: &str = "https://nodejs.org/dist/";
+pub const MIRROR_URI: &str = "https://registry.npmmirror.com/-/binary/node/";
+pub const IOJS_URI: &str = "https://iojs.org/dist/";
+pub const R_NVM_PATH: &str = ".nvm.rust";
+pub const CONFIG_FILE: &str = "config.json";
+pub const ALIAS_FILE: &str = "alias.json";
+pub const CACHE_DIR: &str = "cache";
+
+/// The platform PATH separator (`:` on Unix, `;` on Windows).
+///
+/// Centralised here so all PATH assembly goes through one constant —
+/// when Windows support lands, flipping this is a single change.
+pub const PATH_SEP: &str = if cfg!(windows) { ";" } else { ":" };
+
+/// Prepend a bin directory to the current `PATH`, returning the new value.
+///
+/// This replaces the `format!("{}:{}", dir, env::var("PATH"))` pattern that
+/// was duplicated across commands.rs and corepack.rs. Centralising it also
+/// makes the eventual Windows `;` fix a one-line change.
+pub fn prepend_to_path(bin_dir: &std::path::Path) -> String {
+    format!(
+        "{}{}{}",
+        bin_dir.display(),
+        PATH_SEP,
+        env::var("PATH").unwrap_or_default()
+    )
+}
+
+/// Get the user home directory cross-platform.
+///
+/// Windows does not set `HOME`; it uses `USERPROFILE` instead (e.g. `C:\Users\name`).
+/// Returns "." as a last resort so callers never panic.
+pub fn get_home_dir() -> String {
+    for var in &["HOME", "USERPROFILE"] {
+        if let Ok(val) = env::var(var) {
+            if !val.is_empty() {
+                return val;
+            }
+        }
+    }
+    ".".to_string()
+}
+
+pub fn os_check() {
+    // `std::env::consts::OS` is a compile-time constant ("linux", "windows",
+    // "macos") and is stable across distros — unlike `System::name()` which
+    // in sysinfo 0.32 returns the distro name ("Ubuntu", "Debian", …) read
+    // from /etc/os-release, not the OS family. Use the constant for the
+    // support check and `System::name()` only for the error message.
+    match std::env::consts::OS {
+        "linux" | "windows" | "macos" => {}
+        _ => {
+            let os_name = System::name().unwrap_or_default();
+            eprintln!(
+                "{}",
+                format_t("unsupported_os", std::slice::from_ref(&os_name))
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Get NVM directory, NVM_DIR env var takes priority
+pub fn get_nvm_dir() -> PathBuf {
+    if let Ok(dir) = env::var("NVM_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    PathBuf::from(get_home_dir()).join(R_NVM_PATH)
+}
+
+pub fn ensure_nvm_dir() -> Result<()> {
+    let nvm_dir = get_nvm_dir();
+    if !nvm_dir.exists() {
+        fs::create_dir_all(&nvm_dir)?;
+    }
+    Ok(())
+}
+
+pub fn get_cache_dir() -> PathBuf {
+    get_nvm_dir().join(CACHE_DIR)
+}
+
+pub fn ensure_cache_dir() -> Result<()> {
+    let cache_dir = get_cache_dir();
+    if !cache_dir.exists() {
+        fs::create_dir_all(&cache_dir)?;
+    }
+    Ok(())
+}
+
+pub fn get_tags(u: String) -> Vec<String> {
+    let client = build_listing_client();
+    let response = match client.get(&u).send() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!(
+                "{} {}",
+                "⚠".yellow().bold(),
+                format_t("fetch_versions_failed", &[format!("{} ({})", u, e)])
+            );
+            return Vec::new();
+        }
+    };
+
+    if !response.status().is_success() {
+        eprintln!(
+            "{} {}",
+            "⚠".yellow().bold(),
+            format_t(
+                "fetch_versions_failed",
+                &[format!("{} (HTTP {})", u, response.status())]
+            )
+        );
+        return Vec::new();
+    }
+
+    let body = match response.text_with_charset("utf-8") {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!(
+                "{} {}",
+                "⚠".yellow().bold(),
+                format_t("fetch_versions_failed", &[format!("{} ({})", u, e)])
+            );
+            return Vec::new();
+        }
+    };
+
+    let fragment = Html::parse_document(&body);
+    let selector = match Selector::parse("body pre a") {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+
+    fragment
+        .select(&selector)
+        .map(|element| element.inner_html())
+        .collect()
+}
+
+/// Fetch `index.json` from the Node.js mirror and extract the LTS
+/// codename → major version map.
+///
+/// `index.json` is an array of release objects; each LTS release has
+/// `"lts": "<Codename>"` (capitalised, e.g. `"Krypton"`) while non-LTS
+/// releases have `"lts": false`. We walk the array once, recording the
+/// highest major seen for each codename (a codename spans a whole major
+/// line, so every release in that line reports the same codename; taking
+/// the max is defensive in case of malformed entries).
+///
+/// Returns an empty map on any network/parse failure — callers merge this
+/// with the hardcoded fallback in `utils`/`config`, so a fetch error just
+/// means "use the shipped table" (which is always correct for past LTS
+/// lines and only lags behind a brand-new line until the next release).
+pub fn fetch_lts_codename_map(base_url: &str) -> std::collections::BTreeMap<String, u32> {
+    let index_url = format!("{}index.json", base_url);
+    let client = build_listing_client();
+    let mut map = std::collections::BTreeMap::new();
+
+    let resp = match client.get(&index_url).send() {
+        Ok(r) if r.status().is_success() => r,
+        _ => return map,
+    };
+    let text = match resp.text() {
+        Ok(t) => t,
+        Err(_) => return map,
+    };
+    let json = match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(v) => v,
+        Err(_) => return map,
+    };
+    let arr = match json.as_array() {
+        Some(a) => a,
+        None => return map,
+    };
+
+    for entry in arr {
+        // `"lts": false` (bool) for non-LTS; `"lts": "Krypton"` (string) for LTS.
+        let codename = match entry.get("lts").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => continue, // false or missing
+        };
+        let ver = match entry.get("version").and_then(|v| v.as_str()) {
+            Some(v) => v,
+            None => continue,
+        };
+        // "v24.18.0" → major 24
+        let major = ver
+            .trim_start_matches('v')
+            .split('.')
+            .next()
+            .and_then(|m| m.parse::<u32>().ok());
+        if let Some(maj) = major {
+            let key = codename.to_lowercase();
+            let entry_major = map.entry(key).or_insert(0);
+            if maj > *entry_major {
+                *entry_major = maj;
+            }
+        }
+    }
+    map
+}
+
+/// Verify downloaded file against SHASUMS256.txt
+pub fn verify_checksum(
+    file_path: &std::path::Path,
+    archive_name: &str,
+    base_url: &str,
+    version: &str,
+) -> Result<bool> {
+    let sums_url = format!("{}{}/SHASUMS256.txt", base_url, version);
+    let client = build_listing_client();
+    let response = match client.get(&sums_url).send() {
+        Ok(r) => r,
+        Err(_) => return Ok(false),
+    };
+
+    if !response.status().is_success() {
+        return Ok(false);
+    }
+
+    let body = response.text().unwrap_or_default();
+
+    for line in body.lines() {
+        if line.contains(archive_name) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 && parts[1] == archive_name {
+                let expected = parts[0];
+                let mut file = fs::File::open(file_path)?;
+                let mut hasher = sha2::Sha256::new();
+                std::io::copy(&mut file, &mut hasher)?;
+                let actual = format!("{:x}", hasher.finalize());
+                return Ok(actual == expected);
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+/// Node.js release team GPG key IDs used to verify `SHASUMS256.txt.sig`.
+/// Mirrors the list nvm-sh imports; any present key is sufficient to verify
+/// a release signature. The list is long on purpose so that older and newer
+/// releases alike can be verified without a keyserver round-trip per release.
+const NODEJS_RELEASE_KEY_IDS: &[&str] = &[
+    "94AE36675C464D64BAFA68DD7434390BDBE9B9C5",
+    "74F12602B6F1C4E913FAA37AD3A89613643B6201",
+    "71DCFD284A79C3B38668286BC97EC7A07EDE3FC1",
+    "8FCCA13FEF1D0C2E91008E09770F7A9A5AE15600",
+    "C4F0DFFF4E3C283FDFCDFB08576E6C61A1A1B1FE",
+    "DD8F2338BAE7501E3DD5AC78C273792F7D83545D",
+    "B9AE9905FFD7803F25714661B63B535A4C206CA9",
+    "77984A986EBC2AA786BC0F66B01FBB92821C587A",
+    "890C08DB8579162FEE0DF9DB8BEAB4DFCF555EF4",
+    "C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C",
+];
+
+/// Keyservers tried (in order) when importing the Node.js release keys.
+const NODEJS_KEYSERVERS: &[&str] = &[
+    "hkp://keyserver.ubuntu.com:80",
+    "hkp://keyserver.ubuntu.com:443",
+    "hkp://keyserver.pgp.com:80",
+];
+
+/// Outcome of a GPG signature verification attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpgStatus {
+    Verified,
+    SkippedNoGpg,
+    SkippedOffline,
+    SkippedDisabled,
+    SkippedNoSig,
+    SkippedKeyImport,
+    Failed,
+}
+
+/// Check whether the `gpg` binary is available on PATH and functional.
+fn gpg_available() -> bool {
+    Command::new("gpg")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Import the Node.js release signing keys into the user's keyring.
+/// Returns `true` if the import command reported success (which is also the
+/// case when the keys are already present). Best-effort: callers treat a
+/// `false` result as "try verifying anyway, the keys may already be there".
+fn import_nodejs_release_keys() -> bool {
+    for keyserver in NODEJS_KEYSERVERS {
+        let status = Command::new("gpg")
+            .arg("--batch")
+            .arg("--keyserver")
+            .arg(keyserver)
+            // Cap each keyserver operation at 30s so an unresponsive
+            // keyserver doesn't stall `nvm install` for minutes.
+            .arg("--keyserver-options")
+            .arg("timeout=30")
+            .arg("--recv-keys")
+            .args(NODEJS_RELEASE_KEY_IDS)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if let Ok(s) = status {
+            if s.success() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Verify the GPG signature of `SHASUMS256.txt` for a Node.js release.
+///
+/// Downloads `SHASUMS256.txt.sig` alongside `SHASUMS256.txt`, imports the
+/// Node.js release team's public key on demand, and runs `gpg --verify`.
+/// This is an additional trust layer on top of the SHA-256 checksum: it
+/// defeats an attacker who replaces both the tarball and `SHASUMS256.txt`.
+///
+/// Returns a `Skipped*` status (gpg missing, offline, no .sig, key import
+/// failed) when verification could not be performed — the caller may
+/// continue the install in those cases. A `Failed` status means gpg ran and
+/// explicitly rejected the signature: the caller should abort, since that
+/// indicates tampering.
+pub fn verify_gpg_signature(
+    base_url: &str,
+    version: &str,
+    no_gpg_verify: bool,
+    offline: bool,
+) -> Result<GpgStatus> {
+    if no_gpg_verify {
+        return Ok(GpgStatus::SkippedDisabled);
+    }
+    if offline {
+        return Ok(GpgStatus::SkippedOffline);
+    }
+    if !gpg_available() {
+        return Ok(GpgStatus::SkippedNoGpg);
+    }
+
+    let sig_url = format!("{}{}/SHASUMS256.txt.sig", base_url, version);
+    let sums_url = format!("{}{}/SHASUMS256.txt", base_url, version);
+    let client = build_listing_client();
+
+    // Download the detached signature. Mirrors occasionally omit the .sig
+    // file, in which case we skip rather than fail the install.
+    let sig_resp = match client.get(&sig_url).send() {
+        Ok(r) => r,
+        Err(_) => return Ok(GpgStatus::SkippedNoSig),
+    };
+    if !sig_resp.status().is_success() {
+        return Ok(GpgStatus::SkippedNoSig);
+    }
+    let sig_bytes = match sig_resp.bytes() {
+        Ok(b) => b.to_vec(),
+        Err(_) => return Ok(GpgStatus::SkippedNoSig),
+    };
+
+    // Download a fresh copy of SHASUMS256.txt that exactly matches the .sig
+    // (mirrors may reformat the text, which would invalidate the signature).
+    let sums_resp = match client.get(&sums_url).send() {
+        Ok(r) => r,
+        Err(_) => return Ok(GpgStatus::SkippedNoSig),
+    };
+    if !sums_resp.status().is_success() {
+        return Ok(GpgStatus::SkippedNoSig);
+    }
+    let sums_bytes = match sums_resp.bytes() {
+        Ok(b) => b.to_vec(),
+        Err(_) => return Ok(GpgStatus::SkippedNoSig),
+    };
+
+    // Write both to randomly-named temp files. Using NamedTempFile (rather
+    // than a predictable `nvm-rs-{pid}` name) prevents symlink attacks where
+    // an attacker pre-creates a symlink at the predictable path pointing at a
+    // victim file; our write would otherwise follow the symlink and clobber
+    // it. NamedTempFile also removes the file on drop, so we don't need
+    // manual cleanup.
+    let tmp = std::env::temp_dir();
+    let mut sig_file = tempfile::NamedTempFile::new_in(&tmp)?;
+    sig_file.write_all(&sig_bytes)?;
+    let mut sums_file = tempfile::NamedTempFile::new_in(&tmp)?;
+    sums_file.write_all(&sums_bytes)?;
+
+    let sig_str = sig_file.path().to_string_lossy().to_string();
+    let sums_str = sums_file.path().to_string_lossy().to_string();
+    let run_verify = || {
+        Command::new("gpg")
+            .arg("--batch")
+            .arg("--verify")
+            .arg(&sig_str)
+            .arg(&sums_str)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+    };
+
+    // First attempt: keys may already be present in the keyring from a
+    // previous run, avoiding a keyserver round-trip entirely.
+    let mut output = match run_verify() {
+        Ok(o) if o.status.success() => return Ok(GpgStatus::Verified),
+        Ok(o) => o,
+        Err(_) => return Ok(GpgStatus::SkippedNoGpg),
+    };
+
+    // If verification failed purely because the public key is missing, try
+    // importing the release keys once and retry. Distinguish a missing-key
+    // failure from a genuine bad-signature failure so we don't report a
+    // security failure for what is really a keyserver/network problem.
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let needs_keys = stderr.contains("No public key") || stderr.contains("public key not found");
+    if needs_keys && import_nodejs_release_keys() {
+        output = match run_verify() {
+            Ok(o) => o,
+            Err(_) => return Ok(GpgStatus::SkippedNoGpg),
+        };
+    }
+
+    if output.status.success() {
+        Ok(GpgStatus::Verified)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if stderr.contains("No public key") || stderr.contains("public key not found") {
+            Ok(GpgStatus::SkippedKeyImport)
+        } else {
+            Ok(GpgStatus::Failed)
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn os_suffix() -> &'static str {
+    "win-x64.7z"
+}
+
+#[cfg(target_os = "linux")]
+pub fn os_suffix() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "linux-arm64.tar.xz"
+    } else {
+        "linux-x64.tar.xz"
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn os_suffix() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "darwin-arm64.tar.xz"
+    } else {
+        "darwin-x64.tar.xz"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_uris_defined() {
+        assert!(!URI.is_empty());
+        assert!(!MIRROR_URI.is_empty());
+        assert!(!IOJS_URI.is_empty());
+        assert!(URI.starts_with("https://"));
+        assert!(IOJS_URI.starts_with("https://"));
+    }
+
+    #[test]
+    fn test_os_suffix_not_empty() {
+        let suffix = os_suffix();
+        assert!(!suffix.is_empty());
+        assert!(suffix.contains("linux") || suffix.contains("darwin") || suffix.contains("win"));
+    }
+
+    #[test]
+    fn test_cache_dir() {
+        let cache = get_cache_dir();
+        // Should end with cache dir name
+        assert!(cache.to_string_lossy().ends_with("cache"));
+    }
+}

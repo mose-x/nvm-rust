@@ -1,0 +1,54 @@
+[package]
+name = "nvm"
+version = "1.0.0"
+edition = "2021"
+description = "A fast, feature-rich Node.js version manager written in Rust"
+license = "MIT"
+repository = "https://github.com/mose-x/nvm-rust"
+homepage = "https://github.com/mose-x/nvm-rust"
+
+[dependencies]
+# CLI argument parsing
+clap = { version = "4.5.4", features = ["derive"] }
+# Secure temporary files for GPG verification artifacts and atomic writes
+tempfile = "3"
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "charset", "socks"] }
+# HTML parser
+scraper = "0.19.0"
+# Cross-platform system info
+sysinfo = "0.32"
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# TOML parsing for i18n locale files
+toml = "0.8"
+# Archive extraction
+tar = "0.4"
+xz2 = { version = "0.1", features = ["static"] }
+# Pure-Rust 7z decompression for Windows Node.js packages (.7z),
+# so users don't need to install 7-Zip separately.
+sevenz-rust = "0.6"
+# Progress bar
+indicatif = "0.17"
+# Error handling
+anyhow = "1.0"
+# Regular expressions
+regex = "1.10"
+# SHA256 checksum
+sha2 = "0.10"
+# Terminal colors
+colored = "2.1"
+# Lazy static for i18n
+lazy_static = "1.4"
+# Base64 decoding for npm tarball integrity verification (sha512-<base64>)
+base64 = "0.22"
+
+[profile.release]
+# Aggressive optimisation for the distributed binary: LTO across crates,
+# single codegen unit for best cross-function optimisation, and symbol
+# stripping to shrink the binary (~halves release size on this codebase).
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
