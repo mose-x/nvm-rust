@@ -3,15 +3,18 @@ use anyhow::Result;
 use super::{IOJS_VERSION_RE, NODE_VERSION_RE};
 use crate::i18n::{format_t, T};
 use crate::system::{get_tags, os_suffix};
-use crate::utils::{iojs_version_number, normalize_iojs_version};
+use crate::utils::{iojs_version_number, normalize_iojs_version, validate_version_name};
 
 pub(crate) fn resolve_version(input: &str, base_url: &str) -> Result<String> {
     // Fully-specified version "vX.Y.Z" / "X.Y.Z" with two dots: use as-is.
     if input.starts_with('v') && input.matches('.').count() >= 2 {
+        validate_version_name(input)?;
         return Ok(input.to_string());
     }
     if input.matches('.').count() >= 2 && input.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-        return Ok(format!("v{}", input));
+        let v = format!("v{}", input);
+        validate_version_name(&v)?;
+        return Ok(v);
     }
 
     // `lts`, `lts/*`, `lts/-1` (bare) → newest LTS across all lines.
@@ -190,7 +193,9 @@ pub(crate) fn resolve_iojs_version(input: &str, iojs_base_url: &str) -> Result<S
 
     // If already fully specified (three parts), use as-is
     if ver.matches('.').count() >= 2 {
-        return Ok(normalize_iojs_version(&ver));
+        let normalized = normalize_iojs_version(&ver);
+        validate_version_name(&normalized)?;
+        return Ok(normalized);
     }
 
     // Partial version, fetch from remote

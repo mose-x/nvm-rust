@@ -350,6 +350,11 @@ pub fn resolve_alias(name: &str) -> Result<String> {
     {
         version = format!("v{}", version);
     }
+    // Reject path-traversal payloads (`v1.0.0/../../etc`) before they reach
+    // any `nvm_dir.join(&version)` / `fs::remove_dir_all` caller. This is
+    // the terminal fallback for unknown inputs, so a malicious `.nvmrc`
+    // line or `nvm use "v1/../../x"` both stop here.
+    crate::utils::validate_version_name(&version)?;
     Ok(version)
 }
 

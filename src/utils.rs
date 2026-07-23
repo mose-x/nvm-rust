@@ -3,6 +3,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
+use anyhow::Result;
+
+use crate::i18n::{format_t, T};
 use crate::system::get_nvm_dir;
 
 /// Strip all known version prefixes (Node.js `v`, io.js `iojs-v` / `iojs-` /
@@ -225,6 +228,40 @@ pub fn get_installed_versions() -> Vec<String> {
     versions
 }
 
+/// Reject version strings that could escape `nvm_dir` via path traversal.
+///
+/// Version names are used directly in `nvm_dir.join(&version)` and similar
+/// path constructions across install/uninstall/use/exec/reinstall-packages.
+/// Without this guard, an input like `v1.0.0/../../etc` would let
+/// `nvm uninstall "v1.0.0/../../etc"` execute `fs::remove_dir_all` on a
+/// path outside `nvm_dir`, and `nvm install "v1.0.0/../../tmp/x"` would
+/// write outside `nvm_dir`. The same risk applies to malicious `.nvmrc`
+/// content.
+///
+/// This is the single source of truth for version-name safety. Every entry
+/// point that accepts user input (`resolve_version`, `resolve_iojs_version`,
+/// `resolve_alias`) MUST route the final resolved string through this before
+/// returning it to a path-constructing caller. Aliases like `lts/*`,
+/// `lts/iron`, `default`, `current`, `system`, `node` are excluded — they
+/// are matched by name and never reach the path-construction branch.
+pub fn validate_version_name(version: &str) -> Result<()> {
+    if version.is_empty() {
+        anyhow::bail!("{}", T("alias_name_empty"));
+    }
+    if version.contains('/')
+        || version.contains('\\')
+        || version.contains('\0')
+        || version.contains("..")
+        || version.chars().any(|c| c.is_control() || c == ' ')
+    {
+        anyhow::bail!(
+            "{}",
+            format_t("invalid_version_name", &[version.to_string()])
+        );
+    }
+    Ok(())
+}
+
 /// Atomically write `contents` to `path` using the temp-file-then-rename
 /// pattern. On Unix, `fs::rename` is atomic — readers always see either the
 /// old or the new file, never a half-written one. This prevents concurrent
@@ -355,6 +392,28 @@ pub fn find_system_node_path() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_version_name_accepts_normal_versions() {
+        assert!(validate_version_name("v20.11.0").is_ok());
+        assert!(validate_version_name("20.11.0").is_ok());
+        assert!(validate_version_name("iojs-v3.3.1").is_ok());
+        assert!(validate_version_name("v22").is_ok());
+    }
+
+    #[test]
+    fn validate_version_name_rejects_path_traversal() {
+        // The CVE-shaped inputs that MUST be rejected before any
+        // `nvm_dir.join(&version)` / `fs::remove_dir_all` caller sees them.
+        assert!(validate_version_name("v1.0.0/../../etc").is_err());
+        assert!(validate_version_name("v1.0.0\\..\\etc").is_err());
+        assert!(validate_version_name("..").is_err());
+        assert!(validate_version_name("v1.0.0/..").is_err());
+        assert!(validate_version_name("../etc").is_err());
+        assert!(validate_version_name("v1\0").is_err());
+        assert!(validate_version_name("v1.0.0 ../etc").is_err());
+        assert!(validate_version_name("").is_err());
+    }
 
     #[test]
     fn test_validate_bare_major() {
