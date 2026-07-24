@@ -513,7 +513,7 @@ fn find_latest_unstable() -> Result<String> {
     let base_url = load_config()
         .map(|c| c.mirror.unwrap_or_else(|| URI.to_string()))
         .unwrap_or_else(|_| URI.to_string());
-    let tags = get_tags(base_url);
+    let tags = get_tags(&base_url);
     let mut odd_max: Option<(u32, String)> = None;
     for tag in tags {
         let v = tag.trim_end_matches('/');

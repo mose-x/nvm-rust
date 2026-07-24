@@ -46,7 +46,7 @@ pub(crate) fn resolve_version(input: &str, base_url: &str) -> Result<String> {
     // Fall back to listing `{base_url}v{input}/` — used for partial versions
     // like "20.11" that should match a specific patch release directory.
     let version_num = input.trim_start_matches('v');
-    let tags = get_tags(format!("{}v{}/", base_url, version_num));
+    let tags = get_tags(&format!("{}v{}/", base_url, version_num));
 
     if tags.is_empty() {
         anyhow::bail!("{}", T("cannot_fetch_versions"));
@@ -77,7 +77,7 @@ pub(crate) fn bare_major_for_install(input: &str) -> Option<String> {
 /// `latest-v{major}.x/` directory. Works for both LTS and non-LTS lines.
 pub(crate) fn get_latest_version_in_major(major: &str, base_url: &str) -> Result<String> {
     let dir = format!("latest-v{}.x/", major);
-    let tags = get_tags(format!("{}{}", base_url, dir));
+    let tags = get_tags(&format!("{}{}", base_url, dir));
     if tags.is_empty() {
         anyhow::bail!("{}", T("cannot_fetch_versions"));
     }
@@ -135,10 +135,10 @@ fn latest_lts_from_index(base_url: &str) -> Option<String> {
 }
 
 pub(crate) fn get_latest_version(base_url: &str) -> Result<String> {
-    let tags = get_tags(base_url.to_string());
+    let tags = get_tags(base_url);
     for tag in tags {
         if tag == "latest/" {
-            let sub_tags = get_tags(format!("{}{}", base_url, tag));
+            let sub_tags = get_tags(&format!("{}{}", base_url, tag));
             let suffix = os_suffix();
             for sub_tag in sub_tags {
                 if sub_tag.ends_with(suffix) {
@@ -156,7 +156,7 @@ pub(crate) fn get_download_url(version: &str, base_url: &str) -> Result<String> 
     let suffix = os_suffix();
     let version_dir = format!("{}{}/", base_url, version);
 
-    let tags = get_tags(version_dir.clone());
+    let tags = get_tags(&version_dir);
     for tag in tags {
         if tag.ends_with(suffix) {
             return Ok(format!("{}{}", version_dir, tag));
@@ -211,7 +211,7 @@ pub(crate) fn resolve_iojs_version(input: &str, iojs_base_url: &str) -> Result<S
 
     // Partial version, fetch from remote
     let v_num = ver.trim_start_matches("iojs-v").trim_start_matches("iojs-");
-    let tags = get_tags(format!("{}v{}/", iojs_base_url, v_num));
+    let tags = get_tags(&format!("{}v{}/", iojs_base_url, v_num));
     if tags.is_empty() {
         anyhow::bail!("{}", format_t("no_iojs_match", &[input.to_string()]));
     }

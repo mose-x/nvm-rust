@@ -179,7 +179,7 @@ pub fn remote_versions(
     let base_url = get_base_url(&config);
 
     print!("  {} {}", "⟳".cyan().bold(), T("fetching_remote").cyan());
-    let tags = get_tags(base_url.to_string());
+    let tags = get_tags(base_url);
     println!(" {}", "✓".green().bold());
 
     let mut all_versions: Vec<(String, bool, String)> = Vec::new();

@@ -169,9 +169,9 @@ pub fn ensure_cache_dir() -> Result<()> {
     Ok(())
 }
 
-pub fn get_tags(u: String) -> Vec<String> {
+pub fn get_tags(u: &str) -> Vec<String> {
     let client = build_listing_client();
-    let response = match client.get(&u).send() {
+    let response = match client.get(u).send() {
         Ok(r) => r,
         Err(e) => {
             eprintln!(
