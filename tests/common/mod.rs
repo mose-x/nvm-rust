@@ -78,16 +78,19 @@ pub fn run(args: &[&str]) -> Output {
 /// so commands that check `version_dir.exists()` succeed without a real
 /// download. Optionally place a (empty) `node` binary under `bin/`.
 pub fn create_fake_version(nvm_dir: &Path, version: &str, with_node: bool) {
-    let bin = nvm_dir.join(version).join("bin");
+    // Windows Node installs have no `bin/` subdirectory — `node.exe` lives
+    // directly under the version root (mirrored by `version_bin_dir`, which
+    // returns the version dir itself on Windows). The previous helper always
+    // created `version/bin/` and put `node` there, so on Windows `exe_path`
+    // looked in `version/node.exe` (missing) and `which` bailed with
+    // "not installed". Use the platform-correct directory.
+    let bin = if cfg!(windows) {
+        nvm_dir.join(version)
+    } else {
+        nvm_dir.join(version).join("bin")
+    };
     std::fs::create_dir_all(&bin).expect("create fake version bin/");
     if with_node {
-        // `exe_path` on Windows looks for `node.exe` first, then `node.cmd`,
-        // then a bare `node`. The previous test only wrote a bare `node`,
-        // which `exe_path` falls back to — but `nvm which` then reported the
-        // path and downstream existence checks behaved inconsistently, so
-        // `which_succeeds_when_version_installed` failed on windows-latest.
-        // Write the platform-appropriate filename so the lookup resolves on
-        // the first candidate everywhere.
         if cfg!(windows) {
             std::fs::write(bin.join("node.exe"), b"fake").expect("write fake node.exe");
         } else {
