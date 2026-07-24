@@ -183,26 +183,40 @@ pub fn list_all_aliases() -> Result<()> {
     let nvm_dir = get_nvm_dir();
     let mut entries: Vec<(String, String, bool)> = Vec::new();
 
-    for (name, prefix) in named_lts_aliases() {
-        let mut installed: Vec<String> = Vec::new();
-        if let Ok(rd) = fs::read_dir(&nvm_dir) {
-            for entry in rd.flatten() {
-                if let Some(s) = entry.file_name().to_str() {
-                    // Strict match: must be a valid version directory AND its
-                    // major must equal the alias's target major. Without the
-                    // major check, `lts/argon` (prefix "v4") would also match
-                    // "v40.0.0" because "v40.0.0".starts_with("v4") is true.
-                    if crate::utils::is_version_dir_name(s) {
-                        if let Some(major) = crate::utils::parse_major(s) {
-                            let prefix_major = prefix.trim_start_matches('v');
-                            if prefix_major == major.to_string() {
-                                installed.push(s.to_string());
-                            }
-                        }
+    // Read the nvm dir ONCE and collect (name, major) for every installed
+    // version directory. The previous loop called fs::read_dir once per LTS
+    // alias (11 directory scans) and re-parsed every entry each time, even
+    // though the listing is identical across iterations.
+    let installed_majors: Vec<(String, u32)> = fs::read_dir(&nvm_dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter_map(|entry| {
+                    let s = entry.file_name().to_str()?.to_string();
+                    if crate::utils::is_version_dir_name(&s) {
+                        crate::utils::parse_major(&s).map(|m| (s, m))
+                    } else {
+                        None
                     }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    for (name, prefix) in named_lts_aliases() {
+        // Strict match: the version's major must equal the alias's target
+        // major. Without this, `lts/argon` (prefix "v4") would also match
+        // "v40.0.0" because "v40.0.0".starts_with("v4") is true.
+        let prefix_major: u32 = prefix.trim_start_matches('v').parse().unwrap_or(0);
+        let mut installed: Vec<String> = installed_majors
+            .iter()
+            .filter_map(|(s, major)| {
+                if *major == prefix_major {
+                    Some(s.clone())
+                } else {
+                    None
                 }
-            }
-        }
+            })
+            .collect();
         installed.sort();
         if let Some(latest) = installed.last() {
             entries.push((name.to_string(), latest.clone(), true));
