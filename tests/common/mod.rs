@@ -81,7 +81,18 @@ pub fn create_fake_version(nvm_dir: &Path, version: &str, with_node: bool) {
     let bin = nvm_dir.join(version).join("bin");
     std::fs::create_dir_all(&bin).expect("create fake version bin/");
     if with_node {
-        std::fs::write(bin.join("node"), b"#!/bin/sh\nexit 0\n").expect("write fake node");
+        // `exe_path` on Windows looks for `node.exe` first, then `node.cmd`,
+        // then a bare `node`. The previous test only wrote a bare `node`,
+        // which `exe_path` falls back to — but `nvm which` then reported the
+        // path and downstream existence checks behaved inconsistently, so
+        // `which_succeeds_when_version_installed` failed on windows-latest.
+        // Write the platform-appropriate filename so the lookup resolves on
+        // the first candidate everywhere.
+        if cfg!(windows) {
+            std::fs::write(bin.join("node.exe"), b"fake").expect("write fake node.exe");
+        } else {
+            std::fs::write(bin.join("node"), b"#!/bin/sh\nexit 0\n").expect("write fake node");
+        }
     }
 }
 
