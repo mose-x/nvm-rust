@@ -386,12 +386,139 @@ pub fn find_system_node_path() -> Option<std::path::PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
+// Concurrency: nvm-wide advisory lock
+// ---------------------------------------------------------------------------
+
+/// Process-local flag for re-entrancy. `nvm use --install` calls `install`
+/// internally, and both want to hold the nvm lock; a second `flock(LOCK_EX)`
+/// on the same file from the *same* process can self-deadlock on some
+/// platforms, so we track ownership per-process and hand out a no-op guard
+/// when the lock is already held. Cross-process contention is still
+/// serialised by the OS lock itself.
+static NVM_LOCK_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// RAII guard holding an exclusive OS advisory lock on the nvm directory.
+///
+/// Prevents two `nvm` processes from racing on mutating operations
+/// (install / uninstall / use) against the same `NVM_DIR`. The lock is an
+/// OS-level advisory lock (`flock` on Unix, `LockFileEx` on Windows) on the
+/// `.nvm.lock` file, which the kernel releases automatically when the
+/// holding process exits — so a crashed/killed `nvm` never leaves a stale
+/// lock behind (the previous PID-based lock-file approach had both a
+/// reclaim race and stale-lock leaks on crash).
+///
+/// The `Option<File>` is `None` for a re-entrant acquire (the current
+/// process already holds the lock via an outer call); dropping a re-entrant
+/// guard does not release the lock.
+///
+/// Acquired via [`acquire_nvm_lock`]; released on `Drop`.
+pub struct NvmLock(Option<std::fs::File>);
+
+impl Drop for NvmLock {
+    fn drop(&mut self) {
+        if let Some(file) = self.0.take() {
+            // `fs4::fs_std::FileExt::unlock` is brought into scope by the
+            // `use` inside `acquire_nvm_lock` for the acquire path; for the
+            // drop path we reference it fully-qualified to avoid a stale
+            // module-level import.
+            let _ = fs4::fs_std::FileExt::unlock(&file);
+            NVM_LOCK_HELD.store(false, std::sync::atomic::Ordering::Release);
+        }
+        // Re-entrant guard (None): nothing to release; the outer guard still
+        // owns the OS lock and the `NVM_LOCK_HELD` flag.
+    }
+}
+
+/// Acquire an exclusive lock on the nvm directory, blocking until any other
+/// `nvm` process releases it.
+///
+/// The lock file lives at `<nvm_dir>/.nvm.lock`. We open it `create(true)`
+/// so the first-ever invocation creates it; subsequent invocations reuse the
+/// same file and contend on the OS lock, not on file creation (which would
+/// be racy).
+///
+/// **Re-entrant within a process**: if the current process already holds the
+/// lock (e.g. `nvm use --install` → `install`), this returns a no-op guard
+/// instead of deadlocking on a second `flock(LOCK_EX)` on the same file.
+///
+/// Returns an [`NvmLock`] whose `Drop` releases the lock. Hold it for the
+/// duration of the mutating operation (install / uninstall / use).
+pub fn acquire_nvm_lock(nvm_dir: &Path) -> Result<NvmLock> {
+    use fs4::fs_std::FileExt;
+
+    // Re-entrancy: already held in this process → hand out a no-op guard.
+    // `swap` returns the previous value; if it was already `true`, another
+    // frame in this process owns the real lock, so we don't touch the OS
+    // lock and we must NOT flip the flag back (the outer owner will).
+    if NVM_LOCK_HELD.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return Ok(NvmLock(None));
+    }
+
+    crate::system::ensure_nvm_dir()?;
+    let lock_path = nvm_dir.join(".nvm.lock");
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|e| {
+            // Roll back the flag so a later retry can actually acquire.
+            NVM_LOCK_HELD.store(false, std::sync::atomic::Ordering::Release);
+            anyhow::anyhow!("{}: {e}", crate::i18n::T("lock_open_failed"))
+        })?;
+
+    // Fast path: try a non-blocking acquire so the common single-invocation
+    // case returns instantly. If another nvm holds the lock, fall back to a
+    // blocking acquire (with a notice) so we wait for it instead of erroring
+    // out — concurrent `nvm install` should serialize, not fail.
+    match file.try_lock_exclusive() {
+        Ok(()) => Ok(NvmLock(Some(file))),
+        Err(_) => {
+            eprintln!("  {} {}", "⏳".cyan(), crate::i18n::T("lock_wait_another"));
+            match file.lock_exclusive() {
+                Ok(()) => Ok(NvmLock(Some(file))),
+                Err(e) => {
+                    NVM_LOCK_HELD.store(false, std::sync::atomic::Ordering::Release);
+                    Err(anyhow::anyhow!(
+                        "{}: {e}",
+                        crate::i18n::T("lock_acquire_failed")
+                    ))
+                }
+            }
+        }
+    }
+}
+
+// `colored::Colorize` is needed for the cyan() call in `acquire_nvm_lock`'s
+// blocking path. It's already a dependency; bring it into scope here so the
+// macro resolves without forcing every caller of utils to import it.
+use colored::Colorize as _;
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acquire_nvm_lock_is_reentrant_in_same_process() {
+        // Two nested acquires in the SAME process must not deadlock: the
+        // inner one returns a no-op guard (re-entrant) because the outer
+        // already holds the OS lock. This is the `nvm use --install` →
+        // `install` path.
+        let nvm_dir = crate::system::get_nvm_dir();
+        let outer = acquire_nvm_lock(&nvm_dir).expect("outer acquire");
+        // Inner acquire should succeed instantly (no-op guard), not block.
+        let inner = acquire_nvm_lock(&nvm_dir).expect("inner re-entrant acquire");
+        drop(inner);
+        drop(outer);
+        // After both drop, the flag must be cleared so a subsequent real
+        // acquire works again.
+        assert!(!NVM_LOCK_HELD.load(std::sync::atomic::Ordering::Acquire));
+    }
 
     #[test]
     fn validate_version_name_accepts_normal_versions() {

@@ -298,6 +298,32 @@ pub fn resolve_alias(name: &str) -> Result<String> {
     }
 
     if name.starts_with("lts/") {
+        // `lts/*` → newest installed LTS version (any line). Mirrors nvm-sh's
+        // `nvm alias default lts/*` / `nvm use lts/*`.
+        if name == "lts/*" {
+            return find_latest_installed_lts();
+        }
+
+        // `lts/-N` (N >= 1) → the Nth-previous LTS *line* relative to the
+        // newest known LTS line, then the newest installed version on that
+        // line. e.g. if the newest LTS line is v24 (krypton):
+        //   lts/-1 → v22 (jod), lts/-2 → v20 (iron), ...
+        // This is nvm-sh's `lts/-1` / `lts/-2` shorthand for "the LTS before
+        // the latest". We resolve against the known LTS table (not just
+        // installed versions) so `lts/-1` is stable even if the newest line
+        // isn't installed locally.
+        if let Some(offset_str) = name.strip_prefix("lts/-") {
+            if let Ok(offset) = offset_str.parse::<usize>() {
+                if offset == 0 {
+                    // lts/-0 is nonsensical; treat like lts/* for safety.
+                    return find_latest_installed_lts();
+                }
+                return resolve_lts_relative(offset);
+            }
+            // Non-numeric suffix (e.g. "lts/-foo") falls through to the
+            // codename lookup below, which will bail with unknown_lts_alias.
+        }
+
         let aliases = named_lts_aliases();
         if let Some(prefix) = aliases.get(name) {
             return find_latest_installed(prefix);
@@ -429,6 +455,42 @@ fn find_latest_installed_lts() -> Result<String> {
     Ok(versions.last().unwrap().clone())
 }
 
+/// Resolve `lts/-N`: pick the LTS *line* that is `offset` lines older than
+/// the newest known LTS line, then return the newest installed version on
+/// that line.
+///
+/// LTS lines are taken from [`named_lts_aliases`] and sorted by major version
+/// (the codenames happen to sort alphabetically == by major, but we sort
+/// numerically to be robust against future non-alphabetical codenames).
+/// `offset == 1` → the line immediately before the newest; `offset == 2` →
+/// two lines before, etc.
+///
+/// Bails if `offset` is larger than the number of known LTS lines minus one
+/// (i.e. there is no line that far back), or if no version is installed on
+/// the selected line.
+fn resolve_lts_relative(offset: usize) -> Result<String> {
+    // Collect (major) for every known LTS codename, sorted ascending.
+    let mut majors: Vec<u32> = named_lts_aliases()
+        .values()
+        .filter_map(|prefix| prefix.trim_start_matches('v').parse::<u32>().ok())
+        .collect();
+    majors.sort_unstable();
+    if majors.is_empty() {
+        anyhow::bail!("{}", T("no_installed_lts"));
+    }
+
+    // Index from the newest (last) backwards. offset=1 → second-newest.
+    // saturating_sub guards against offset > len, mapped to an explicit bail.
+    let idx = majors.len().checked_sub(1 + offset);
+    let Some(&major) = idx.and_then(|i| majors.get(i)) else {
+        anyhow::bail!(
+            "{}",
+            format_t("lts_offset_out_of_range", &[offset.to_string()])
+        );
+    };
+    find_latest_installed(&format!("v{}", major))
+}
+
 fn find_latest_unstable() -> Result<String> {
     let tags = get_tags(URI.to_string());
     let mut odd_max: Option<(u32, String)> = None;
@@ -476,13 +538,10 @@ pub fn handle_mirror(mirror: Option<&str>) -> Result<()> {
             );
         }
         Some(url) => {
-            let trimmed = url.trim();
-            if trimmed.is_empty() {
-                anyhow::bail!("{}", T("mirror_url_empty"));
-            }
-            config.mirror = Some(trimmed.to_string());
+            let normalized = normalize_mirror_url(url)?;
+            config.mirror = Some(normalized.clone());
             save_config(&config)?;
-            println!("{}", format_t("mirror_set", &[trimmed.to_string()]).green());
+            println!("{}", format_t("mirror_set", &[normalized]).green());
         }
         None => match &config.mirror {
             Some(url) => println!(
@@ -501,6 +560,41 @@ pub fn handle_mirror(mirror: Option<&str>) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Normalise a user-supplied mirror URL and enforce HTTPS.
+///
+/// Security: Node.js tarballs are downloaded from this URL and verified only
+/// by SHA-256 / GPG afterwards. A plain-HTTP mirror is vulnerable to a
+/// network attacker swapping the tarball (and the SHASUMS256.txt fetched
+/// from the same mirror) in transit, defeating both checks. We therefore:
+///   - reject `http://` outright, and
+///   - default a scheme-less URL to `https://` (with a notice) so users who
+///     paste `registry.npmmirror.com/-/binary/node/` still get a secure URL.
+///
+/// Trailing slashes are NOT normalised here — `get_base_url` already joins
+/// `{base}{version}/...`, so callers are expected to supply a trailing slash.
+fn normalize_mirror_url(url: &str) -> Result<String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("{}", T("mirror_url_empty"));
+    }
+    if trimmed.starts_with("http://") {
+        anyhow::bail!(
+            "{}",
+            format_t("mirror_insecure_http", &[trimmed.to_string()])
+        );
+    }
+    if trimmed.starts_with("https://") {
+        return Ok(trimmed.to_string());
+    }
+    // No scheme: assume HTTPS (the only secure option) and inform the user.
+    let upgraded = format!("https://{}", trimmed);
+    println!(
+        "{}",
+        format_t("mirror_https_upgraded", std::slice::from_ref(&upgraded)).yellow()
+    );
+    Ok(upgraded)
 }
 
 fn detect_shell_config() -> Option<String> {
@@ -765,5 +859,66 @@ mod tests {
         // Should be a valid path string
         let path = result.unwrap();
         assert!(!path.is_empty());
+    }
+
+    #[test]
+    fn test_normalize_mirror_url_accepts_https() {
+        assert_eq!(
+            normalize_mirror_url("https://example.com/node/").unwrap(),
+            "https://example.com/node/"
+        );
+    }
+
+    #[test]
+    fn test_normalize_mirror_url_rejects_http() {
+        // HTTP must be rejected outright to prevent MITM on tarball downloads.
+        let err = normalize_mirror_url("http://example.com/node/").unwrap_err();
+        assert!(format!("{err}").contains("HTTPS"));
+    }
+
+    #[test]
+    fn test_normalize_mirror_url_rejects_empty() {
+        let err = normalize_mirror_url("   ").unwrap_err();
+        assert!(format!("{err}").contains("empty"));
+    }
+
+    #[test]
+    fn test_normalize_mirror_url_upgrades_schemeless_to_https() {
+        // A scheme-less URL is upgraded to https:// so users can paste a bare host.
+        assert_eq!(
+            normalize_mirror_url("registry.npmmirror.com/-/binary/node/").unwrap(),
+            "https://registry.npmmirror.com/-/binary/node/"
+        );
+    }
+
+    #[test]
+    fn test_resolve_lts_relative_out_of_range_bails() {
+        // There are 11 known LTS lines (v4..v24). An offset far beyond that
+        // must bail with the out-of-range message rather than panic on
+        // underflow / index out of bounds.
+        let err = resolve_lts_relative(9999).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("out of range") || msg.contains("超出范围"));
+    }
+
+    #[test]
+    fn test_resolve_alias_lts_offset_within_table_does_not_panic() {
+        // lts/-1 targets the second-newest LTS line (v22 if v24 is newest).
+        // It may bail with "no matching installed version" if v22 isn't
+        // installed, but must NOT panic or return a success with garbage.
+        let res = resolve_alias("lts/-1");
+        match res {
+            Ok(v) => assert!(
+                v.starts_with("v22") || v.starts_with("v20"),
+                "lts/-1 should target v22 or v20, got {v}"
+            ),
+            Err(e) => {
+                let m = format!("{e}");
+                assert!(
+                    m.contains("matching") || m.contains("匹配"),
+                    "lts/-1 error should be 'no matching version', got: {m}"
+                );
+            }
+        }
     }
 }

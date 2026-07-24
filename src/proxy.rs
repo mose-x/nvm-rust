@@ -1,8 +1,19 @@
 use anyhow::Result;
 use std::env;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::config::{load_config, save_config};
+
+// Per-process cache of the `proxy` config flag. `is_proxy_enabled()` is called
+// from every HTTP client builder (`build_http_client`, `build_listing_client`,
+// `build_test_client`), and a single `nvm install` can construct several of
+// these — each call previously re-read and re-parsed `config.toml` from disk.
+// The config file does not change mid-process except via `set_proxy_enabled`,
+// which updates this cache directly, so caching is safe.
+lazy_static::lazy_static! {
+    static ref PROXY_ENABLED_CACHE: Mutex<Option<bool>> = Mutex::new(None);
+}
 
 /// Get the currently configured proxy from environment or system settings.
 ///
@@ -427,8 +438,22 @@ pub fn test_connectivity() -> (bool, bool) {
 }
 
 /// Check if proxy is enabled in config.
+///
+/// Reads the `proxy` flag from `config.toml` at most once per process; the
+/// result is cached in `PROXY_ENABLED_CACHE`. `set_proxy_enabled` keeps the
+/// cache in sync when the flag is mutated, so the `nvm proxy on` →
+/// `test_connectivity` flow (same process) observes the freshly-enabled value.
 pub fn is_proxy_enabled() -> bool {
-    load_config().ok().and_then(|c| c.proxy).unwrap_or(false)
+    if let Ok(guard) = PROXY_ENABLED_CACHE.lock() {
+        if let Some(v) = *guard {
+            return v;
+        }
+    }
+    let v = load_config().ok().and_then(|c| c.proxy).unwrap_or(false);
+    if let Ok(mut guard) = PROXY_ENABLED_CACHE.lock() {
+        *guard = Some(v);
+    }
+    v
 }
 
 /// Enable or disable proxy in config.
@@ -436,6 +461,12 @@ pub fn set_proxy_enabled(enabled: bool) -> Result<()> {
     let mut config = load_config()?;
     config.proxy = Some(enabled);
     save_config(&config)?;
+    // Keep the in-process cache in sync so an immediate `is_proxy_enabled()`
+    // (e.g. `nvm proxy on` → `test_connectivity` in the same invocation)
+    // observes the new value without re-reading the file.
+    if let Ok(mut guard) = PROXY_ENABLED_CACHE.lock() {
+        *guard = Some(enabled);
+    }
     Ok(())
 }
 
@@ -461,6 +492,21 @@ pub struct ProxyStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_proxy_enabled_uses_cache_after_set() {
+        // `set_proxy_enabled` writes the file AND updates the in-process cache,
+        // so a follow-up `is_proxy_enabled` in the same process must reflect
+        // the new value without re-reading disk. We pick the opposite of the
+        // on-disk default to make the assertion meaningful.
+        let before = is_proxy_enabled();
+        let new_val = !before;
+        assert!(set_proxy_enabled(new_val).is_ok());
+        assert_eq!(is_proxy_enabled(), new_val);
+        // Restore so other tests in the same binary aren't affected.
+        assert!(set_proxy_enabled(before).is_ok());
+        assert_eq!(is_proxy_enabled(), before);
+    }
 
     #[test]
     fn test_proxy_status_struct() {

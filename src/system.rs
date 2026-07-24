@@ -217,22 +217,22 @@ pub fn fetch_lts_codename_map(base_url: &str) -> std::collections::BTreeMap<Stri
     map
 }
 
-/// Verify downloaded file against SHASUMS256.txt.
+/// Fetch the `SHASUMS256.txt` for `version` from `base_url` exactly once as
+/// raw bytes.
 ///
-/// Returns `Ok(())` only when `archive_name` is listed in `SHASUMS256.txt`
-/// AND its SHA-256 matches the local file. Any other outcome — network
-/// error, non-200 status, malformed body, archive not listed, hash mismatch
-/// — is an `Err`. This is a hard security boundary: a previous version
-/// returned `Ok(false)` for all of these and the caller merely printed
-/// "skipped" before extracting the tarball, which let a MITM drop the
-/// SHASUMS256.txt request (404) and ship a tampered tarball unchallenged.
-/// Callers that genuinely want to skip must do so explicitly (e.g. `--offline`).
-pub fn verify_checksum(
-    file_path: &std::path::Path,
-    archive_name: &str,
-    base_url: &str,
-    version: &str,
-) -> Result<()> {
+/// Both [`verify_checksum`] and [`verify_gpg_signature`] need this file: the
+/// checksum step parses it to find the expected hash, and the GPG step writes
+/// it to a temp file to check the detached `.sig` against it. Previously each
+/// function fetched its own copy, so a single `nvm install` downloaded
+/// `SHASUMS256.txt` twice. Fetching once here and passing the bytes to both
+/// halves the metadata requests and guarantees both checks run against the
+/// *same* bytes (so a mirror reformatting the file between requests can't
+/// cause a checksum-pass / signature-fail mismatch).
+///
+/// Uses raw `bytes()` (not `text()`) so the GPG path gets the exact octets
+/// the `.sig` was produced over — `text()` would UTF-8 decode and could
+/// normalise line endings, invalidating the signature.
+pub fn fetch_shasums(base_url: &str, version: &str) -> Result<Vec<u8>> {
     let sums_url = format!("{}{}/SHASUMS256.txt", base_url, version);
     let client = build_listing_client();
     let response = client
@@ -242,9 +242,40 @@ pub fn verify_checksum(
     if !response.status().is_success() {
         anyhow::bail!("{}: HTTP {}", T("checksum_failed_abort"), response.status());
     }
-    let body = response
-        .text()
-        .map_err(|e| anyhow::anyhow!("{}: {}", T("checksum_failed_abort"), e))?;
+    response
+        .bytes()
+        .map_err(|e| anyhow::anyhow!("{}: {}", T("checksum_failed_abort"), e))
+        .map(|b| b.to_vec())
+}
+
+/// Verify downloaded file against a pre-fetched `SHASUMS256.txt` body.
+///
+/// `sums_bytes` is the raw body returned by [`fetch_shasums`]; it is shared
+/// with [`verify_gpg_signature`] so the file is downloaded only once per
+/// install.
+///
+/// Returns `Ok(())` only when `archive_name` is listed in the sums AND its
+/// SHA-256 matches the local file. Any other outcome — malformed body,
+/// archive not listed, hash mismatch — is an `Err`. This is a hard security
+/// boundary: a previous version returned `Ok(false)` for all of these and
+/// the caller merely printed "skipped" before extracting the tarball, which
+/// let a MITM drop the SHASUMS256.txt request (404) and ship a tampered
+/// tarball unchallenged. Callers that genuinely want to skip must do so
+/// explicitly (e.g. `--offline`).
+pub fn verify_checksum(
+    file_path: &std::path::Path,
+    archive_name: &str,
+    sums_bytes: &[u8],
+) -> Result<()> {
+    // SHASUMS256.txt is ASCII; from_utf8 is lossless for well-formed sums
+    // files. If a mirror somehow served non-UTF-8, that's itself a red flag
+    // we want to surface as an error rather than silently mis-parsing.
+    let body = std::str::from_utf8(sums_bytes).map_err(|e| {
+        anyhow::anyhow!(
+            "{}: SHASUMS256.txt is not valid UTF-8: {e}",
+            T("checksum_failed_abort")
+        )
+    })?;
 
     for line in body.lines() {
         if line.contains(archive_name) {
@@ -352,8 +383,12 @@ fn import_nodejs_release_keys() -> bool {
 
 /// Verify the GPG signature of `SHASUMS256.txt` for a Node.js release.
 ///
-/// Downloads `SHASUMS256.txt.sig` alongside `SHASUMS256.txt`, imports the
-/// Node.js release team's public key on demand, and runs `gpg --verify`.
+/// Downloads only `SHASUMS256.txt.sig` — the `SHASUMS256.txt` body itself
+/// is passed in via `sums_bytes` (already fetched once by [`fetch_shasums`]
+/// and shared with [`verify_checksum`], so a single install no longer
+/// downloads the sums file twice). Imports the Node.js release team's
+/// public key on demand and runs `gpg --verify`.
+///
 /// This is an additional trust layer on top of the SHA-256 checksum: it
 /// defeats an attacker who replaces both the tarball and `SHASUMS256.txt`.
 ///
@@ -362,12 +397,13 @@ fn import_nodejs_release_keys() -> bool {
 /// `SkippedKeyImport` status means keyserver import failed: the signature
 /// was NOT verified, so the caller should abort. `Failed` means gpg ran and
 /// explicitly rejected the signature. Any network/HTTP failure fetching
-/// `.sig` or `SHASUMS256.txt` is an `Err` — a previous version returned
-/// `SkippedNoSig` for those, which let a MITM drop the `.sig` request and
-/// ship an unsigned (potentially tampered) `SHASUMS256.txt` unchallenged.
+/// `.sig` is an `Err` — a previous version returned `SkippedNoSig` for
+/// those, which let a MITM drop the `.sig` request and ship an unsigned
+/// (potentially tampered) `SHASUMS256.txt` unchallenged.
 pub fn verify_gpg_signature(
     base_url: &str,
     version: &str,
+    sums_bytes: &[u8],
     no_gpg_verify: bool,
     offline: bool,
 ) -> Result<GpgStatus> {
@@ -382,7 +418,6 @@ pub fn verify_gpg_signature(
     }
 
     let sig_url = format!("{}{}/SHASUMS256.txt.sig", base_url, version);
-    let sums_url = format!("{}{}/SHASUMS256.txt", base_url, version);
     let client = build_listing_client();
 
     // Download the detached signature. A missing/unreachable `.sig` is a
@@ -401,23 +436,10 @@ pub fn verify_gpg_signature(
         .map_err(|e| anyhow::anyhow!("{}: {}", T("gpg_failed_abort"), e))?
         .to_vec();
 
-    // Download a fresh copy of SHASUMS256.txt that exactly matches the .sig
-    // (mirrors may reformat the text, which would invalidate the signature).
-    let sums_resp = client
-        .get(&sums_url)
-        .send()
-        .map_err(|e| anyhow::anyhow!("{}: {}", T("gpg_failed_abort"), e))?;
-    if !sums_resp.status().is_success() {
-        anyhow::bail!(
-            "{}: SHASUMS256.txt HTTP {}",
-            T("gpg_failed_abort"),
-            sums_resp.status()
-        );
-    }
-    let sums_bytes = sums_resp
-        .bytes()
-        .map_err(|e| anyhow::anyhow!("{}: {}", T("gpg_failed_abort"), e))?
-        .to_vec();
+    // `sums_bytes` was already fetched once (shared with verify_checksum) —
+    // reuse it instead of downloading SHASUMS256.txt a second time. Using
+    // the same bytes for both checks also guarantees the checksum that
+    // passed matches the file the signature covers.
 
     // Write both to randomly-named temp files. Using NamedTempFile (rather
     // than a predictable `nvm-rs-{pid}` name) prevents symlink attacks where
@@ -429,7 +451,7 @@ pub fn verify_gpg_signature(
     let mut sig_file = tempfile::NamedTempFile::new_in(&tmp)?;
     sig_file.write_all(&sig_bytes)?;
     let mut sums_file = tempfile::NamedTempFile::new_in(&tmp)?;
-    sums_file.write_all(&sums_bytes)?;
+    sums_file.write_all(sums_bytes)?;
 
     let sig_str = sig_file.path().to_string_lossy().to_string();
     let sums_str = sums_file.path().to_string_lossy().to_string();

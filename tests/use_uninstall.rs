@@ -52,6 +52,36 @@ fn use_succeeds_when_version_dir_exists() {
     );
 }
 
+#[test]
+fn use_no_arg_falls_back_to_default_when_nvmrc_absent() {
+    // P1-9: `nvm use` with no arg and no .nvmrc should switch to the
+    // `default` version (config.default_version) instead of bailing. We seed
+    // a fake v18.0.0 install + a config.json defaulting to it, then `use`.
+    let (dir, nvm_dir) = common::isolated_nvm_dir();
+    create_fake_version(dir.path(), "v18.0.0", true);
+    std::fs::write(
+        dir.path().join("config.json"),
+        r#"{"default_version":"v18.0.0"}"#,
+    )
+    .expect("write config.json");
+
+    let out = std::process::Command::new(common::nvm_bin())
+        .arg("use")
+        .env("NVM_DIR", &nvm_dir)
+        .output()
+        .expect("run nvm use");
+    assert!(
+        out.status.success(),
+        "use (no arg) with default set should succeed: {}",
+        combined_output(&out)
+    );
+    let s = combined_output(&out);
+    assert!(
+        s.contains("v18.0.0"),
+        "expected default v18.0.0 to be used, got: {s}"
+    );
+}
+
 // --- `nvm uninstall` error paths ------------------------------------------
 
 #[test]

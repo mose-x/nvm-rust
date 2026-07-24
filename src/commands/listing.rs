@@ -3,7 +3,7 @@ use colored::Colorize;
 use std::fs;
 
 use super::{
-    compare_versions, get_base_url, get_codename, get_codename_with_remote, get_current_version,
+    compare_versions, get_base_url, get_codename, get_codename_from_map, get_current_version,
     render_table,
 };
 use crate::config::{load_config, resolve_alias};
@@ -32,6 +32,13 @@ pub fn uninstall(version: &str) -> Result<()> {
     let resolved = resolve_alias(version)?;
     let nvm_dir = get_nvm_dir();
     let version_dir = nvm_dir.join(&resolved);
+
+    // Serialize against concurrent install/uninstall: a concurrent install
+    // could repopulate `version_dir` between our exists-check and
+    // `remove_dir_all`, or a concurrent uninstall could remove it first and
+    // leave us operating on a stale path. The lock is held across the whole
+    // removal + `current` cleanup.
+    let _nvm_lock = crate::utils::acquire_nvm_lock(&nvm_dir)?;
 
     if !version_dir.exists() {
         anyhow::bail!(
@@ -177,14 +184,19 @@ pub fn remote_versions(
 
     let mut all_versions: Vec<(String, bool, String)> = Vec::new();
 
+    // Fetch the codename→major map ONCE for the whole version list. The
+    // previous loop body called `get_codename_with_remote` per version,
+    // which re-fetched `index.json` and rebuilt the BTreeMap on every
+    // iteration — ~600 HTTP GETs + ~600 BTreeMap allocations for a single
+    // `nvm ls-remote`. The map is read-only and identical for every
+    // version on the same mirror, so one fetch covers all of them.
+    let codename_map = crate::utils::lts_codename_to_major_with_remote(base_url);
+
     for tag in tags {
         if tag.starts_with('v') && tag.ends_with('/') {
             let version = tag.trim_end_matches('/').to_string();
             let is_lts = is_lts_version(&version);
-            // Use the remote-augmented table so a brand-new LTS line shows
-            // its codename in `nvm ls-remote` even before this binary's
-            // hardcoded table is updated.
-            let codename = get_codename_with_remote(&version, base_url);
+            let codename = get_codename_from_map(&version, &codename_map);
             all_versions.push((version, is_lts, codename));
         }
     }

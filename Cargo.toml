@@ -43,6 +43,11 @@ colored = "2.1"
 lazy_static = "1.4"
 # Base64 decoding for npm tarball integrity verification (sha512-<base64>)
 base64 = "0.22"
+# Cross-platform advisory file locks (flock on Unix, LockFileEx on Windows)
+# used to serialize concurrent install/uninstall operations on the same nvm dir.
+# OS locks are auto-released when the holding process exits, so no stale-lock
+# cleanup is needed.
+fs4 = "0.12"
 
 [profile.release]
 # Aggressive optimisation for the distributed binary: LTO across crates,

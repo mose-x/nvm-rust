@@ -34,8 +34,10 @@ pub fn use_version_silent(
 ) -> Result<()> {
     // `nvm use` (no arg): fall back to .nvmrc / .node-version /
     // package.json#engines.node lookup, mirroring nvm-sh. If none of those
-    // are found, surface a clear error rather than the clap "missing
-    // required argument" usage message.
+    // are found, fall back to the `default` alias (a user-defined alias or
+    // the --save'd default_version) before bailing — this matches nvm-sh,
+    // where bare `nvm use` switches to the default version when no .nvmrc
+    // is present.
     //
     // Lookup priority matches nvm-sh user expectations: an explicit .nvmrc
     // wins over a package.json engines.node range, because .nvmrc is the
@@ -49,16 +51,41 @@ pub fn use_version_silent(
             None => match find_package_json_node_version(silent)? {
                 Some(v) => v,
                 None => {
-                    if !silent {
-                        println!("{} {}", "ℹ".cyan().bold(), T("no_nvmrc_found").cyan());
+                    // No project-local version file: try the `default` alias
+                    // (user `nvm alias default X` or `nvm use X --save`).
+                    // `resolve_alias("default")` already bails with a clear
+                    // "no default version set" if neither exists, so we only
+                    // add the informational notice here.
+                    match resolve_alias("default") {
+                        Ok(v) => {
+                            if !silent {
+                                println!(
+                                    "{} {} {}",
+                                    "ℹ".cyan().bold(),
+                                    T("no_nvmrc_using_default").cyan(),
+                                    v.white()
+                                );
+                            }
+                            v
+                        }
+                        Err(_) => {
+                            if !silent {
+                                println!("{} {}", "ℹ".cyan().bold(), T("no_nvmrc_found").cyan());
+                            }
+                            anyhow::bail!("{}", T("specify_version"));
+                        }
                     }
-                    anyhow::bail!("{}", T("specify_version"));
                 }
             },
         },
     };
     let resolved = resolve_alias(&version)?;
     let nvm_dir = get_nvm_dir();
+
+    // Serialize the `current` write + optional install against concurrent
+    // install/uninstall. Re-entrant: the inner `install` call below will
+    // get a no-op guard instead of self-deadlocking.
+    let _nvm_lock = crate::utils::acquire_nvm_lock(&nvm_dir)?;
 
     if resolved.starts_with("system:") {
         let current_file = nvm_dir.join("current");

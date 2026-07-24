@@ -26,30 +26,28 @@ lazy_static::lazy_static! {
 }
 
 pub(crate) fn get_codename(version: &str) -> String {
-    parse_major(version)
-        .and_then(|m| {
-            let map = lts_codename_to_major();
-            for (name, major) in map {
-                if major == m {
-                    return Some(name.to_string());
-                }
-            }
-            None
-        })
-        .unwrap_or_else(|| "-".to_string())
+    let map = lts_codename_to_major();
+    get_codename_from_map(version, &map)
 }
 
-/// Like `get_codename` but merges a live `index.json` fetch so a brand-new
-/// LTS line shows its codename in `nvm ls-remote` even before this binary's
-/// hardcoded table is updated. Falls back to the shipped table on any
-/// network/parse failure.
-pub(crate) fn get_codename_with_remote(version: &str, base_url: &str) -> String {
+/// Look up the LTS codename for `version` against a pre-built codename→major
+/// map. Centralises the linear scan so callers that already hold a map
+/// (e.g. `remote_versions` fetched one up-front for the whole 600+ version
+/// loop) can reuse it instead of re-fetching `index.json` per version.
+///
+/// Generic over the key type so both the shipped `BTreeMap<&'static str, u32>`
+/// (from `lts_codename_to_major`) and the remote-augmented
+/// `BTreeMap<String, u32>` (from `lts_codename_to_major_with_remote`) work
+/// without forcing the caller to reallocate keys.
+pub(crate) fn get_codename_from_map<K: AsRef<str>>(
+    version: &str,
+    map: &std::collections::BTreeMap<K, u32>,
+) -> String {
     parse_major(version)
         .and_then(|m| {
-            let map = crate::utils::lts_codename_to_major_with_remote(base_url);
             for (name, major) in map {
-                if major == m {
-                    return Some(name);
+                if *major == m {
+                    return Some(name.as_ref().to_string());
                 }
             }
             None

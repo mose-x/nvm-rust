@@ -14,8 +14,8 @@ use crate::download::{copy_from_cache, download_to_cache, is_cached};
 use crate::extract::{extract_archive, extract_iojs_archive};
 use crate::i18n::{format_t, T};
 use crate::system::{
-    get_nvm_dir, os_suffix, prepend_to_path, verify_checksum, verify_gpg_signature, GpgStatus,
-    IOJS_URI,
+    fetch_shasums, get_nvm_dir, os_suffix, prepend_to_path, verify_checksum, verify_gpg_signature,
+    GpgStatus, IOJS_URI,
 };
 use crate::utils::{atomic_write, iojs_version_number};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -316,45 +316,62 @@ fn install_binary(
         if offline {
             println!("{}", T("checksum_offline").dimmed());
         } else {
+            // Fetch SHASUMS256.txt ONCE and reuse the bytes for both the
+            // checksum check and the GPG signature check. Previously each
+            // check downloaded its own copy, so a single install issued two
+            // GETs for the same small file. Sharing bytes also guarantees
+            // both checks run against the identical document (a mirror
+            // reformatting the file between the two requests could otherwise
+            // cause a checksum-pass / signature-fail mismatch).
+            let sums_bytes = match fetch_shasums(base_url, &target.target_version) {
+                Ok(b) => b,
+                Err(e) => {
+                    println!("{}", T("checksum_failed").red().bold());
+                    anyhow::bail!("{}", e);
+                }
+            };
+
             // Hard security boundary: verify_checksum now returns Err for
             // any failure (network error, 404, archive not listed, hash
             // mismatch). A previous version returned Ok(false) and the
             // caller merely printed "skipped" — which let a MITM drop the
             // SHASUMS256.txt request and ship a tampered tarball. Use
             // --offline to bypass when the mirror is unreachable.
-            match verify_checksum(
-                &temp_file,
-                &target.archive_name,
-                base_url,
-                &target.target_version,
-            ) {
+            match verify_checksum(&temp_file, &target.archive_name, &sums_bytes) {
                 Ok(()) => println!("{}", T("checksum_verified").green().bold()),
                 Err(e) => {
                     println!("{}", T("checksum_failed").red().bold());
                     anyhow::bail!("{}", e);
                 }
             }
-        }
 
-        // GPG signature verification of SHASUMS256.txt — extra trust layer
-        // on top of the SHA-256 checksum. Skips only when gpg is missing,
-        // --no-gpg-verify is passed, or --offline is in effect. A *failed*
-        // signature (gpg ran and rejected it) or an unreachable .sig /
-        // SHASUMS256.txt (network error, 404) aborts, since either could
-        // indicate tampering or an active MITM stripping the signature.
-        print!("  {} ", T("gpg_label").dimmed());
-        match verify_gpg_signature(base_url, &target.target_version, no_gpg_verify, offline)? {
-            GpgStatus::Verified => println!("{}", T("gpg_verified").green().bold()),
-            GpgStatus::SkippedDisabled => println!("{}", T("gpg_disabled").dimmed()),
-            GpgStatus::SkippedOffline => println!("{}", T("gpg_offline").dimmed()),
-            GpgStatus::SkippedNoGpg => println!("{}", T("gpg_no_gpg").dimmed()),
-            GpgStatus::SkippedKeyImport => {
-                println!("{}", T("gpg_key_import_failed").yellow().bold());
-                anyhow::bail!("{}", T("gpg_key_import_failed_abort"));
-            }
-            GpgStatus::Failed => {
-                println!("{}", T("gpg_failed").red().bold());
-                anyhow::bail!("{}", T("gpg_failed_abort"));
+            // GPG signature verification of SHASUMS256.txt — extra trust layer
+            // on top of the SHA-256 checksum. Skips only when gpg is missing,
+            // --no-gpg-verify is passed, or --offline is in effect. A *failed*
+            // signature (gpg ran and rejected it) or an unreachable .sig
+            // (network error, 404) aborts, since either could indicate
+            // tampering or an active MITM stripping the signature. The sums
+            // body is reused from the fetch above (no second download).
+            print!("  {} ", T("gpg_label").dimmed());
+            match verify_gpg_signature(
+                base_url,
+                &target.target_version,
+                &sums_bytes,
+                no_gpg_verify,
+                offline,
+            )? {
+                GpgStatus::Verified => println!("{}", T("gpg_verified").green().bold()),
+                GpgStatus::SkippedDisabled => println!("{}", T("gpg_disabled").dimmed()),
+                GpgStatus::SkippedOffline => println!("{}", T("gpg_offline").dimmed()),
+                GpgStatus::SkippedNoGpg => println!("{}", T("gpg_no_gpg").dimmed()),
+                GpgStatus::SkippedKeyImport => {
+                    println!("{}", T("gpg_key_import_failed").yellow().bold());
+                    anyhow::bail!("{}", T("gpg_key_import_failed_abort"));
+                }
+                GpgStatus::Failed => {
+                    println!("{}", T("gpg_failed").red().bold());
+                    anyhow::bail!("{}", T("gpg_failed_abort"));
+                }
             }
         }
     }
@@ -463,6 +480,14 @@ pub fn install(cfg: InstallConfig) -> Result<()> {
     };
 
     let version_dir = nvm_dir.join(&target.target_version);
+
+    // Serialize against other mutating nvm operations (concurrent
+    // `nvm install <same-version>` would otherwise both pass the
+    // "already installed?" check and extract into the same dir, leaving a
+    // corrupted half-populated tree). The lock is released on drop at the
+    // end of `install`. Held AFTER version resolution (read-only network
+    // ops) but ACROSS the exists-check + download + extract critical section.
+    let _nvm_lock = crate::utils::acquire_nvm_lock(&nvm_dir)?;
 
     // If the version is already installed (non-empty dir), skip the download/
     // extract — matches nvm-sh's "already installed" behavior. Avoids the
