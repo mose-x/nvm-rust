@@ -130,16 +130,18 @@ fn winreg_system_proxy() -> Option<String> {
 #[cfg(target_os = "windows")]
 fn parse_windows_proxy_server(val: &str) -> String {
     if val.contains('=') {
-        for part in val.split(';') {
-            let part = part.trim();
-            if let Some(rest) = part.strip_prefix("https=") {
-                return normalize_proxy_url(rest, "http");
-            }
-            if let Some(rest) = part.strip_prefix("http=") {
-                return normalize_proxy_url(rest, "http");
-            }
-            if let Some(rest) = part.strip_prefix("socks=") {
-                return normalize_proxy_url(rest, "socks5");
+        // Windows writes per-scheme entries as `http=host:port;https=host:port`.
+        // Priority: https (Node downloads go over HTTPS), then http, then socks.
+        // The previous loop returned the first matching entry in textual order,
+        // so `http=...;https=...` wrongly returned the http entry even when an
+        // https entry existed. Scan in priority order instead.
+        for prefix in ["https=", "http=", "socks="] {
+            for part in val.split(';') {
+                let part = part.trim();
+                if let Some(rest) = part.strip_prefix(prefix) {
+                    let scheme = if prefix == "socks=" { "socks5" } else { "http" };
+                    return normalize_proxy_url(rest, scheme);
+                }
             }
         }
         // Fall through to use the whole value if no known scheme found.
