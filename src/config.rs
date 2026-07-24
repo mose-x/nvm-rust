@@ -32,20 +32,19 @@ pub struct Aliases {
     pub aliases: BTreeMap<String, String>,
 }
 
-pub fn named_lts_aliases() -> BTreeMap<&'static str, &'static str> {
-    let mut m = BTreeMap::new();
-    m.insert("lts/argon", "v4");
-    m.insert("lts/boron", "v6");
-    m.insert("lts/carbon", "v8");
-    m.insert("lts/dubnium", "v10");
-    m.insert("lts/erbium", "v12");
-    m.insert("lts/fermium", "v14");
-    m.insert("lts/gallium", "v16");
-    m.insert("lts/hydrogen", "v18");
-    m.insert("lts/iron", "v20");
-    m.insert("lts/jod", "v22");
-    m.insert("lts/krypton", "v24");
-    m
+/// `lts/<codename>` → `v<major>` aliases, derived from the single source of
+/// truth in [`crate::utils::lts_codename_to_major`].
+///
+/// Both this map and [`crate::utils::lts_codename_to_major`] previously held
+/// their own hardcoded copy of the codename→major table, which had to be
+/// kept in sync by hand — forgetting one half meant `nvm use lts/argon`
+/// could resolve while `is_lts_version("v4.0.0")` returned false (or vice
+/// versa). Deriving here keeps one table (`utils`) as the authority.
+pub fn named_lts_aliases() -> BTreeMap<String, String> {
+    crate::utils::lts_codename_to_major()
+        .into_iter()
+        .map(|(codename, major)| (format!("lts/{}", codename), format!("v{}", major)))
+        .collect()
 }
 
 /// Return `lts/<codename>` → `v<major>` aliases, merging the hardcoded
@@ -57,10 +56,7 @@ pub fn named_lts_aliases() -> BTreeMap<&'static str, &'static str> {
 /// Use this in network-capable code paths (install, `nvm use lts/<name>`).
 /// The no-arg `named_lts_aliases` stays for synchronous paths.
 pub fn named_lts_aliases_with_remote(base_url: &str) -> BTreeMap<String, String> {
-    let mut m: BTreeMap<String, String> = named_lts_aliases()
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
+    let mut m = named_lts_aliases();
     let remote = crate::system::fetch_lts_codename_map(base_url);
     for (codename, major) in remote {
         let alias = format!("lts/{}", codename);
@@ -844,10 +840,10 @@ mod tests {
     fn test_named_lts_aliases() {
         let aliases = named_lts_aliases();
         assert_eq!(aliases.len(), 11);
-        assert_eq!(aliases.get("lts/argon"), Some(&"v4"));
-        assert_eq!(aliases.get("lts/iron"), Some(&"v20"));
-        assert_eq!(aliases.get("lts/jod"), Some(&"v22"));
-        assert_eq!(aliases.get("lts/krypton"), Some(&"v24"));
+        assert_eq!(aliases.get("lts/argon"), Some(&"v4".to_string()));
+        assert_eq!(aliases.get("lts/iron"), Some(&"v20".to_string()));
+        assert_eq!(aliases.get("lts/jod"), Some(&"v22".to_string()));
+        assert_eq!(aliases.get("lts/krypton"), Some(&"v24".to_string()));
         assert_eq!(aliases.get("lts/unknown"), None);
     }
 
