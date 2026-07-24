@@ -624,4 +624,45 @@ mod tests {
         // Should end with cache dir name
         assert!(cache.to_string_lossy().ends_with("cache"));
     }
+
+    #[test]
+    fn test_version_bin_dir_platform_layout() {
+        // Locks the per-platform Node.js install layout: `bin/` subdir on
+        // Unix, version dir root on Windows. A regression here would silently
+        // point every Command::new(node_path) at a non-existent directory on
+        // the wrong platform.
+        let version_dir = Path::new("/tmp/nvm/v20.0.0");
+        let bin = version_bin_dir(version_dir);
+        if cfg!(windows) {
+            assert_eq!(bin, version_dir);
+        } else {
+            assert_eq!(bin, version_dir.join("bin"));
+        }
+    }
+
+    #[test]
+    fn test_exe_path_unix_is_bare_join() {
+        // On Unix, exe_path must return exactly bin_dir.join(name) — no
+        // extension probing. This is the contract every Unix call site
+        // relied on before the Windows helper was introduced.
+        if cfg!(not(windows)) {
+            let bin = Path::new("/tmp/nvm/v20.0.0/bin");
+            assert_eq!(exe_path(bin, "node"), bin.join("node"));
+            assert_eq!(exe_path(bin, "npm"), bin.join("npm"));
+            assert_eq!(exe_path(bin, "corepack"), bin.join("corepack"));
+        }
+    }
+
+    #[test]
+    fn test_exe_path_windows_fallback_extensions() {
+        // On Windows, when nothing exists on disk, exe_path must default to
+        // `.cmd` for the known shim tools and `.exe` otherwise — so error
+        // messages and existence checks carry a sensible filename.
+        if cfg!(windows) {
+            let bin = Path::new("C:\\nonexistent\\nvm\\v20.0.0");
+            assert_eq!(exe_path(bin, "npm").file_name().unwrap(), "npm.cmd");
+            assert_eq!(exe_path(bin, "pnpm").file_name().unwrap(), "pnpm.cmd");
+            assert_eq!(exe_path(bin, "node").file_name().unwrap(), "node.exe");
+        }
+    }
 }
