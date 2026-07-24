@@ -6,6 +6,13 @@ use colored::Colorize;
 use crate::i18n::{format_t, T};
 use crate::system::{get_nvm_dir, prepend_to_path};
 
+/// Tool shims that `corepack enable` writes into a version's `bin/` dir.
+///
+/// Single source for both the "is corepack enabled?" probe and the
+/// "remove corepack shims" fallback — previously the array was duplicated
+/// at the two call sites, which had to be kept in sync by hand.
+const COREPACK_SHIMS: &[&str] = &["pnpm", "pnpx", "yarn", "yarnpkg"];
+
 pub fn corepack_status(version: Option<&str>) -> anyhow::Result<()> {
     let nvm_dir = get_nvm_dir();
 
@@ -45,8 +52,7 @@ pub fn corepack_status(version: Option<&str>) -> anyhow::Result<()> {
             // We must NOT probe by running `corepack <tool> --version`, because
             // corepack will happily download and run the tool on first call even
             // when it has not been enabled — that would falsely report "enabled".
-            let tools = ["pnpm", "pnpx", "yarn", "yarnpkg"];
-            let activated: Vec<&str> = tools
+            let activated: Vec<&str> = COREPACK_SHIMS
                 .iter()
                 .copied()
                 .filter(|t| version_bin.join(t).exists())
@@ -278,7 +284,7 @@ pub fn corepack_disable(version: Option<&str>) -> anyhow::Result<()> {
     // `corepack disable` does on disk.
     if !success {
         let mut remove_failed = false;
-        for tool in &["pnpm", "pnpx", "yarn", "yarnpkg"] {
+        for tool in COREPACK_SHIMS {
             let shim = version_bin.join(tool);
             if !shim.exists() {
                 continue;

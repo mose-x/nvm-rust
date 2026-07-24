@@ -15,7 +15,7 @@ use crate::extract::{extract_archive, extract_iojs_archive};
 use crate::i18n::{format_t, T};
 use crate::system::{
     fetch_shasums, get_nvm_dir, os_suffix, prepend_to_path, verify_checksum, verify_gpg_signature,
-    GpgStatus, IOJS_URI,
+    GpgStatus, IOJS_URI, NPM_REGISTRY,
 };
 use crate::utils::{atomic_write, iojs_version_number};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -777,7 +777,7 @@ fn reinstall_packages_inner(from: &str, to: &str) -> Result<()> {
 fn download_prebuilt_npm(version_dir: &Path, version: &str) -> Result<()> {
     let ver_num = version.trim_start_matches('v');
     let npm_tarball = format!("npm-v{}.tgz", ver_num);
-    let fallback_url = format!("https://registry.npmjs.org/npm/-/npm-{}.tgz", ver_num);
+    let fallback_url = format!("{}/npm/-/npm-{}.tgz", NPM_REGISTRY, ver_num);
     let npm_tar_path = get_nvm_dir().join(&npm_tarball);
 
     if !npm_tar_path.exists() {
@@ -788,7 +788,7 @@ fn download_prebuilt_npm(version_dir: &Path, version: &str) -> Result<()> {
         // hash. On any failure we fall back to the hardcoded URL and skip
         // integrity verification (with a warning), so a transient registry
         // outage doesn't block source-build npm installs.
-        let meta_url = format!("https://registry.npmjs.org/npm/{}", ver_num);
+        let meta_url = format!("{}/npm/{}", NPM_REGISTRY, ver_num);
         let registry_result: Option<(String, Option<String>)> = (|| {
             let resp = client.get(&meta_url).send().ok()?;
             if !resp.status().is_success() {

@@ -147,7 +147,6 @@ pub fn available_lang_codes() -> &'static [&'static str] {
 }
 
 #[allow(non_snake_case)]
-#[allow(dead_code)]
 pub fn T(key: &str) -> String {
     let lang = get_language();
     t(key, lang)
@@ -169,7 +168,6 @@ fn substitute_params(template: &str, args: &[String]) -> String {
     result
 }
 
-#[allow(dead_code)]
 fn t(key: &str, lang: Lang) -> String {
     // Look up the requested language first; fall back to English if the
     // key is missing. English is always present (enforced by build.rs) and

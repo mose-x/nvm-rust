@@ -15,6 +15,11 @@ use crate::proxy::build_listing_client;
 pub const URI: &str = "https://nodejs.org/dist/";
 pub const MIRROR_URI: &str = "https://registry.npmmirror.com/-/binary/node/";
 pub const IOJS_URI: &str = "https://iojs.org/dist/";
+/// The npm registry base URL. npm tarballs live here, distinct from the
+/// Node.js binary mirror (`config.mirror` only mirrors `nodejs.org/dist/`).
+/// The user's npm CLI uses the same registry by default (configurable via
+/// `~/.npmrc`); nvm always hits this for the source-build npm fetch.
+pub const NPM_REGISTRY: &str = "https://registry.npmjs.org";
 pub const R_NVM_PATH: &str = ".nvm.rust";
 pub const CONFIG_FILE: &str = "config.json";
 pub const ALIAS_FILE: &str = "alias.json";
@@ -325,10 +330,18 @@ const NODEJS_RELEASE_KEY_IDS: &[&str] = &[
 ];
 
 /// Keyservers tried (in order) when importing the Node.js release keys.
+///
+/// Uses `hkps://` (OpenPGP over HTTPS, port 443) rather than `hkp://`
+/// (plaintext, port 80/11371). A plaintext keyserver fetch lets a network
+/// attacker substitute a different key for the Node.js release key, which
+/// would then "verify" a tampered SHASUMS256.txt — defeating the whole point
+/// of the GPG check. `hkps://` authenticates the keyserver via TLS so the
+/// key bytes can't be swapped in transit. Port 443 is also more
+/// firewall-friendly than the classic HKP port 11371.
 const NODEJS_KEYSERVERS: &[&str] = &[
-    "hkp://keyserver.ubuntu.com:80",
-    "hkp://keyserver.ubuntu.com:443",
-    "hkp://keyserver.pgp.com:80",
+    "hkps://keyserver.ubuntu.com",
+    "hkps://keys.openpgp.org",
+    "hkps://keyserver.pgp.com",
 ];
 
 /// Outcome of a GPG signature verification attempt.
