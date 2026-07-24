@@ -42,7 +42,7 @@ pub struct Aliases {
 /// versa). Deriving here keeps one table (`utils`) as the authority.
 pub fn named_lts_aliases() -> BTreeMap<String, String> {
     crate::utils::lts_codename_to_major()
-        .into_iter()
+        .iter()
         .map(|(codename, major)| (format!("lts/{}", codename), format!("v{}", major)))
         .collect()
 }

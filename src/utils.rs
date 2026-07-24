@@ -91,20 +91,37 @@ pub fn iojs_version_number(version: &str) -> Option<String> {
     None
 }
 
-pub fn lts_codename_to_major() -> BTreeMap<&'static str, u32> {
-    let mut m = BTreeMap::new();
-    m.insert("argon", 4);
-    m.insert("boron", 6);
-    m.insert("carbon", 8);
-    m.insert("dubnium", 10);
-    m.insert("erbium", 12);
-    m.insert("fermium", 14);
-    m.insert("gallium", 16);
-    m.insert("hydrogen", 18);
-    m.insert("iron", 20);
-    m.insert("jod", 22);
-    m.insert("krypton", 24);
-    m
+// Lazy-built, process-wide cache of the LTS codename → major table.
+//
+// `is_lts_version` is called once per version in `nvm ls-remote` (~600
+// iterations), and `get_codename` similarly. Rebuilding the 11-entry
+// `BTreeMap` on every call allocated 600 maps per listing for nothing —
+// the table is immutable for the process lifetime. `lazy_static` builds it
+// once on first access; subsequent callers get a `&'static` reference.
+lazy_static::lazy_static! {
+    static ref LTS_CODENAME_TO_MAJOR: BTreeMap<&'static str, u32> = {
+        let mut m = BTreeMap::new();
+        m.insert("argon", 4);
+        m.insert("boron", 6);
+        m.insert("carbon", 8);
+        m.insert("dubnium", 10);
+        m.insert("erbium", 12);
+        m.insert("fermium", 14);
+        m.insert("gallium", 16);
+        m.insert("hydrogen", 18);
+        m.insert("iron", 20);
+        m.insert("jod", 22);
+        m.insert("krypton", 24);
+        m
+    };
+}
+
+/// The LTS codename → major table, built once and reused for the process
+/// lifetime (see [`LTS_CODENAME_TO_MAJOR`]). Returns a `&'static` reference
+/// so hot callers like `is_lts_version` (called ~600× per `nvm ls-remote`)
+/// pay zero allocation.
+pub fn lts_codename_to_major() -> &'static BTreeMap<&'static str, u32> {
+    &LTS_CODENAME_TO_MAJOR
 }
 
 /// Hardcoded LTS codename → major fallback used when the network is
@@ -112,8 +129,8 @@ pub fn lts_codename_to_major() -> BTreeMap<&'static str, u32> {
 /// view; `lts_codename_to_major_with_remote` merges dynamic entries over it.
 fn lts_codename_to_major_fallback() -> BTreeMap<String, u32> {
     lts_codename_to_major()
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v))
+        .iter()
+        .map(|(k, v)| (k.to_string(), *v))
         .collect()
 }
 

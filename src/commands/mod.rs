@@ -27,7 +27,7 @@ lazy_static::lazy_static! {
 
 pub(crate) fn get_codename(version: &str) -> String {
     let map = lts_codename_to_major();
-    get_codename_from_map(version, &map)
+    get_codename_from_map(version, map)
 }
 
 /// Look up the LTS codename for `version` against a pre-built codename→major
