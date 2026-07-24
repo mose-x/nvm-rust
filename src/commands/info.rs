@@ -1094,7 +1094,7 @@ pub fn cmd_language(lang: Option<&str>) -> Result<()> {
             println!(
                 "  {} {}",
                 "→".dimmed(),
-                format_t("lang_usage", &[usage_hint.to_string()]).dimmed()
+                format_t("lang_usage", std::slice::from_ref(&usage_hint)).dimmed()
             );
             println!();
         }
