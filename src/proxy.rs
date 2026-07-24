@@ -530,10 +530,27 @@ mod tests {
 
     #[test]
     fn test_is_proxy_enabled_uses_cache_after_set() {
-        // `set_proxy_enabled` writes the file AND updates the in-process cache,
-        // so a follow-up `is_proxy_enabled` in the same process must reflect
-        // the new value without re-reading disk. We pick the opposite of the
-        // on-disk default to make the assertion meaningful.
+        // `set_proxy_enabled` writes the config file AND updates the in-process
+        // cache, so a follow-up `is_proxy_enabled` in the same process must
+        // reflect the new value without re-reading disk.
+        //
+        // Isolate the filesystem: point NVM_DIR at a temp dir we own, and
+        // create it so `atomic_write`'s `NamedTempFile::new_in(parent)` does
+        // not fail with "No such file or directory". The previous test wrote
+        // to the real `~/.nvm.rust/` and relied on the parent existing, which
+        // failed on macOS CI runners where HOME is a fresh, empty dir.
+        //
+        // NOTE: PROXY_ENABLED_CACHE is process-global and not reset here, so we
+        // must write through `set_proxy_enabled` (which updates the cache)
+        // rather than `save_config` alone. The cache also means this test can
+        // affect other tests in the same binary that call `is_proxy_enabled`
+        // without first calling `set_proxy_enabled` — that is unavoidable
+        // without a `reset_cache` helper, and current other tests do not
+        // depend on `is_proxy_enabled`'s value.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("NVM_DIR", tmp.path());
+        std::fs::create_dir_all(tmp.path()).expect("create nvm dir");
+
         let before = is_proxy_enabled();
         let new_val = !before;
         assert!(set_proxy_enabled(new_val).is_ok());
@@ -541,6 +558,8 @@ mod tests {
         // Restore so other tests in the same binary aren't affected.
         assert!(set_proxy_enabled(before).is_ok());
         assert_eq!(is_proxy_enabled(), before);
+
+        std::env::remove_var("NVM_DIR");
     }
 
     #[test]

@@ -1,10 +1,21 @@
 use anyhow::{Context, Result};
-use std::fs::{self, File};
+use std::fs;
 use std::path::Path;
-use tar::Archive;
-use xz2::read::XzDecoder;
 
 use crate::i18n::T;
+
+// These imports are only used by the `#[cfg(not(target_os = "windows"))]`
+// extraction path. On Windows the code path uses `sevenz_rust::decompress_file`
+// instead, so leaving these unconditionally imported produces "unused import"
+// errors under `-D warnings`. Gate them to match their usage.
+#[cfg(not(target_os = "windows"))]
+use std::fs::File;
+#[cfg(not(target_os = "windows"))]
+use tar::Archive;
+#[cfg(not(target_os = "windows"))]
+use xz2::read::XzDecoder;
+
+#[cfg(not(target_os = "windows"))]
 use crate::system::os_suffix;
 
 pub fn extract_archive(archive_path: &Path, dest_dir: &Path, version: &str) -> Result<()> {
@@ -120,6 +131,7 @@ pub fn extract_iojs_archive(archive_path: &Path, dest_dir: &Path, version: &str)
 /// `flatten_dir` was skipped and the version dir stayed nested one level
 /// deep. (Windows uses a 7z archive and hardcodes `win-x64`, so it does not
 /// go through here.)
+#[cfg(not(target_os = "windows"))]
 fn extracted_dir_name(label: &str) -> String {
     let suffix = os_suffix().trim_end_matches(".tar.xz");
     format!("{}-{}", label, suffix)
@@ -177,6 +189,7 @@ mod tests {
         assert!(!src.exists(), "empty src should still be removed");
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn extracted_dir_name_matches_tarball_layout() {
         // Regression for the ARM64 bug (extract.rs:42/89): the looked-up dir
