@@ -294,10 +294,11 @@ pub fn run_version(version: &str, args: &[String]) -> Result<()> {
     let resolved = resolve_alias(version)?;
     let nvm_dir = get_nvm_dir();
 
-    let node_path = if resolved.starts_with("system:") {
-        PathBuf::from("node")
+    let (node_path, bin_dir) = if resolved.starts_with("system:") {
+        (PathBuf::from("node"), None)
     } else {
-        exe_path(&version_bin_dir(&nvm_dir.join(&resolved)), "node")
+        let bin = version_bin_dir(&nvm_dir.join(&resolved));
+        (exe_path(&bin, "node"), Some(bin))
     };
 
     if !resolved.starts_with("system:") && !node_path.exists() {
@@ -307,10 +308,21 @@ pub fn run_version(version: &str, args: &[String]) -> Result<()> {
         );
     }
 
-    let status = Command::new(&node_path)
-        .args(args)
-        .status()
-        .context(T("execution_failed"))?;
+    // Prepend the version's bin dir to PATH so child processes spawned by the
+    // script (e.g. `child_process.exec('npm install')`) resolve npm/npx from
+    // THIS version, not the parent shell's PATH. Matches `exec_version` and
+    // nvm-sh's `nvm run` semantics. Without this, `nvm run 20 app.js` that
+    // shells out to `npm` would use a different npm (or none).
+    let mut cmd = Command::new(&node_path);
+    cmd.args(args);
+    if let Some(bin) = bin_dir {
+        // `prepend_to_path` always returns a usable PATH string (it falls
+        // back to the current PATH when the env var is unset), so there is
+        // no error case to guard here — just set it unconditionally.
+        let new_path = prepend_to_path(&bin);
+        cmd.env("PATH", new_path);
+    }
+    let status = cmd.status().context(T("execution_failed"))?;
 
     exit_with_status(status);
 }
@@ -422,15 +434,24 @@ pub fn auto_switch(silent: bool) -> Result<()> {
 /// `***@`, preserving the scheme/host/port for diagnostics while hiding the
 /// secret. URLs without userinfo are returned unchanged.
 fn redact_proxy_credentials(url: &str) -> String {
-    // Match `scheme://userinfo@host` where userinfo is non-empty up to `@`.
-    // We avoid pulling in a full URL parser for this one redaction.
+    // Match `scheme://[userinfo@]host[:port]/path?query#frag`. userinfo ends
+    // at the LAST `@` before the first `/`/`?`/`#` (authority terminator).
+    // Using the last `@` handles passwords that themselves contain `@`
+    // (`http://user:p@ss@host` -> userinfo=`user:p@ss`). Restricting to the
+    // authority segment avoids mis-treating `@` in path/query as userinfo
+    // (`http://host/path@evil` must NOT be redacted).
     if let Some(scheme_end) = url.find("://") {
         let after_scheme = &url[scheme_end + 3..];
-        if let Some(at) = after_scheme.find('@') {
-            let userinfo = &after_scheme[..at];
+        // Find end of authority: first of `/`, `?`, `#`, or end of string.
+        let auth_end = after_scheme
+            .find(['/', '?', '#'])
+            .unwrap_or(after_scheme.len());
+        let authority = &after_scheme[..auth_end];
+        if let Some(at) = authority.rfind('@') {
+            let userinfo = &authority[..at];
             if !userinfo.is_empty() {
-                let rest = &after_scheme[at..]; // includes '@'
-                return format!("{}{}{}", &url[..scheme_end + 3], "***", rest);
+                let rest_after_userinfo = &after_scheme[at..]; // includes '@'
+                return format!("{}{}{}", &url[..scheme_end + 3], "***", rest_after_userinfo);
             }
         }
     }

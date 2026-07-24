@@ -80,7 +80,22 @@ fn import_version(src: &Path, dest: &Path) -> Result<bool> {
     Ok(true)
 }
 
-/// Recursively copy a directory tree. Used when symlink is not permitted.
+/// Recursively copy a directory tree, preserving symlinks.
+///
+/// nvm-sh's version directories contain symlinks: `bin/npm` and `bin/npx`
+/// point at `../lib/node_modules/npm/bin/*-cli.js`. The previous
+/// implementation used `path.is_dir()` (which follows symlinks) and
+/// `fs::copy` (which also follows symlinks and writes the target's bytes
+/// as a regular file). That had two consequences: the link structure was
+/// lost, and the copied file inherited the target's permissions (typically
+/// 0644 for the .js source, not executable), so `nvm use <migrated>; npm
+/// install` failed because `bin/npm` was no longer executable.
+///
+/// We now use `symlink_metadata` to detect symlinks without following them
+/// and recreate the link at the destination. If link recreation fails
+/// (e.g. Windows without SeCreateSymbolicLinkPrivilege, or a cross-device
+/// absolute target that would dangle), we fall back to copying the target
+/// contents and restoring the executable bit so the result at least runs.
 fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dest)?;
     for entry in fs::read_dir(src)? {
@@ -88,13 +103,67 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
         let path = entry.path();
         let name = entry.file_name();
         let target = dest.join(&name);
-        if path.is_dir() {
+
+        let meta = fs::symlink_metadata(&path)?;
+        let ft = meta.file_type();
+
+        if ft.is_symlink() {
+            let link_target = fs::read_link(&path)?;
+            let link_result = create_symlink(&link_target, &target);
+            if link_result.is_err() {
+                // Cannot create the symlink (Windows without privilege,
+                // or filesystem that doesn't support links). Fall back to
+                // copying the resolved contents. For the npm/npx case the
+                // target is a .js file; copy it and mark executable so
+                // `bin/npm` still runs via the shebang.
+                copy_resolved(&path, &target)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mut perms = fs::metadata(&target)?.permissions();
+                    perms.set_mode(0o755);
+                    fs::set_permissions(&target, perms)?;
+                }
+            }
+        } else if ft.is_dir() {
             copy_dir_recursive(&path, &target)?;
         } else {
             fs::copy(&path, &target)?;
         }
     }
     Ok(())
+}
+
+/// Copy the resolved target of a symlink to `dest` (follows one level).
+fn copy_resolved(link_path: &Path, dest: &Path) -> std::io::Result<()> {
+    match fs::metadata(link_path) {
+        Ok(m) if m.is_dir() => copy_dir_recursive(
+            &fs::canonicalize(link_path).unwrap_or_else(|_| link_path.to_path_buf()),
+            dest,
+        ),
+        _ => fs::copy(link_path, dest).map(|_| ()),
+    }
+}
+
+/// Create a symlink at `link` pointing to `target`, using the correct
+/// platform-specific std API. Returns Err if symlinks are not supported
+/// (Windows without SeCreateSymbolicLinkPrivilege, FAT, etc.) so the
+/// caller can fall back to copying.
+fn create_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link)
+    }
+    #[cfg(windows)]
+    {
+        // Windows distinguishes file vs dir symlinks. Decide by inspecting
+        // the target (follow the link we just read_link'd).
+        if fs::metadata(target).map(|m| m.is_dir()).unwrap_or(false) {
+            std::os::windows::fs::symlink_dir(target, link)
+        } else {
+            std::os::windows::fs::symlink_file(target, link)
+        }
+    }
 }
 
 /// Migrate installed Node.js versions from nvm-sh or nvm-windows.
@@ -286,13 +355,30 @@ pub fn cmd_migrate(source: &str) -> Result<()> {
 /// find a stale/empty file or the wrong default.
 fn detect_nvm_sh_default(nvm_sh_root: &Path) -> Option<String> {
     let default_file = nvm_sh_root.join(".nvm").join("alias").join("default");
-    let raw = fs::read_to_string(&default_file).ok()?;
+    // Distinguish "file not present" (expected, return None) from real read
+    // errors (permission denied, IO error). The previous `.ok()?` lumped
+    // them together, so an unreadable default file was silently treated as
+    // "no default" instead of surfacing the permission problem.
+    let raw = match fs::read_to_string(&default_file) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            eprintln!("{} {}: {}", "⚠".yellow().bold(), default_file.display(), e);
+            return None;
+        }
+    };
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
     }
-    // Already a fully-qualified version: keep as-is.
-    if trimmed.starts_with('v') || trimmed.starts_with("iojs-") {
+    // Already a fully-qualified version: keep as-is. Use the shared io.js
+    // detector so ALL four spellings (iojs-v / iojs- / io.js-v / io.js-) are
+    // accepted, matching the rest of the codebase. The previous
+    // `starts_with("iojs-")` only recognized one spelling, so a default file
+    // containing `io.js-v3.3.1` fell through to bare-major parsing where
+    // `"io".parse::<u32>()` fails and the alias resolved to "latest of
+    // everything" — silently wrong.
+    if trimmed.starts_with('v') || crate::utils::is_iojs_version(trimmed) {
         return Some(trimmed.to_string());
     }
     // Full version without "v" prefix (e.g. "20.11.0", "22.5.1"): add prefix.
@@ -306,18 +392,37 @@ fn detect_nvm_sh_default(nvm_sh_root: &Path) -> Option<String> {
     // so "20" maps to the latest v20.x.y that nvm-sh actually has installed.
     let versions_root = nvm_sh_root.join(".nvm").join("versions").join("node");
     let mut candidates: Vec<String> = Vec::new();
-    if let Ok(rd) = fs::read_dir(&versions_root) {
-        for entry in rd.flatten() {
-            if let Some(name) = entry.file_name().to_str() {
-                // Collect both Node.js (`vX.Y.Z`) and io.js (`iojs-*` /
-                // `io.js-*`) installs. The previous `starts_with('v')` filter
-                // silently dropped io.js versions, so a `node`/`stable`
-                // alias on a host with only io.js installed resolved to
-                // `None` and the default was silently not migrated.
-                if name.starts_with('v') || crate::utils::is_iojs_version(name) {
-                    candidates.push(name.to_string());
+    // Surface read_dir errors instead of silently treating them as "empty".
+    // The previous `if let Ok(rd)` swallowed permission/IO errors, so a
+    // versions dir that exists but is unreadable resolved every alias to
+    // None — the user saw "no default to migrate" instead of the real error.
+    match fs::read_dir(&versions_root) {
+        Ok(rd) => {
+            for entry in rd.flatten() {
+                if let Some(name) = entry.file_name().to_str() {
+                    // Collect both Node.js (`vX.Y.Z`) and io.js (`iojs-*` /
+                    // `io.js-*`) installs. The previous `starts_with('v')` filter
+                    // silently dropped io.js versions, so a `node`/`stable`
+                    // alias on a host with only io.js installed resolved to
+                    // `None` and the default was silently not migrated.
+                    if name.starts_with('v') || crate::utils::is_iojs_version(name) {
+                        candidates.push(name.to_string());
+                    }
                 }
             }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // No versions dir on disk: leave candidates empty and fall through
+            // to `None`. This is expected when nvm-sh is installed but has no
+            // versions yet, so we do not warn.
+        }
+        Err(e) => {
+            // Surface permission/IO errors instead of silently treating them
+            // as "no versions". The previous `if let Ok(rd)` swallowed these,
+            // so an unreadable versions dir resolved every alias to None and
+            // the user saw "no default to migrate" instead of the real error.
+            eprintln!("{} {}: {}", "⚠".yellow().bold(), versions_root.display(), e);
+            return None;
         }
     }
     // `lts/*` (and `lts/<codename>`) must restrict to LTS versions only.

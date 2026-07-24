@@ -683,4 +683,95 @@ mod tests {
             assert_eq!(exe_path(bin, "node").file_name().unwrap(), "node.exe");
         }
     }
+
+    // --- verify_checksum -------------------------------------------------
+    //
+    // `verify_checksum` is the security gate that protects `nvm install`
+    // from a tampered/mirrored tarball: it parses nodejs.org's
+    // SHASUMS256.txt, locates the line for the downloaded archive, and
+    // fails the install when the on-disk SHA-256 does not match. A
+    // regression here would either let a malicious archive through (false
+    // Ok) or break every install (false Err), so the four paths below are
+    // pinned: good match, hash mismatch, archive absent from the sums
+    // file, and a malformed (non-UTF-8) sums file.
+
+    fn write_temp_archive(content: &[u8]) -> std::path::PathBuf {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-v20.0.0-linux-x64.tar.gz");
+        std::fs::write(&path, content).unwrap();
+        // `tempdir()` cleans up on drop; we keep the dir alive by leaking it
+        // for the test's lifetime. Tests are short-lived, so the leak is
+        // acceptable and avoids fighting the borrow checker over a returned
+        // TempDir.
+        std::mem::forget(dir);
+        path
+    }
+
+    #[test]
+    fn test_verify_checksum_ok() {
+        let content = b"hello world\n";
+        let path = write_temp_archive(content);
+        let expected = format!("{:x}", sha2::Sha256::digest(content));
+        let sums = format!("{}  node-v20.0.0-linux-x64.tar.gz\n", expected);
+        assert!(verify_checksum(&path, "node-v20.0.0-linux-x64.tar.gz", sums.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn test_verify_checksum_mismatch() {
+        let path = write_temp_archive(b"hello world\n");
+        // A syntactically valid 64-hex digest that does NOT match the file.
+        let sums = "0000000000000000000000000000000000000000000000000000000000000000  node-v20.0.0-linux-x64.tar.gz\n";
+        let err = verify_checksum(&path, "node-v20.0.0-linux-x64.tar.gz", sums.as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("expected"),
+            "mismatch error should mention 'expected': {err}"
+        );
+    }
+
+    #[test]
+    fn test_verify_checksum_not_listed() {
+        let path = write_temp_archive(b"hello world\n");
+        // Sums file exists but lists a different archive entirely.
+        let sums = "abcdef  some-other-archive.tar.gz\n";
+        let err = verify_checksum(&path, "node-v20.0.0-linux-x64.tar.gz", sums.as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("not listed"),
+            "absent-archive error should say 'not listed': {err}"
+        );
+    }
+
+    #[test]
+    fn test_verify_checksum_rejects_similar_name_substring() {
+        // A sums line whose filename merely *contains* the requested archive
+        // as a substring (the `.sig` of the same release) must NOT be
+        // treated as a match. The parser requires `parts[1] == archive_name`
+        // exactly, otherwise `nvm install v20.0.0` could verify against the
+        // wrong line and pass on a tampered tarball.
+        let path = write_temp_archive(b"hello world\n");
+        let sums = "deadbeef  node-v20.0.0-linux-x64.tar.gz.sig\n";
+        let err = verify_checksum(&path, "node-v20.0.0-linux-x64.tar.gz", sums.as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("not listed"),
+            "substring-only filename must not match: {err}"
+        );
+    }
+
+    #[test]
+    fn test_verify_checksum_non_utf8_sums() {
+        let path = write_temp_archive(b"hello world\n");
+        // 0xFF is invalid as the first byte of a UTF-8 sequence.
+        let err = verify_checksum(&path, "node-v20.0.0-linux-x64.tar.gz", &[0xFF, 0xFE])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("UTF-8"),
+            "non-UTF-8 sums should be rejected as such: {err}"
+        );
+    }
 }

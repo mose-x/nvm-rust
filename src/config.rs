@@ -296,8 +296,16 @@ pub fn resolve_alias(name: &str) -> Result<String> {
     }
 
     if name == "system" {
-        if crate::utils::find_system_node_path().is_some() {
-            if let Ok(v) = Command::new("node").arg("--version").output() {
+        // Use the path resolved by `find_system_node_path` (which runs
+        // `which`/`where`) directly, instead of re-resolving `node` through
+        // PATH via `Command::new("node")`. The two lookups can disagree:
+        // `which` may follow shell hash tables/aliases, or PATH may have
+        // changed between calls, so `Command::new("node")` could execute a
+        // different binary (e.g. the nvm-activated version) and report the
+        // wrong version. Feeding the resolved PathBuf to Command::new
+        // guarantees we probe the same node that `which`/`where` found.
+        if let Some(node_path) = crate::utils::find_system_node_path() {
+            if let Ok(v) = Command::new(&node_path).arg("--version").output() {
                 let v = String::from_utf8_lossy(&v.stdout).trim().to_string();
                 if !v.is_empty() {
                     return Ok(format!("system:{}", v));

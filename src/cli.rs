@@ -143,11 +143,17 @@ pub fn intercept_help(argv: &[String]) -> Option<HelpAction> {
         return None;
     }
 
-    // `nvm <cmd> -h` / `nvm <cmd> --help`
+    // `nvm <cmd> -h` / `nvm <cmd> --help`. Only inspect the token immediately
+    // following <cmd>, NOT the entire argv. Scanning all of argv caused
+    // `nvm run 20 --help script.js` (where `--help` is a trailing arg meant
+    // for the user's script) to be mis-intercepted as "show run help" and
+    // exit, so the script never ran. Restricting to argv[1] matches the
+    // common `nvm <cmd> --help` form while leaving trailing-var-arg commands
+    // (`run`/`exec`) free to forward `--help` to the child process.
     let cmd = argv[0].as_str();
     if KNOWN_COMMANDS.contains(&cmd) {
-        for arg in &argv[1..] {
-            if arg == "-h" || arg == "--help" {
+        if let Some(first) = argv.get(1) {
+            if first == "-h" || first == "--help" {
                 return Some(HelpAction::Command(cmd.to_string()));
             }
         }
@@ -712,5 +718,107 @@ pub fn print_command_help(cmd: &str) {
             // Unknown command: fall back to root help
             print_root_help();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{intercept_help, HelpAction};
+
+    // `intercept_help` decides whether to render i18n help instead of letting
+    // clap dispatch. Two regressions motivated these cases:
+    //   1. Scanning ALL of argv for -h/--help made `nvm run 20 --help app.js`
+    //      print `run` help instead of forwarding `--help` to the user's
+    //      script. Only the token IMMEDIATELY after <cmd> may trigger help.
+    //   2. `nvm help <unknown>` must NOT pretend to know the command — it
+    //      returns None so clap produces its usual "unrecognized" error.
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn is_root(v: Option<&HelpAction>) -> bool {
+        matches!(v, Some(HelpAction::Root))
+    }
+
+    fn is_cmd(v: Option<&HelpAction>, name: &str) -> bool {
+        matches!(v, Some(HelpAction::Command(c)) if c == name)
+    }
+
+    #[test]
+    fn empty_argv_is_not_help() {
+        assert!(intercept_help(&argv(&[])).is_none());
+    }
+
+    #[test]
+    fn bare_help_flags_trigger_root_help() {
+        assert!(is_root(intercept_help(&argv(&["-h"])).as_ref()));
+        assert!(is_root(intercept_help(&argv(&["--help"])).as_ref()));
+    }
+
+    #[test]
+    fn help_subcommand_without_arg_is_root() {
+        assert!(is_root(intercept_help(&argv(&["help"])).as_ref()));
+    }
+
+    #[test]
+    fn help_subcommand_with_known_cmd_targets_that_cmd() {
+        assert!(is_cmd(
+            intercept_help(&argv(&["help", "use"])).as_ref(),
+            "use"
+        ));
+        // alias of `list` should be recognised too
+        assert!(is_cmd(
+            intercept_help(&argv(&["help", "ls"])).as_ref(),
+            "ls"
+        ));
+    }
+
+    #[test]
+    fn help_subcommand_with_unknown_cmd_is_none() {
+        assert!(intercept_help(&argv(&["help", "does-not-exist"])).is_none());
+    }
+
+    #[test]
+    fn immediate_help_flag_after_known_cmd_targets_that_cmd() {
+        assert!(is_cmd(
+            intercept_help(&argv(&["use", "-h"])).as_ref(),
+            "use"
+        ));
+        assert!(is_cmd(
+            intercept_help(&argv(&["install", "--help"])).as_ref(),
+            "install"
+        ));
+    }
+
+    #[test]
+    fn trailing_help_flag_is_not_intercepted_for_run() {
+        // The bug fix: `nvm run 20 --help script.js` must NOT be treated as
+        // a help request. argv[1] is "20", not -h/--help, so the parser
+        // returns None and `--help` is forwarded to the user's script.
+        assert!(intercept_help(&argv(&["run", "20", "--help", "script.js"])).is_none());
+        assert!(intercept_help(&argv(&["exec", "20", "node", "--help"])).is_none());
+    }
+
+    #[test]
+    fn run_with_only_help_flag_targets_run() {
+        // `nvm run --help` (no version) — argv[1] IS --help, so this is a
+        // legitimate help request for the `run` command itself.
+        assert!(is_cmd(
+            intercept_help(&argv(&["run", "--help"])).as_ref(),
+            "run"
+        ));
+    }
+
+    #[test]
+    fn known_cmd_without_help_flag_is_none() {
+        assert!(intercept_help(&argv(&["use", "20"])).is_none());
+        assert!(intercept_help(&argv(&["list"])).is_none());
+    }
+
+    #[test]
+    fn unknown_cmd_with_help_flag_is_none() {
+        // `nvm bogus --help` — not a known command, let clap handle it.
+        assert!(intercept_help(&argv(&["bogus", "--help"])).is_none());
     }
 }
