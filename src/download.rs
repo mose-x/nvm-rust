@@ -14,6 +14,92 @@ use crate::system::{ensure_cache_dir, get_cache_dir};
 /// or half-downloaded file never satisfies the `cache_path.exists()` check.
 const PART_SUFFIX: &str = ".part";
 
+/// Refuse to open `path` for writing if it is (or points through) a symlink.
+///
+/// The cache dir lives under the user's home, but any process that can write
+/// there (another user on a shared box, a compromised helper, a malicious
+/// npm postinstall script) could pre-create a symlink at
+/// `<cache>/node-v20.tar.gz.part` → `~/.ssh/authorized_keys`. A plain
+/// `File::create` / `OpenOptions::append` would follow that symlink and
+/// clobber the target with download bytes.
+///
+/// This checks `symlink_metadata` (which does NOT follow the link) and bails
+/// if the entry is a symlink. On Unix we additionally pass `O_NOFOLLOW` to
+/// close the TOCTOU window between the metadata check and the `open(2)` call.
+/// On Windows, symlink creation requires the SeCreateSymbolicLink privilege,
+/// so the metadata check is sufficient in practice.
+fn ensure_not_symlink(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(m) => {
+            if m.file_type().is_symlink() {
+                anyhow::bail!(
+                    "{}",
+                    format_t("part_refused_symlink", &[path.display().to_string()])
+                );
+            }
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(anyhow::anyhow!(e)),
+    }
+}
+
+/// Open `path` for a fresh download (truncate + create), refusing symlinks
+/// and using restrictive permissions on Unix (0600) so a cached partial
+/// download is not world-readable.
+fn create_part_file(path: &Path) -> Result<File> {
+    ensure_not_symlink(path)?;
+    let mut opts = OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // O_NOFOLLOW: if `path` is a symlink, the open fails with ELOOP
+        // instead of following it. Closes the TOCTOU gap between
+        // `ensure_not_symlink` and the actual open.
+        opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    opts.open(path).map_err(|e| {
+        // O_NOFOLLOW on a symlink fails with ELOOP. `ErrorKind::FilesystemLoop`
+        // is unstable (issue #86442), so we match on the raw OS error instead.
+        let is_symlink_rejection = e.raw_os_error() == Some(libc::ELOOP)
+            || format!("{e}").contains("Too many levels of symbolic links");
+        if is_symlink_rejection {
+            anyhow::anyhow!(
+                "{}",
+                format_t("part_refused_symlink", &[path.display().to_string()])
+            )
+        } else {
+            anyhow::anyhow!("{}: {e}", T("cannot_create_part"))
+        }
+    })
+}
+
+/// Open an existing `.part` for resume (append), after verifying it is a
+/// regular file and not a symlink planted between runs.
+fn open_part_for_resume(path: &Path) -> Result<File> {
+    ensure_not_symlink(path)?;
+    let mut opts = OpenOptions::new();
+    opts.append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    opts.open(path).map_err(|e| {
+        let is_symlink_rejection = e.raw_os_error() == Some(libc::ELOOP)
+            || format!("{e}").contains("Too many levels of symbolic links");
+        if is_symlink_rejection {
+            anyhow::anyhow!(
+                "{}",
+                format_t("part_refused_symlink", &[path.display().to_string()])
+            )
+        } else {
+            anyhow::anyhow!("{}: {e}", T("cannot_open_part_append"))
+        }
+    })
+}
+
 /// Download a file to cache dir, returning the local cache path.
 /// If already cached (complete), just returns the cached path.
 ///
@@ -87,13 +173,13 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
     };
 
     // Open the .part file: append when resuming, truncate when fresh.
+    // Both paths go through the symlink-safe helpers — a symlink planted
+    // at the .part path would otherwise be followed and its target clobbered
+    // with download bytes.
     let mut dest_file = if supports_resume {
-        OpenOptions::new()
-            .append(true)
-            .open(&part_path)
-            .context(T("cannot_open_part_append"))?
+        open_part_for_resume(&part_path)?
     } else {
-        File::create(&part_path).context(T("cannot_create_part"))?
+        create_part_file(&part_path)?
     };
 
     // Progress bar starts at the resume offset so the user sees it continue.
@@ -191,4 +277,54 @@ pub fn clear_cache() -> Result<u64> {
         }
     }
     Ok(cleared)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn create_part_file_refuses_symlink() {
+        // A symlink planted at the .part path must be rejected, not followed.
+        // We point the symlink at /dev/null (harmless target) to prove the
+        // open is refused before any write could happen.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let link = tmp.path().join("evil.part");
+        std::os::unix::fs::symlink("/dev/null", &link).expect("symlink");
+
+        let err = create_part_file(&link).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("symlink") || msg.contains("symbolic"),
+            "expected symlink-rejection error, got: {msg}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_part_for_resume_refuses_symlink() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let link = tmp.path().join("resume.part");
+        std::os::unix::fs::symlink("/dev/null", &link).expect("symlink");
+
+        let err = open_part_for_resume(&link).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("symlink") || msg.contains("symbolic"),
+            "expected symlink-rejection error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn create_part_file_writes_regular_file() {
+        // Happy path: a regular (non-symlink) path is created and writable.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("ok.part");
+        {
+            let mut f = create_part_file(&path).expect("create part");
+            f.write_all(b"hello").expect("write");
+        }
+        assert_eq!(fs::read(&path).unwrap(), b"hello");
+    }
 }

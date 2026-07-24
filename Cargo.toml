@@ -48,6 +48,10 @@ base64 = "0.22"
 # OS locks are auto-released when the holding process exits, so no stale-lock
 # cleanup is needed.
 fs4 = "0.12"
+# Unix libc constants (O_NOFOLLOW, mode bits) for symlink-safe file creation
+# in the download cache. Already in the transitive dep tree via fs4, so this
+# adds no extra compiled code.
+libc = "0.2"
 
 [profile.release]
 # Aggressive optimisation for the distributed binary: LTO across crates,
