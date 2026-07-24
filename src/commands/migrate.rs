@@ -35,7 +35,20 @@ fn resolve_migration_source(source: &str) -> Option<PathBuf> {
             // These env vars are nvm-windows specific and do not conflict with nvm-rust.
             let root = env::var("NVM_HOME")
                 .or_else(|_| env::var("NVM_SYMLINK"))
-                .unwrap_or_else(|_| format!("{}\\nvm4w", home));
+                .unwrap_or_else(|_| {
+                    // Fallback when neither env var is set. Use `PathBuf::join`
+                    // so the path separator is correct for the *current* host:
+                    // the previous `format!("{}\\nvm4w", home)` baked a literal
+                    // backslash into the path, which on a non-Windows host (e.g.
+                    // running `nvm migrate nvm-windows` from WSL or a Linux box
+                    // that mounted a Windows drive) produced a malformed path
+                    // like `/home/user\nvm4w` — a single component containing a
+                    // backslash rather than `home` + `nvm4w`.
+                    PathBuf::from(&home)
+                        .join("nvm4w")
+                        .to_string_lossy()
+                        .into_owned()
+                });
             let p = PathBuf::from(&root);
             if p.is_dir() {
                 Some(p)
@@ -131,19 +144,31 @@ pub fn cmd_migrate(source: &str) -> Result<()> {
     // is recognised — the previous `starts_with("iojs-")` check missed the
     // `io.js-*` spellings and silently skipped those version directories.
     let mut entries: Vec<PathBuf> = Vec::new();
-    if let Ok(rd) = fs::read_dir(&src_dir) {
-        for entry in rd.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if name.starts_with('v') || crate::utils::is_iojs_version(name) {
-                        entries.push(path);
-                    }
+    // Surface read_dir errors (permission denied, I/O) instead of silently
+    // treating them as "no versions". The previous `if let Ok(rd)` arm
+    // returned an empty `entries` vec, which printed "no versions found"
+    // even when the real problem was e.g. an unreadable source dir.
+    let rd = fs::read_dir(&src_dir)
+        .with_context(|| format_t("migrate_scan_failed", &[src_dir.display().to_string()]))?;
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.starts_with('v') || crate::utils::is_iojs_version(name) {
+                    entries.push(path);
                 }
             }
         }
     }
-    entries.sort();
+    // Sort semantically (major.minor.patch) rather than lexicographically.
+    // `PathBuf::sort()` orders by OS string, so `v9.0.0` would sort *after*
+    // `v20.11.0` ('9' > '2'), printing versions in the wrong order during
+    // migration. Compare by the file-name component using `compare_semver`.
+    entries.sort_by(|a, b| {
+        let an = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let bn = b.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        crate::utils::compare_semver(an, bn)
+    });
 
     if entries.is_empty() {
         println!(
@@ -276,19 +301,32 @@ fn detect_nvm_sh_default(nvm_sh_root: &Path) -> Option<String> {
     if dots == 2 && trimmed.chars().all(|c| c.is_ascii_digit() || c == '.') {
         return Some(format!("v{}", trimmed));
     }
-    // Bare major ("20"), bare major.minor ("20.5"), "node", "stable", etc.
-    // — resolve against the SOURCE nvm-sh install so "20" maps to the latest
-    // v20.x.y that nvm-sh actually has installed.
+    // Bare major ("20"), bare major.minor ("20.5"), "node", "stable",
+    // "lts/*", "lts/iron", etc. — resolve against the SOURCE nvm-sh install
+    // so "20" maps to the latest v20.x.y that nvm-sh actually has installed.
     let versions_root = nvm_sh_root.join(".nvm").join("versions").join("node");
     let mut candidates: Vec<String> = Vec::new();
     if let Ok(rd) = fs::read_dir(&versions_root) {
         for entry in rd.flatten() {
             if let Some(name) = entry.file_name().to_str() {
-                if name.starts_with('v') {
+                // Collect both Node.js (`vX.Y.Z`) and io.js (`iojs-*` /
+                // `io.js-*`) installs. The previous `starts_with('v')` filter
+                // silently dropped io.js versions, so a `node`/`stable`
+                // alias on a host with only io.js installed resolved to
+                // `None` and the default was silently not migrated.
+                if name.starts_with('v') || crate::utils::is_iojs_version(name) {
                     candidates.push(name.to_string());
                 }
             }
         }
+    }
+    // `lts/*` (and `lts/<codename>`) must restrict to LTS versions only.
+    // Without this, the bare-major branch below doesn't match (`"lts/*"`
+    // doesn't parse as u32) and the function falls through to "latest of
+    // everything", picking a non-LTS Current release as the default —
+    // silently wrong.
+    if trimmed == "lts/*" || trimmed.starts_with("lts/") {
+        candidates.retain(|v| crate::utils::is_lts_version(v));
     }
     // For a bare major like "20", restrict to matching "v20.*". For generic
     // aliases ("node", "stable") we take the latest of everything.
@@ -308,8 +346,8 @@ fn detect_nvm_sh_default(nvm_sh_root: &Path) -> Option<String> {
 
 fn ensure_nvm_dir_or_fail() -> Result<()> {
     let nvm_dir = get_nvm_dir();
-    if !nvm_dir.exists() {
-        fs::create_dir_all(&nvm_dir).context(T("cannot_create_nvm_dir"))?;
-    }
+    // `create_dir_all` is idempotent; skip the racy `exists()` pre-check
+    // (see `system::ensure_nvm_dir` for the rationale).
+    fs::create_dir_all(&nvm_dir).context(T("cannot_create_nvm_dir"))?;
     Ok(())
 }

@@ -158,14 +158,56 @@ pub fn format_t(key: &str, args: &[String]) -> String {
     substitute_params(&template, args)
 }
 
-/// Substitute {0}, {1}, etc. in a string with provided arguments
+/// Substitute `{0}`, `{1}`, ... in `template` with the corresponding `args`.
+///
+/// Implemented as a single left-to-right scan rather than one `String::replace`
+/// per argument. The previous `replace`-based implementation had two problems:
+///
+/// 1. **Placeholder corruption for ≥10 args.** `result.replace("{1}", arg)`
+///    does substring matching, so it also matched the `{1` inside `{10}`,
+///    `{11}`, ... turning `{10}` into `<arg>0}`. Currently safe because no
+///    translation uses more than 2 args, but any future 10-arg call would
+///    silently corrupt.
+/// 2. **O(n·k) allocations.** Each `replace` walked the whole string and
+///    allocated a fresh `String`; for the few hundred bytes of a translation
+///    this is negligible, but the single-pass version is both faster and
+///    correct by construction.
 fn substitute_params(template: &str, args: &[String]) -> String {
-    let mut result = template.to_string();
-    for (i, arg) in args.iter().enumerate() {
-        let placeholder = format!("{{{}}}", i);
-        result = result.replace(&placeholder, arg);
+    let bytes = template.as_bytes();
+    let mut out = String::with_capacity(template.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            // Try to parse `{<digits>}` and look up the index in `args`.
+            let mut j = i + 1;
+            let mut idx: usize = 0;
+            let mut ok = false;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                idx = idx.saturating_mul(10) + (bytes[j] - b'0') as usize;
+                j += 1;
+                ok = true;
+            }
+            if ok && j < bytes.len() && bytes[j] == b'}' {
+                if let Some(arg) = args.get(idx) {
+                    out.push_str(arg);
+                } else {
+                    // Arg index out of range — keep the original placeholder
+                    // verbatim so a missing arg is visible during debugging
+                    // rather than silently elided.
+                    out.push_str(&template[i..=j]);
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        // Not a `{<digits>}` placeholder — copy this byte verbatim. We must
+        // advance by `char_len` (not always 1) because `i` is a byte index
+        // and the template may contain multibyte UTF-8.
+        let ch = template[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
     }
-    result
+    out
 }
 
 fn t(key: &str, lang: Lang) -> String {
@@ -361,6 +403,29 @@ mod tests {
         assert_eq!(
             substitute_params("Installed {0}!", &args),
             "Installed v20.0.0!"
+        );
+    }
+
+    #[test]
+    fn test_substitute_params_ten_or_more_indices() {
+        // Regression: the old `String::replace`-based implementation matched
+        // `{1}` as a substring of `{10}` / `{11}`, corrupting the output to
+        // `<arg1>0}` / `<arg1>1}`. The single-pass scanner distinguishes
+        // them.
+        let args: Vec<String> = (0..12).map(|i| format!("a{i}")).collect();
+        assert_eq!(substitute_params("{0} {10} {11}", &args), "a0 a10 a11");
+        // Out-of-range index keeps the placeholder verbatim (visible during
+        // debugging instead of being silently dropped).
+        assert_eq!(substitute_params("{0} {99}", &args), "a0 {99}");
+    }
+
+    #[test]
+    fn test_substitute_params_preserves_non_numeric_braces() {
+        // `{` without digits, or `{{` / `}}` escapes, must pass through.
+        let args = vec!["x".to_string()];
+        assert_eq!(
+            substitute_params("{0} {not-a-placeholder}", &args),
+            "x {not-a-placeholder}"
         );
     }
 }

@@ -502,7 +502,18 @@ fn resolve_lts_relative(offset: usize) -> Result<String> {
 }
 
 fn find_latest_unstable() -> Result<String> {
-    let tags = get_tags(URI.to_string());
+    // Resolve the configured mirror (if any) so `nvm use unstable` /
+    // `nvm alias default unstable` honours `nvm mirror taobao` instead of
+    // always hitting nodejs.org. Previously this hardcoded `URI`, which
+    // silently broke the alias behind the GFW / on offline mirrors even
+    // though every other version-resolution path already accepted a
+    // `base_url`. Reading the config here (rather than threading a
+    // `base_url` param through `resolve_alias`) avoids a 30-call-site
+    // signature change for a rarely-used alias.
+    let base_url = load_config()
+        .map(|c| c.mirror.unwrap_or_else(|| URI.to_string()))
+        .unwrap_or_else(|_| URI.to_string());
+    let tags = get_tags(base_url);
     let mut odd_max: Option<(u32, String)> = None;
     for tag in tags {
         let v = tag.trim_end_matches('/');

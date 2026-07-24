@@ -149,10 +149,13 @@ pub fn get_nvm_dir() -> PathBuf {
 }
 
 pub fn ensure_nvm_dir() -> Result<()> {
-    let nvm_dir = get_nvm_dir();
-    if !nvm_dir.exists() {
-        fs::create_dir_all(&nvm_dir)?;
-    }
+    // `create_dir_all` is idempotent: it treats "already exists" as success.
+    // The previous `if !dir.exists() { create_dir_all }` guard was both
+    // redundant and racy (TOCTOU) — another process could remove the
+    // directory between the `exists()` check and the create, or create it
+    // between the check succeeding and the create being skipped (harmless).
+    // Calling `create_dir_all` unconditionally closes that window.
+    fs::create_dir_all(get_nvm_dir())?;
     Ok(())
 }
 
@@ -161,10 +164,8 @@ pub fn get_cache_dir() -> PathBuf {
 }
 
 pub fn ensure_cache_dir() -> Result<()> {
-    let cache_dir = get_cache_dir();
-    if !cache_dir.exists() {
-        fs::create_dir_all(&cache_dir)?;
-    }
+    // See `ensure_nvm_dir` for why we don't pre-check `exists()`.
+    fs::create_dir_all(get_cache_dir())?;
     Ok(())
 }
 
@@ -525,14 +526,23 @@ pub fn verify_gpg_signature(
     let mut sums_file = tempfile::NamedTempFile::new_in(&tmp)?;
     sums_file.write_all(sums_bytes)?;
 
-    let sig_str = sig_file.path().to_string_lossy().to_string();
-    let sums_str = sums_file.path().to_string_lossy().to_string();
+    // Keep the temp files alive for the duration of `run_verify` (they're
+    // moved in by closure capture and dropped — and thus removed — when
+    // `run_verify` goes out of scope below).
+    //
+    // Pass the paths as `PathBuf` (AsRef<OsStr>) instead of
+    // `to_string_lossy().to_string()`. `to_string_lossy` replaces non-UTF-8
+    // bytes with U+FFFD, so a `TMPDIR` (or username inside it) containing
+    // non-UTF-8 bytes on macOS/Linux would cause `gpg` to be invoked with a
+    // wrong path and fail opaquely. `Command::arg` accepts `OsStr` natively.
+    let sig_path = sig_file.path().to_path_buf();
+    let sums_path = sums_file.path().to_path_buf();
     let run_verify = || {
         Command::new("gpg")
             .arg("--batch")
             .arg("--verify")
-            .arg(&sig_str)
-            .arg(&sums_str)
+            .arg(&sig_path)
+            .arg(&sums_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -540,10 +550,18 @@ pub fn verify_gpg_signature(
 
     // First attempt: keys may already be present in the keyring from a
     // previous run, avoiding a keyserver round-trip entirely.
+    //
+    // Spawn errors are propagated as `Err` rather than mapped to
+    // `SkippedNoGpg`: we already passed the `gpg_available()` gate above, so
+    // a spawn failure here means gpg vanished between the two calls, hit a
+    // fork/resource limit, or otherwise failed in a way the user needs to
+    // see — silently treating that as "gpg not installed" would mask real
+    // failures and could let a tampered tarball through if the caller
+    // ignored the returned status.
     let mut output = match run_verify() {
         Ok(o) if o.status.success() => return Ok(GpgStatus::Verified),
         Ok(o) => o,
-        Err(_) => return Ok(GpgStatus::SkippedNoGpg),
+        Err(e) => anyhow::bail!("{}: {}", T("gpg_failed_abort"), e),
     };
 
     // If verification failed purely because the public key is missing, try
@@ -555,7 +573,7 @@ pub fn verify_gpg_signature(
     if needs_keys && import_nodejs_release_keys() {
         output = match run_verify() {
             Ok(o) => o,
-            Err(_) => return Ok(GpgStatus::SkippedNoGpg),
+            Err(e) => anyhow::bail!("{}: {}", T("gpg_failed_abort"), e),
         };
     }
 

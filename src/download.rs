@@ -145,7 +145,23 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
         req = req.header("Range", format!("bytes={}-", start_offset));
     }
 
-    let response = req.send().context(T("download_failed"))?;
+    // `mut` because the 416-retry path below rebinds this to a fresh
+    // response (re-requested without the Range header).
+    let mut response = req.send().context(T("download_failed"))?;
+
+    // HTTP 416 "Range Not Satisfiable" means our `.part` resume offset is
+    // past the end of the server's current copy — usually the upstream file
+    // was replaced with a shorter one, or the `.part` is corrupt/larger than
+    // the real file. Without this handling the request falls into the generic
+    // non-2xx branch below and bails, leaving the user stuck with a `.part`
+    // they can never resume past. Delete the stale `.part` and retry once
+    // from byte 0 without the Range header.
+    if start_offset > 0 && response.status().as_u16() == 416 {
+        let _ = fs::remove_file(&part_path);
+        start_offset = 0;
+        response = client.get(url).send().context(T("download_failed"))?;
+    }
+
     if !response.status().is_success() {
         anyhow::bail!(
             "{}",
@@ -194,7 +210,15 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
 
     let mut source = pb.wrap_read(response);
     copy(&mut source, &mut dest_file).context(T("write_failed"))?;
-    dest_file.flush().ok();
+    // Propagate flush failures instead of `.ok()`-ing them. A failed flush
+    // (disk full, quota, network FS) leaves the `.part` with buffered bytes
+    // not yet on disk; the subsequent `fs::rename` would then promote a
+    // truncated file into the cache, where the checksum check in
+    // `install_binary` would catch it — but only for the Node.js path.
+    // io.js and source installs skip the checksum, so a silent flush failure
+    // there could install a truncated archive. Surfacing the error here is
+    // strictly better.
+    dest_file.flush().context(T("write_failed"))?;
 
     pb.finish_with_message(T("progress_done"));
 

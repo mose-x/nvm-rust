@@ -1,4 +1,5 @@
 use anyhow::Result;
+use colored::Colorize;
 use std::env;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -381,12 +382,25 @@ fn build_client(timeout: Duration) -> reqwest::blocking::Client {
         }
     }
 
-    builder.build().unwrap_or_else(|_| {
+    builder.build().unwrap_or_else(|e| {
         // `Client::new()` is the one infallible constructor reqwest exposes
         // (it uses default settings, no timeout/proxy). Losing the timeout on
         // this fallback path is acceptable: this branch only runs when the
         // primary builder fails (e.g. a misconfigured TLS backend), which is
         // rare — and a working client without a timeout beats panicking here.
+        //
+        // Surface the original build error so the user can diagnose why their
+        // proxy/TLS setup produced an unusable client. The previous
+        // `|_|` discarded the error and silently dropped BOTH the timeout
+        // AND the proxy configuration, so a user with a working-but-unusual
+        // proxy URL (one that tripped a builder edge case) got a direct
+        // connection with no indication why.
+        eprintln!(
+            "{} {}: {}",
+            "⚠".yellow().bold(),
+            crate::i18n::T("proxy_client_build_failed"),
+            e
+        );
         reqwest::blocking::Client::new()
     })
 }
@@ -449,7 +463,28 @@ pub fn is_proxy_enabled() -> bool {
             return v;
         }
     }
-    let v = load_config().ok().and_then(|c| c.proxy).unwrap_or(false);
+    // Surface (and don't cache) a corrupt config instead of silently
+    // flattening it to "proxy off". `load_config` returns `Err` for a
+    // malformed `config.json` (it bails with `config_corrupt_hint`); the
+    // previous `.ok()` here cached `false` for the process lifetime, so a
+    // user with a corrupt config was silently routed direct (no proxy) on
+    // every request and the corruption was never surfaced. Now we print a
+    // one-line warning and only cache the value on the success path.
+    let v = match load_config() {
+        Ok(c) => c.proxy.unwrap_or(false),
+        Err(e) => {
+            eprintln!(
+                "{} {} ({})",
+                "⚠".yellow().bold(),
+                crate::i18n::T("proxy_config_read_failed"),
+                e
+            );
+            // Do NOT cache: a retry after the user fixes the config should
+            // re-read rather than keep serving the stale "off" we'd otherwise
+            // pin into the cache.
+            return false;
+        }
+    };
     if let Ok(mut guard) = PROXY_ENABLED_CACHE.lock() {
         *guard = Some(v);
     }

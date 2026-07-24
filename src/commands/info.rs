@@ -13,6 +13,32 @@ use crate::i18n::{format_t, T};
 use crate::system::{exe_path, get_nvm_dir, get_tags, prepend_to_path, version_bin_dir};
 use crate::utils::{atomic_write, get_installed_versions, is_lts_version, pad_right};
 
+/// Exit the process with the exit status of a child command.
+///
+/// When the child was terminated by a signal (e.g. SIGINT, SIGTERM), the
+/// shell convention is to exit with `128 + signal_number`. The previous
+/// `status.code().unwrap_or(1)` collapsed every signal death into exit
+/// code `1`, so a script could not distinguish "command failed" from
+/// "command was killed" (e.g. by Ctrl-C). On non-Unix targets there is no
+/// signal information available, so we keep the legacy `1` fallback there.
+fn exit_with_status(status: std::process::ExitStatus) -> ! {
+    let code = status.code().unwrap_or_else(|| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            // `signal()` returns `None` only if the process exited normally,
+            // which contradicts `code()` returning `None` — but fall back to
+            // `1` defensively in case a platform reports neither.
+            status.signal().map(|s| 128 + s).unwrap_or(1)
+        }
+        #[cfg(not(unix))]
+        {
+            1
+        }
+    });
+    std::process::exit(code);
+}
+
 pub fn use_version(
     version: Option<&str>,
     install_if_missing: bool,
@@ -286,7 +312,7 @@ pub fn run_version(version: &str, args: &[String]) -> Result<()> {
         .status()
         .context(T("execution_failed"))?;
 
-    std::process::exit(status.code().unwrap_or(1));
+    exit_with_status(status);
 }
 
 pub fn exec_version(version: &str, args: &[String]) -> Result<()> {
@@ -346,7 +372,7 @@ pub fn exec_version(version: &str, args: &[String]) -> Result<()> {
             }
         })?;
 
-    std::process::exit(status.code().unwrap_or(1));
+    exit_with_status(status);
 }
 
 pub fn which_version(version: Option<&str>) -> Result<()> {
@@ -388,6 +414,29 @@ pub fn auto_switch(silent: bool) -> Result<()> {
     use_version_silent(None, false, false, false, silent)
 }
 
+/// Mask the `user:pass@` userinfo in a proxy URL before printing it.
+///
+/// Proxy URLs commonly embed credentials (`http://user:pass@host:port`).
+/// Printing such a URL to stdout leaks the password into terminal scrollback,
+/// CI logs, and screen recordings. We replace the userinfo segment with
+/// `***@`, preserving the scheme/host/port for diagnostics while hiding the
+/// secret. URLs without userinfo are returned unchanged.
+fn redact_proxy_credentials(url: &str) -> String {
+    // Match `scheme://userinfo@host` where userinfo is non-empty up to `@`.
+    // We avoid pulling in a full URL parser for this one redaction.
+    if let Some(scheme_end) = url.find("://") {
+        let after_scheme = &url[scheme_end + 3..];
+        if let Some(at) = after_scheme.find('@') {
+            let userinfo = &after_scheme[..at];
+            if !userinfo.is_empty() {
+                let rest = &after_scheme[at..]; // includes '@'
+                return format!("{}{}{}", &url[..scheme_end + 3], "***", rest);
+            }
+        }
+    }
+    url.to_string()
+}
+
 /// Recursively search for .nvmrc or .node-version file from current directory up to root
 fn find_nvmrc_recursive(silent: bool) -> Result<Option<String>> {
     let current_dir = std::env::current_dir()?;
@@ -400,7 +449,25 @@ fn find_nvmrc_recursive(silent: bool) -> Result<Option<String>> {
     // passed to resolve_alias and produce a confusing error like
     // "Version v# comment\nv18.20.4 is not installed".
     let read_first_version_line = |path: &Path| -> Option<String> {
-        let content = fs::read_to_string(path).ok()?;
+        // Distinguish "file not present" (expected, return None) from real
+        // read errors (permission denied, I/O error). The previous `.ok()?`
+        // lumped them together, so a `.nvmrc` that exists but is unreadable
+        // was silently treated as absent — the user got "no .nvmrc found"
+        // instead of a clear permission error.
+        let content = match fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => {
+                eprintln!(
+                    "{} {} {}: {}",
+                    "⚠".yellow().bold(),
+                    path.display(),
+                    T("nvmrc_read_failed"),
+                    e
+                );
+                return None;
+            }
+        };
         for line in content.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() {
@@ -445,16 +512,20 @@ fn find_nvmrc_recursive(silent: bool) -> Result<Option<String>> {
             }
         }
 
-        // Move to parent directory
+        // Move to parent directory. `Path::parent()` returns `None` for the
+        // filesystem root (`/` on Unix, `C:\` on Windows), which terminates
+        // the walk.
+        //
+        // The previous code also had a redundant `if dir.parent().is_none()
+        // { break; }` guard *after* this reassignment — that broke one step
+        // early: after moving from `/a` to `/`, the guard fired and the loop
+        // exited *before* the next iteration's body checked `/.nvmrc`, so a
+        // version file at the filesystem root was silently ignored. The
+        // `match ... None => break` here is sufficient and correct.
         dir = match dir.parent() {
             Some(parent) => parent,
             None => break,
         };
-
-        // Stop at filesystem root
-        if dir.parent().is_none() {
-            break;
-        }
     }
 
     Ok(None)
@@ -1104,9 +1175,12 @@ pub fn cmd_proxy(action: Option<&str>) -> Result<()> {
                 nvm_state
             );
 
-            // System proxy env
+            // System proxy env. Redact embedded credentials before printing:
+            // `HTTPS_PROXY=http://user:pass@proxy:8080` is a common pattern,
+            // and printing the raw URL to stdout would leak the password into
+            // terminal scrollback, CI logs, and screen recordings.
             let sys_state = match &sys_proxy {
-                Some(p) => format!("{}", p.as_str().dimmed()),
+                Some(p) => format!("{}", redact_proxy_credentials(p).dimmed()),
                 None => T("not_set").red().to_string(),
             };
             println!(
@@ -1153,6 +1227,39 @@ pub fn cmd_proxy(action: Option<&str>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_redact_proxy_credentials_masks_userinfo() {
+        // user:pass@ must be replaced with ***@
+        assert_eq!(
+            redact_proxy_credentials("http://user:pass@proxy.corp:8080"),
+            "http://***@proxy.corp:8080"
+        );
+        assert_eq!(
+            redact_proxy_credentials("https://bob:s3cr3t@10.0.0.1:3128"),
+            "https://***@10.0.0.1:3128"
+        );
+        // User-only (no password) is still masked.
+        assert_eq!(
+            redact_proxy_credentials("http://user@host:80"),
+            "http://***@host:80"
+        );
+    }
+
+    #[test]
+    fn test_redact_proxy_credentials_preserves_no_creds() {
+        // No userinfo → returned unchanged.
+        assert_eq!(
+            redact_proxy_credentials("http://127.0.0.1:8080"),
+            "http://127.0.0.1:8080"
+        );
+        assert_eq!(
+            redact_proxy_credentials("socks5://localhost:1080"),
+            "socks5://localhost:1080"
+        );
+        // Not a URL at all.
+        assert_eq!(redact_proxy_credentials("not set"), "not set");
+    }
 
     fn installed() -> Vec<String> {
         vec![

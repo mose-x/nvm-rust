@@ -187,7 +187,14 @@ fn install_from_source(
     let source_url = get_source_url(&target.target_version, base_url)?;
     let archive_name = &target.archive_name;
 
-    if offline {
+    // Extract straight from the cache file. The previous code copied the
+    // ~80MB source tarball from `cache/<name>` to `<nvm_dir>/<ver>.src.tmp`
+    // and then had `tar` read that copy — a redundant full-file disk write +
+    // read on every source install. We now point `tar` directly at the cache
+    // file. `owns_src` tracks whether that file is our temp copy (offline
+    // path, must be cleaned up) or the shared cache (online path, must stay).
+    let temp_src = nvm_dir.join(format!("{}.src.tmp", target.target_version));
+    let (src_path, owns_src) = if offline {
         if !is_cached(archive_name) {
             anyhow::bail!(
                 "{}",
@@ -198,26 +205,20 @@ fn install_from_source(
             );
         }
         println!("  {} {}", "ℹ".cyan().bold(), T("using_cache").cyan());
-        copy_from_cache(
-            archive_name,
-            &nvm_dir.join(format!("{}.src.tmp", target.target_version)),
-        )?;
+        copy_from_cache(archive_name, &temp_src)?;
+        (temp_src, true)
     } else {
         let cached_path = download_to_cache(&source_url, archive_name)?;
-        fs::copy(
-            &cached_path,
-            nvm_dir.join(format!("{}.src.tmp", target.target_version)),
-        )?;
-    }
+        (cached_path, false)
+    };
 
-    let src_tmp = nvm_dir.join(format!("{}.src.tmp", target.target_version));
     let build_dir = nvm_dir.join(format!("node-v{}.build", target.target_version));
     fs::create_dir_all(&build_dir)?;
 
     println!("  {} {}", "›".dimmed(), T("source_extract"));
     let status = Command::new("tar")
         .arg("xf")
-        .arg(&src_tmp)
+        .arg(&src_path)
         .arg("-C")
         .arg(&build_dir)
         .arg("--strip-components=1")
@@ -230,7 +231,10 @@ fn install_from_source(
             status.code().unwrap_or(-1)
         );
     }
-    fs::remove_file(&src_tmp).ok();
+    // Only clean up our own temp copy; the online path used the shared cache.
+    if owns_src {
+        fs::remove_file(&src_path).ok();
+    }
 
     println!(
         "  {} {}",
@@ -302,12 +306,21 @@ fn install_binary(
     nvm_dir: &Path,
     version_dir: &Path,
 ) -> Result<()> {
+    // The archive to extract. In the online path we extract directly from
+    // the cache file (`download_to_cache` already wrote it there), avoiding
+    // a redundant ~25MB copy from `cache/<archive>` to `<nvm_dir>/<ver>.tmp`
+    // that the previous code did every install. `extract_path` therefore
+    // points at the cache file and must NOT be deleted after extraction.
+    //
+    // In the offline path we still copy cache -> temp file because the cache
+    // is long-lived and we need an isolated file we can safely remove after
+    // extraction; `extract_path` then points at the temp file and IS deleted.
     let temp_file = nvm_dir.join(format!("{}.tmp", target.target_version));
-
-    if offline {
+    let (extract_path, owns_extract_file) = if offline {
         if is_cached(&target.archive_name) {
             println!("  {} {}", "ℹ".cyan().bold(), T("using_cache").cyan());
             copy_from_cache(&target.archive_name, &temp_file)?;
+            (temp_file, true)
         } else {
             anyhow::bail!(format_t(
                 "offline_no_cache",
@@ -316,10 +329,8 @@ fn install_binary(
         }
     } else {
         let cached_path = download_to_cache(&target.download_url, &target.archive_name)?;
-        if cached_path != temp_file {
-            fs::copy(&cached_path, &temp_file).context(T("copy_from_cache_failed"))?;
-        }
-    }
+        (cached_path, false)
+    };
 
     if !target.is_iojs {
         print!("  {} ", T("checksum_label").dimmed());
@@ -347,7 +358,7 @@ fn install_binary(
             // caller merely printed "skipped" — which let a MITM drop the
             // SHASUMS256.txt request and ship a tampered tarball. Use
             // --offline to bypass when the mirror is unreachable.
-            match verify_checksum(&temp_file, &target.archive_name, &sums_bytes) {
+            match verify_checksum(&extract_path, &target.archive_name, &sums_bytes) {
                 Ok(()) => println!("{}", T("checksum_verified").green().bold()),
                 Err(e) => {
                     println!("{}", T("checksum_failed").red().bold());
@@ -387,11 +398,16 @@ fn install_binary(
     }
 
     if target.is_iojs {
-        extract_iojs_archive(&temp_file, version_dir, &target.target_version)?;
+        extract_iojs_archive(&extract_path, version_dir, &target.target_version)?;
     } else {
-        extract_archive(&temp_file, version_dir, &target.target_version)?;
+        extract_archive(&extract_path, version_dir, &target.target_version)?;
     }
-    fs::remove_file(&temp_file).ok();
+    // Only delete the extracted archive when it's our own temp copy (offline
+    // path). The online path extracted straight from the shared cache file,
+    // which must persist for future installs / `--offline`.
+    if owns_extract_file {
+        fs::remove_file(&extract_path).ok();
+    }
 
     println!();
     println!(
@@ -464,9 +480,14 @@ fn run_post_install_hooks(
         );
         // reinstall_packages_inner reads `current` to find the source
         // version's global packages; point it at the freshly installed
-        // version first.
+        // version first. A silent `.ok()` here would leave `current`
+        // pointing at the *previous* version, so the package migration
+        // below would copy packages from the wrong source — surface the
+        // write failure instead of swallowing it.
         let current_file = nvm_dir.join("current");
-        atomic_write(&current_file, &target.target_version).ok();
+        atomic_write(&current_file, &target.target_version).with_context(|| {
+            format!("{}: {}", T("cannot_write_current"), current_file.display())
+        })?;
         if let Err(e) = reinstall_packages_inner(&from_resolved, &target.target_version) {
             eprintln!(
                 "  {} {}",
@@ -703,7 +724,18 @@ fn reinstall_packages_inner(from: &str, to: &str) -> Result<()> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_default();
+    // Surface JSON parse errors instead of silently treating them as "no
+    // dependencies" (which produced a misleading "0 packages migrated"
+    // success). A non-zero exit code is already handled above; reaching
+    // here means npm exited 0 but emitted something we couldn't parse —
+    // typically a truncated pipe or a corrupted/different npm binary.
+    let json: serde_json::Value = serde_json::from_str(&stdout).map_err(|e| {
+        anyhow::anyhow!(
+            "{}: {}",
+            format_t("npm_list_parse_failed", &[e.to_string()]),
+            T("npm_list_parse_failed_hint")
+        )
+    })?;
     if let Some(deps) = json.get("dependencies").and_then(|d| d.as_object()) {
         let new_path = prepend_to_path(&version_bin_dir(&to_dir));
         // Exclude npm/corepack from the count: they are bundled, not migrated.
@@ -732,8 +764,18 @@ fn reinstall_packages_inner(from: &str, to: &str) -> Result<()> {
                 .status()
             {
                 Ok(s) => s,
-                Err(_) => {
-                    println!("{}", "✗".red().bold());
+                Err(e) => {
+                    // Surface the spawn error instead of a bare ✗. A
+                    // non-zero npm exit prints its own code below; a spawn
+                    // failure (e.g. `npm` not executable, EPERM, disk full
+                    // fork) previously printed just "✗" with no reason,
+                    // leaving the user unable to tell why the package was
+                    // skipped.
+                    println!(
+                        "{} {}",
+                        "✗".red().bold(),
+                        format_t("package_failed_spawn", &[e.to_string()]).red()
+                    );
                     failed.push(pkg.clone());
                     continue;
                 }
@@ -858,6 +900,18 @@ fn download_prebuilt_npm(version_dir: &Path, version: &str) -> Result<()> {
         if total > 0 && bytes_copied < total {
             std::fs::remove_file(&npm_tar_path).ok();
             anyhow::bail!("{}", T("npm_download_truncated"));
+        }
+        // When the server omits Content-Length (chunked-only responses, some
+        // proxies), the above length check is a no-op. If we also have no
+        // registry integrity hash to verify against, a truncated tarball would
+        // only surface later as a cryptic `tar` error. Warn so the user can
+        // distinguish a download glitch from a real extraction failure.
+        if total == 0 && expected_integrity.is_none() {
+            eprintln!(
+                "{} {}",
+                "⚠".yellow().bold(),
+                T("npm_no_length_no_integrity").yellow()
+            );
         }
 
         // Verify SHA-512 integrity against the registry's `dist.integrity`.

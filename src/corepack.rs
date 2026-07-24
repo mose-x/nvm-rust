@@ -164,12 +164,35 @@ pub fn corepack_enable(version: Option<&str>) -> anyhow::Result<()> {
 
     let mut success = false;
     if corepack_path.exists() {
-        let out = Command::new(&corepack_path)
+        match Command::new(&corepack_path)
             .args(["enable", "--install-directory", &bin_arg])
             .env("PATH", &path_env)
-            .output();
-        if let Ok(o) = out {
-            success = o.status.success();
+            .output()
+        {
+            Ok(o) => {
+                success = o.status.success();
+                if !success {
+                    // Surface corepack's own stderr so the user can see why
+                    // enable refused (e.g. EPERM on the shim dir, conflicting
+                    // global install). The previous code discarded both the
+                    // non-zero exit reason and any spawn error silently.
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    if !stderr.trim().is_empty() {
+                        eprintln!("{} corepack enable: {}", "⚠".yellow().bold(), stderr.trim());
+                    }
+                }
+            }
+            Err(e) => {
+                // Spawn failure (e.g. node missing despite the PATH patch
+                // above, exec format error). Don't silently fall through to
+                // the npm re-install fallback — that masks the real cause
+                // and re-downloads corepack for nothing.
+                eprintln!(
+                    "{} corepack enable (spawn failed): {}",
+                    "⚠".yellow().bold(),
+                    e
+                );
+            }
         }
     }
 
@@ -178,20 +201,35 @@ pub fn corepack_enable(version: Option<&str>) -> anyhow::Result<()> {
     if !success {
         let npm_path = exe_path(&version_bin, "npm");
         if npm_path.exists() {
-            let npm_out = Command::new(&npm_path)
+            match Command::new(&npm_path)
                 .args(["install", "-g", "corepack"])
                 .env("PATH", &path_env)
-                .output();
-            if let Ok(o) = npm_out {
-                if o.status.success() && corepack_path.exists() {
-                    let out = Command::new(&corepack_path)
-                        .args(["enable", "--install-directory", &bin_arg])
-                        .env("PATH", &path_env)
-                        .output();
-                    if let Ok(o) = out {
-                        success = o.status.success();
+                .output()
+            {
+                Ok(o) => {
+                    if o.status.success() && corepack_path.exists() {
+                        match Command::new(&corepack_path)
+                            .args(["enable", "--install-directory", &bin_arg])
+                            .env("PATH", &path_env)
+                            .output()
+                        {
+                            Ok(o) => success = o.status.success(),
+                            Err(e) => eprintln!("{} corepack enable: {}", "⚠".yellow().bold(), e),
+                        }
+                    } else if !o.status.success() {
+                        let stderr = String::from_utf8_lossy(&o.stderr);
+                        eprintln!(
+                            "{} npm install -g corepack: {}",
+                            "⚠".yellow().bold(),
+                            stderr.trim()
+                        );
                     }
                 }
+                Err(e) => eprintln!(
+                    "{} npm install -g corepack (spawn failed): {}",
+                    "⚠".yellow().bold(),
+                    e
+                ),
             }
         } else {
             anyhow::bail!(
@@ -275,8 +313,33 @@ pub fn corepack_disable(version: Option<&str>) -> anyhow::Result<()> {
         .output();
 
     let mut success = false;
-    if let Ok(out) = output {
-        success = out.status.success();
+    match output {
+        Ok(out) => {
+            success = out.status.success();
+            if !success {
+                // Surface corepack's stderr so the user can see why disable
+                // refused, instead of silently falling back to manual shim
+                // removal (which skips corepack's own bookkeeping).
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                if !stderr.trim().is_empty() {
+                    eprintln!(
+                        "{} corepack disable: {}",
+                        "⚠".yellow().bold(),
+                        stderr.trim()
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            // Spawn failure — corepack missing or node not on PATH despite
+            // the patch above. The manual fallback below still removes the
+            // shims, but log the cause so the user can diagnose.
+            eprintln!(
+                "{} corepack disable (spawn failed): {}",
+                "⚠".yellow().bold(),
+                e
+            );
+        }
     }
 
     // Fallback: directly remove the well-known corepack-managed shims so the
