@@ -623,9 +623,9 @@ fn detect_shell_config() -> Option<String> {
     if cfg!(windows) {
         let docs = home_path.join("Documents");
         let candidates = [
-            docs.join("PowerShell").join("Microsoft.PowerShell_profile.ps1"),
-            docs
-                .join("WindowsPowerShell")
+            docs.join("PowerShell")
+                .join("Microsoft.PowerShell_profile.ps1"),
+            docs.join("WindowsPowerShell")
                 .join("Microsoft.PowerShell_profile.ps1"),
         ];
         for c in &candidates {
@@ -1007,8 +1007,14 @@ mod tests {
         let out = strip_nvm_lines(&input, nvm_dir);
         assert!(out.contains("alias x='y'"));
         assert!(out.contains("export EDITOR=vim"));
-        assert!(!out.contains("NVM_HOME"), "PowerShell NVM_HOME line kept: {out}");
-        assert!(!out.contains("$env:PATH"), "PowerShell PATH line kept: {out}");
+        assert!(
+            !out.contains("NVM_HOME"),
+            "PowerShell NVM_HOME line kept: {out}"
+        );
+        assert!(
+            !out.contains("$env:PATH"),
+            "PowerShell PATH line kept: {out}"
+        );
         assert!(!out.contains("# NVM Rust"));
     }
 
@@ -1018,7 +1024,7 @@ mod tests {
         // kept — the filter must not be overzealous and drop user PATH setup.
         let nvm_dir = "/home/u/.nvm.rust";
         let input = "export PATH=/usr/local/bin:$PATH\nalias ll='ls -l'\n";
-        let out = strip_nvm_lines(&input, nvm_dir);
+        let out = strip_nvm_lines(input, nvm_dir);
         assert!(out.contains("export PATH=/usr/local/bin:$PATH"));
     }
 
@@ -1127,7 +1133,10 @@ mod tests {
         // scan — so this is deterministic regardless of what's installed.
         let err = resolve_alias("lts/doesnotexist").unwrap_err();
         let m = format!("{err}");
-        assert!(m.contains("lts/doesnotexist"), "error should name the alias: {m}");
+        assert!(
+            m.contains("lts/doesnotexist"),
+            "error should name the alias: {m}"
+        );
     }
 
     #[test]
