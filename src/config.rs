@@ -3,7 +3,7 @@ use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::i18n::{format_t, T};
@@ -612,30 +612,54 @@ fn detect_shell_config() -> Option<String> {
     if home == "." {
         return None;
     }
-    // Fish config lives in a different location
-    let fish_config = format!("{}/.config/fish/config.fish", home);
-    let candidates = vec![
-        ".zshrc",
-        ".bashrc",
-        ".bash_profile",
-        ".profile",
-        &fish_config,
+    let home_path = PathBuf::from(&home);
+
+    // On Windows the POSIX rc files (.bashrc/.zshrc/...) don't exist by
+    // default — the shell integration target is the PowerShell profile.
+    // Probe both PowerShell 7 (`Documents\PowerShell\`) and Windows
+    // PowerShell 5.1 (`Documents\WindowsPowerShell\`) and prefer an existing
+    // profile so we don't clobber one the user doesn't source. If neither
+    // exists, fall back to the PS7 path (created on first write).
+    if cfg!(windows) {
+        let docs = home_path.join("Documents");
+        let candidates = [
+            docs.join("PowerShell").join("Microsoft.PowerShell_profile.ps1"),
+            docs
+                .join("WindowsPowerShell")
+                .join("Microsoft.PowerShell_profile.ps1"),
+        ];
+        for c in &candidates {
+            if c.exists() {
+                return Some(c.to_string_lossy().into_owned());
+            }
+        }
+        return Some(candidates[0].to_string_lossy().into_owned());
+    }
+
+    // Use PathBuf::join (not `format!("{}/{}", ...)`) so paths stay canonical
+    // — mixed `home/foo` separators would still work for `exists()` on Unix
+    // but break string comparison against `PathBuf::display()` elsewhere.
+    let fish_config = home_path.join(".config").join("fish").join("config.fish");
+    let candidates: [PathBuf; 5] = [
+        home_path.join(".zshrc"),
+        home_path.join(".bashrc"),
+        home_path.join(".bash_profile"),
+        home_path.join(".profile"),
+        fish_config,
     ];
-    for c in candidates {
-        let p = if c.starts_with('/') {
-            c.to_string()
-        } else {
-            format!("{}/{}", home, c)
-        };
-        if Path::new(&p).exists() {
-            return Some(p);
+    for c in &candidates {
+        if c.exists() {
+            return Some(c.to_string_lossy().into_owned());
         }
     }
-    Some(format!("{}/.bashrc", home))
+    Some(home_path.join(".bashrc").to_string_lossy().into_owned())
 }
 
 /// Detect the shell type from the config file path.
 fn detect_shell_type(config_path: &str) -> &'static str {
+    if cfg!(windows) && (config_path.ends_with(".ps1") || config_path.contains("PowerShell")) {
+        return "powershell";
+    }
     if config_path.contains("config.fish") || config_path.contains("/fish/") {
         "fish"
     } else if config_path.ends_with(".zshrc") {
@@ -667,6 +691,27 @@ function __nvm_use_on_cd --on-variable PWD
 end
 "#
         .to_string(),
+        "powershell" => r#"
+# NVM Rust - use-on-cd
+# Wrap the existing prompt so `nvm auto` runs on directory change, mirroring
+# bash's PROMPT_COMMAND. The guard prevents double-wrapping across reloads;
+# `nvm unload` removes this block wholesale so the original prompt is restored.
+if (-not (Test-Path Function:__NVM_ORIG_PROMPT)) {
+    if (Test-Path Function:prompt) {
+        Rename-Item Function:prompt __NVM_ORIG_PROMPT
+    } else {
+        function global:__NVM_ORIG_PROMPT { 'PS> ' }
+    }
+    function global:prompt {
+        if ((-not (Test-Path Variable:__NVM_PREV_DIR)) -or ($PWD.Path -ne $__NVM_PREV_DIR)) {
+            $global:__NVM_PREV_DIR = $PWD.Path
+            nvm auto --silent 2>$null
+        }
+        __NVM_ORIG_PROMPT
+    }
+}
+"#
+        .to_string(),
         _ => r#"
 # NVM Rust - use-on-cd
 __nvm_use_on_cd() {
@@ -681,10 +726,62 @@ PROMPT_COMMAND="__nvm_use_on_cd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
     }
 }
 
+/// Remove all nvm-rust-managed lines from a shell config body:
+/// the cd-hook blocks (for every shell type, so removal works even if the
+/// user switched shells) and the `# NVM Rust` marker / `NVM_HOME=` /
+/// `export PATH=...<nvm_dir>...` lines.
+///
+/// Extracted because both [`update_shell_config`] and
+/// [`remove_from_shell_config`] ran the identical strip pass — keeping two
+/// copies in sync was error-prone (the line-filter predicate was duplicated
+/// verbatim, and a future addition to "what counts as an nvm line" would
+/// have to be made in both places).
+fn strip_nvm_lines(content: &str, nvm_dir_str: &str) -> String {
+    // Remember whether the input ended with a newline so we can re-attach it.
+    // `lines()` + `join("\n")` otherwise normalises the trailing newline away,
+    // which would make `remove_from_shell_config` needlessly rewrite an
+    // already-clean file (dropping its final newline) — breaking idempotency
+    // and producing a spurious diff every time the command runs on a clean rc.
+    let trailing_newline = content.ends_with('\n');
+    let mut content = content.to_string();
+    // Remove any previously-written cd hook block as an exact substring.
+    // Try all shell types so removal still works if the user switched shells
+    // (including bash↔powershell on a dual-boot / WSL-adjacent setup).
+    for st in &["bash", "zsh", "fish", "powershell"] {
+        let hook = cd_hook_code(st);
+        if content.contains(&hook) {
+            content = content.replace(&hook, "");
+        }
+    }
+    // Remove marker / NVM_HOME / nvm.rust / PATH-export lines line-by-line.
+    // Recognises both POSIX (`export NVM_HOME=`, `export PATH=`) and
+    // PowerShell (`$env:NVM_HOME =`, `$env:PATH =`) forms so cleanup works
+    // regardless of which shell wrote the lines.
+    let mut out: String = content
+        .lines()
+        .filter(|line| {
+            let l = line.trim();
+            !(l.contains("NVM_HOME")
+                || l.contains("nvm.rust")
+                || l.contains(".nvm.rust")
+                || l.contains("# NVM Rust")
+                || (l.starts_with("export PATH=") && l.contains(nvm_dir_str))
+                || (l.starts_with("$env:PATH") && l.contains(nvm_dir_str)))
+        })
+        .collect::<Vec<&str>>()
+        .join("\n");
+    // Re-attach the trailing newline only when there's remaining content —
+    // an all-nvm file should become empty, not a lone "\n".
+    if trailing_newline && !out.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
 pub fn update_shell_config(version: &str, use_on_cd: bool) -> Result<()> {
     let nvm_dir = get_nvm_dir();
     let version_dir = nvm_dir.join(version);
-    let bin_dir = version_dir.join("bin");
+    let bin_dir = crate::system::version_bin_dir(&version_dir);
 
     let shell_config = match detect_shell_config() {
         Some(p) => p,
@@ -702,48 +799,38 @@ pub fn update_shell_config(version: &str, use_on_cd: bool) -> Result<()> {
 
     let shell_type = detect_shell_type(&shell_config);
 
-    let nvm_export = format!(r#"export NVM_HOME="{}""#, nvm_dir.display());
-    let node_export = format!(r#"export PATH="{}:$PATH""#, bin_dir.display());
+    // Emit shell-native env setup so the lines actually take effect in the
+    // target shell (POSIX `export` vs PowerShell `$env:`). Both forms are
+    // recognised by `strip_nvm_lines` for later cleanup.
+    let (nvm_export, node_export) = if shell_type == "powershell" {
+        (
+            format!(r#"$env:NVM_HOME = "{}""#, nvm_dir.display()),
+            format!(r#"$env:PATH = "{};" + $env:PATH"#, bin_dir.display()),
+        )
+    } else {
+        (
+            format!(r#"export NVM_HOME="{}""#, nvm_dir.display()),
+            format!(r#"export PATH="{}:$PATH""#, bin_dir.display()),
+        )
+    };
 
     // Read the existing config. A missing file is fine (first-time setup,
     // we'll create it), but a present file that fails to read must abort —
     // otherwise we'd overwrite content we couldn't see, with no safe way
     // back. The previous `unwrap_or_default()` collapsed both cases into
     // an empty string and proceeded to overwrite.
-    let mut content = if config_path.exists() {
+    let content = if config_path.exists() {
         fs::read_to_string(config_path).context(T("shell_config_read_failed"))?
     } else {
         String::new()
     };
 
-    // Remove any previously-written cd hook block as an exact substring.
-    // We try all shell types so removal still works if the user switched shells.
-    for st in &["bash", "zsh", "fish"] {
-        let hook = cd_hook_code(st);
-        if content.contains(&hook) {
-            content = content.replace(&hook, "");
-        }
-    }
-
-    // Remove old PATH export lines and markers line-by-line.
     let nvm_dir_str = nvm_dir.display().to_string();
-    let lines: Vec<&str> = content
-        .lines()
-        .filter(|line| {
-            let l = line.trim();
-            !(l.contains("NVM_HOME=")
-                || l.contains("nvm.rust")
-                || l.contains(".nvm.rust")
-                || l.contains("# NVM Rust")
-                || (l.starts_with("export PATH=") && l.contains(&nvm_dir_str)))
-        })
-        .collect();
+    let stripped = strip_nvm_lines(&content, &nvm_dir_str);
 
     let mut new_config = format!(
         "{}\n# NVM Rust\n{}\n{}\n",
-        lines.join("\n"),
-        nvm_export,
-        node_export
+        stripped, nvm_export, node_export
     );
 
     if use_on_cd {
@@ -754,6 +841,14 @@ pub fn update_shell_config(version: &str, use_on_cd: bool) -> Result<()> {
     // would corrupt the user's shell config. backup_file is a best-effort
     // safety net, but atomic_write prevents the corruption in the first
     // place and keeps this path consistent with config.json/alias.json saves.
+    // On Windows the PowerShell profile directory (`Documents\PowerShell\`)
+    // may not exist yet on a fresh install; atomic_write's temp file lives in
+    // the parent dir, so create it first or the write fails with ENOENT.
+    if let Some(parent) = config_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).ok();
+        }
+    }
     atomic_write(config_path, &new_config).context(T("cannot_update_shell_config"))?;
 
     Ok(())
@@ -780,28 +875,9 @@ pub fn remove_from_shell_config() -> Result<()> {
     // Ok(()) on read failure, masking permission/IO errors as "nothing
     // to remove" — the user's config would remain polluted with stale
     // NVM lines and they'd never know. Surface the read error instead.
-    let mut content = fs::read_to_string(config_path).context(T("shell_config_read_failed"))?;
-
-    // Remove any cd hook block (any shell type) as an exact substring.
-    for st in &["bash", "zsh", "fish"] {
-        let hook = cd_hook_code(st);
-        if content.contains(&hook) {
-            content = content.replace(&hook, "");
-        }
-    }
-    // Remove PATH export lines and markers line-by-line.
-    let lines: Vec<&str> = content
-        .lines()
-        .filter(|line| {
-            let l = line.trim();
-            !(l.contains("NVM_HOME=")
-                || l.contains("nvm.rust")
-                || l.contains(".nvm.rust")
-                || l.contains("# NVM Rust")
-                || (l.starts_with("export PATH=") && l.contains(&nvm_dir_str)))
-        })
-        .collect();
-    atomic_write(config_path, &lines.join("\n"))?;
+    let content = fs::read_to_string(config_path).context(T("shell_config_read_failed"))?;
+    let stripped = strip_nvm_lines(&content, &nvm_dir_str);
+    atomic_write(config_path, &stripped)?;
     println!("{}", crate::i18n::T("shell_config_removed").green());
     Ok(())
 }
@@ -872,6 +948,91 @@ mod tests {
     }
 
     #[test]
+    fn test_strip_nvm_lines_removes_marker_and_exports() {
+        let nvm_dir = "/home/u/.nvm.rust";
+        let input = format!(
+            "# my alias\n\
+             alias ll='ls -l'\n\
+             # NVM Rust\n\
+             export NVM_HOME=\"{nvm_dir}\"\n\
+             export PATH=\"/home/u/.nvm.rust/v20.0.0/bin:$PATH\"\n\
+             export EDITOR=vim\n"
+        );
+        let out = strip_nvm_lines(&input, nvm_dir);
+        // User lines survive.
+        assert!(out.contains("alias ll='ls -l'"));
+        assert!(out.contains("export EDITOR=vim"));
+        // nvm lines are gone.
+        assert!(!out.contains("NVM_HOME="));
+        assert!(!out.contains("# NVM Rust"));
+        assert!(!out.contains("nvm.rust"));
+    }
+
+    #[test]
+    fn test_strip_nvm_lines_removes_cd_hook_all_shells() {
+        let nvm_dir = "/home/u/.nvm.rust";
+        // Each shell's hook block carries a distinctive marker we assert is
+        // gone after stripping — `__nvm_use_on_cd` for POSIX/fish, and the
+        // PowerShell prompt-wrapper symbol for powershell.
+        for (st, marker) in &[
+            ("bash", "__nvm_use_on_cd"),
+            ("zsh", "__nvm_use_on_cd"),
+            ("fish", "__nvm_use_on_cd"),
+            ("powershell", "__NVM_ORIG_PROMPT"),
+        ] {
+            let hook = cd_hook_code(st);
+            let input = format!("alias x='y'\n{hook}\nexport FOO=bar\n");
+            let out = strip_nvm_lines(&input, nvm_dir);
+            assert!(
+                !out.contains(marker),
+                "cd hook for {st} was not stripped: {out}"
+            );
+            assert!(out.contains("alias x='y'"));
+            assert!(out.contains("export FOO=bar"));
+        }
+    }
+
+    #[test]
+    fn test_strip_nvm_lines_removes_powershell_env_exports() {
+        // PowerShell-formatted env lines must be stripped just like POSIX
+        // `export` lines, so `nvm unload` cleans up after a Windows install.
+        let nvm_dir = "/home/u/.nvm.rust";
+        let input = format!(
+            "alias x='y'\n\
+             # NVM Rust\n\
+             $env:NVM_HOME = \"{nvm_dir}\"\n\
+             $env:PATH = \"{nvm_dir}/v20.0.0/bin;\" + $env:PATH\n\
+             export EDITOR=vim\n"
+        );
+        let out = strip_nvm_lines(&input, nvm_dir);
+        assert!(out.contains("alias x='y'"));
+        assert!(out.contains("export EDITOR=vim"));
+        assert!(!out.contains("NVM_HOME"), "PowerShell NVM_HOME line kept: {out}");
+        assert!(!out.contains("$env:PATH"), "PowerShell PATH line kept: {out}");
+        assert!(!out.contains("# NVM Rust"));
+    }
+
+    #[test]
+    fn test_strip_nvm_lines_preserves_unrelated_path_exports() {
+        // An export PATH line that does NOT reference the nvm dir must be
+        // kept — the filter must not be overzealous and drop user PATH setup.
+        let nvm_dir = "/home/u/.nvm.rust";
+        let input = "export PATH=/usr/local/bin:$PATH\nalias ll='ls -l'\n";
+        let out = strip_nvm_lines(&input, nvm_dir);
+        assert!(out.contains("export PATH=/usr/local/bin:$PATH"));
+    }
+
+    #[test]
+    fn test_strip_nvm_lines_idempotent() {
+        // Stripping an already-clean body is a no-op (modulo trailing newline
+        // joining), so re-running remove_from_shell_config is safe.
+        let nvm_dir = "/home/u/.nvm.rust";
+        let clean = "alias ll='ls -l'\nexport EDITOR=vim\n";
+        let out = strip_nvm_lines(clean, nvm_dir);
+        assert_eq!(out, clean);
+    }
+
+    #[test]
     fn test_normalize_mirror_url_accepts_https() {
         assert_eq!(
             normalize_mirror_url("https://example.com/node/").unwrap(),
@@ -930,5 +1091,118 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---- resolve_alias: pure (non-filesystem) paths ----
+    //
+    // `resolve_alias` has several branches that never touch the nvm dir:
+    // empty-input rejection, the `lts/<codename>` table lookup (bails before
+    // scanning installed versions when the codename is unknown), and the
+    // terminal fallback that normalises the version string and runs it
+    // through `validate_version_name`. These paths are the security boundary
+    // (path-traversal rejection) and the most common resolution shape, so
+    // they deserve deterministic unit tests that don't depend on whatever
+    // versions happen to be installed in the test env.
+
+    #[test]
+    fn test_resolve_alias_rejects_empty() {
+        // Empty input must bail early with alias_name_empty rather than
+        // falling through to produce the confusing "Version v is not
+        // installed".
+        assert!(resolve_alias("").is_err());
+    }
+
+    #[test]
+    fn test_resolve_alias_rejects_whitespace_only() {
+        // Whitespace is trimmed before the empty check, so "   " is treated
+        // exactly like "".
+        assert!(resolve_alias("   ").is_err());
+        assert!(resolve_alias("\t\n").is_err());
+    }
+
+    #[test]
+    fn test_resolve_alias_rejects_unknown_lts_codename() {
+        // An unknown `lts/<name>` must bail with unknown_lts_alias (which
+        // interpolates the input) BEFORE attempting any installed-version
+        // scan — so this is deterministic regardless of what's installed.
+        let err = resolve_alias("lts/doesnotexist").unwrap_err();
+        let m = format!("{err}");
+        assert!(m.contains("lts/doesnotexist"), "error should name the alias: {m}");
+    }
+
+    #[test]
+    fn test_resolve_alias_rejects_non_numeric_lts_offset() {
+        // `lts/-foo`: the non-numeric suffix fails `parse::<usize>`, falls
+        // through to the codename lookup (which won't match `lts/-foo`) and
+        // bails with unknown_lts_alias. Must not panic on the parse.
+        let err = resolve_alias("lts/-foo").unwrap_err();
+        let m = format!("{err}");
+        assert!(m.contains("lts/-foo"), "error should name the alias: {m}");
+    }
+
+    #[test]
+    fn test_resolve_alias_rejects_path_traversal() {
+        // The terminal fallback runs every unknown input through
+        // `validate_version_name`. A slash-bearing payload must be rejected
+        // here so a malicious `.nvmrc` / `nvm use "v1/../../etc"` can't
+        // escape nvm_dir via a later `nvm_dir.join(&version)`.
+        let err = resolve_alias("v1.0.0/../../etc").unwrap_err();
+        let m = format!("{err}");
+        assert!(
+            m.contains("v1.0.0/../../etc"),
+            "path-traversal must be rejected with the offending name: {m}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_alias_rejects_backslash_traversal() {
+        // Windows-style traversal must also be rejected — `validate_version_name`
+        // forbids backslashes on every platform so a payload crafted for one
+        // OS can't slip through on the other.
+        assert!(resolve_alias("v1\\..\\x").is_err());
+    }
+
+    #[test]
+    fn test_resolve_alias_rejects_parent_dir_token() {
+        // A bare ".." token (no slash) is still rejected by validate_version_name,
+        // blocking e.g. `nvm uninstall ".."` from resolving to a parent dir.
+        assert!(resolve_alias("v1..2").is_err());
+    }
+
+    #[test]
+    fn test_resolve_alias_rejects_null_byte() {
+        // Control characters (incl. NUL) are forbidden so they can't be used
+        // to truncate the version string mid-path on C-based path APIs.
+        assert!(resolve_alias("v1\0x").is_err());
+    }
+
+    #[test]
+    fn test_resolve_alias_passes_through_v_prefixed_version() {
+        // A fully-specified `vX.Y.Z` is not a bare-major shorthand (it has 2
+        // dots, so `bare_major_prefix` returns None) and reaches the terminal
+        // fallback, which leaves the `v` prefix intact.
+        assert_eq!(resolve_alias("v22.5.1").unwrap(), "v22.5.1");
+    }
+
+    #[test]
+    fn test_resolve_alias_prepends_v_to_bare_version() {
+        // A bare `X.Y.Z` (no leading v) gets a `v` prepended so downstream
+        // code always sees the canonical `vX.Y.Z` form. io.js / system: forms
+        // are excluded from this prepend (see tests below).
+        assert_eq!(resolve_alias("22.5.1").unwrap(), "v22.5.1");
+    }
+
+    #[test]
+    fn test_resolve_alias_passes_through_iojs_version() {
+        // io.js names must NOT get a `v` prepended — otherwise "iojs-v3.3.1"
+        // would become the nonsensical "viojs-v3.3.1". The terminal fallback
+        // recognises the "iojs" prefix and skips the prepend.
+        assert_eq!(resolve_alias("iojs-v3.3.1").unwrap(), "iojs-v3.3.1");
+    }
+
+    #[test]
+    fn test_resolve_alias_passes_through_iojs_dot_version() {
+        // The "io.js-" spelling must also skip the v-prepend.
+        assert_eq!(resolve_alias("io.js-v3.3.1").unwrap(), "io.js-v3.3.1");
     }
 }

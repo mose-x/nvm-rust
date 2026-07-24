@@ -4,7 +4,7 @@ use std::process::Command;
 use colored::Colorize;
 
 use crate::i18n::{format_t, T};
-use crate::system::{get_nvm_dir, prepend_to_path};
+use crate::system::{exe_path, get_nvm_dir, prepend_to_path, version_bin_dir};
 
 /// Tool shims that `corepack enable` writes into a version's `bin/` dir.
 ///
@@ -19,7 +19,8 @@ pub fn corepack_status(version: Option<&str>) -> anyhow::Result<()> {
     match version {
         Some(ver) => {
             let resolved = crate::config::resolve_alias(ver)?;
-            let node_path = nvm_dir.join(&resolved).join("bin").join("node");
+            let version_bin = version_bin_dir(&nvm_dir.join(&resolved));
+            let node_path = exe_path(&version_bin, "node");
 
             if !node_path.exists() {
                 anyhow::bail!(
@@ -28,8 +29,7 @@ pub fn corepack_status(version: Option<&str>) -> anyhow::Result<()> {
                 );
             }
 
-            let corepack_path = nvm_dir.join(&resolved).join("bin").join("corepack");
-            let version_bin = nvm_dir.join(&resolved).join("bin");
+            let corepack_path = exe_path(&version_bin, "corepack");
 
             if !corepack_path.exists() {
                 println!(
@@ -55,7 +55,7 @@ pub fn corepack_status(version: Option<&str>) -> anyhow::Result<()> {
             let activated: Vec<&str> = COREPACK_SHIMS
                 .iter()
                 .copied()
-                .filter(|t| version_bin.join(t).exists())
+                .filter(|t| exe_path(&version_bin, t).exists())
                 .collect();
 
             if activated.is_empty() {
@@ -82,7 +82,7 @@ pub fn corepack_status(version: Option<&str>) -> anyhow::Result<()> {
                 for tool in activated {
                     // Probe the shim directly (not via `corepack <tool>`) so we
                     // only print a version when the shim is actually installed.
-                    let ver = Command::new(version_bin.join(tool))
+                    let ver = Command::new(exe_path(&version_bin, tool))
                         .arg("--version")
                         .output()
                         .ok()
@@ -140,8 +140,8 @@ pub fn corepack_enable(version: Option<&str>) -> anyhow::Result<()> {
         }
     };
 
-    let version_bin = nvm_dir.join(&resolved).join("bin");
-    let node_path = version_bin.join("node");
+    let version_bin = version_bin_dir(&nvm_dir.join(&resolved));
+    let node_path = exe_path(&version_bin, "node");
     if !node_path.exists() {
         anyhow::bail!(
             "{}",
@@ -153,7 +153,7 @@ pub fn corepack_enable(version: Option<&str>) -> anyhow::Result<()> {
     // system-wide bin directory, which is wrong for an nvm-managed install —
     // the shims must live inside this version's bin dir so they disappear when
     // the version is uninstalled. Scope the install directory explicitly.
-    let corepack_path = version_bin.join("corepack");
+    let corepack_path = exe_path(&version_bin, "corepack");
     let bin_arg = version_bin.display().to_string();
     // The corepack binary is a JS file run via `#!/usr/bin/env node`. Without
     // the version's `bin/` on PATH, `env node` won't find node and the spawn
@@ -176,7 +176,7 @@ pub fn corepack_enable(version: Option<&str>) -> anyhow::Result<()> {
     // Fallback: corepack not bundled with this version. Install it via npm,
     // then re-run enable with the scoped install directory.
     if !success {
-        let npm_path = version_bin.join("npm");
+        let npm_path = exe_path(&version_bin, "npm");
         if npm_path.exists() {
             let npm_out = Command::new(&npm_path)
                 .args(["install", "-g", "corepack"])
@@ -205,7 +205,7 @@ pub fn corepack_enable(version: Option<&str>) -> anyhow::Result<()> {
     // guarantee shims were actually written into the version's bin.
     let shims_present = ["pnpm", "yarn"]
         .iter()
-        .any(|t| version_bin.join(t).exists());
+        .any(|t| exe_path(&version_bin, t).exists());
 
     if success && shims_present {
         println!(
@@ -246,7 +246,7 @@ pub fn corepack_disable(version: Option<&str>) -> anyhow::Result<()> {
         }
     };
 
-    let node_path = nvm_dir.join(&resolved).join("bin").join("node");
+    let node_path = exe_path(&version_bin_dir(&nvm_dir.join(&resolved)), "node");
     if !node_path.exists() {
         anyhow::bail!(
             "{}",
@@ -257,8 +257,8 @@ pub fn corepack_disable(version: Option<&str>) -> anyhow::Result<()> {
     // First try the official `corepack disable` with an install-directory scoped
     // to this version's bin dir, so we only remove the shim entries created for
     // this version (and never touch a system-wide install).
-    let version_bin = nvm_dir.join(&resolved).join("bin");
-    let corepack_path = version_bin.join("corepack");
+    let version_bin = version_bin_dir(&nvm_dir.join(&resolved));
+    let corepack_path = exe_path(&version_bin, "corepack");
     // `corepack disable` runs corepack (a JS file), which needs `node` on
     // PATH. Without this, the spawn silently fails with exit code 127 and we
     // fall through to the manual shim-removal fallback (which still works,
@@ -285,7 +285,7 @@ pub fn corepack_disable(version: Option<&str>) -> anyhow::Result<()> {
     if !success {
         let mut remove_failed = false;
         for tool in COREPACK_SHIMS {
-            let shim = version_bin.join(tool);
+            let shim = exe_path(&version_bin, tool);
             if !shim.exists() {
                 continue;
             }

@@ -10,7 +10,7 @@ use crate::config::{
     resolve_alias, save_config, set_alias, update_shell_config,
 };
 use crate::i18n::{format_t, T};
-use crate::system::{get_nvm_dir, get_tags, prepend_to_path};
+use crate::system::{exe_path, get_nvm_dir, get_tags, prepend_to_path, version_bin_dir};
 use crate::utils::{atomic_write, get_installed_versions, is_lts_version, pad_right};
 
 pub fn use_version(
@@ -230,7 +230,7 @@ pub fn current_version() -> Result<()> {
                 );
             } else {
                 let nvm_dir = get_nvm_dir();
-                let node_path = nvm_dir.join(&resolved).join("bin").join("node");
+                let node_path = exe_path(&version_bin_dir(&nvm_dir.join(&resolved)), "node");
 
                 println!("{}", resolved.green().bold());
 
@@ -271,7 +271,7 @@ pub fn run_version(version: &str, args: &[String]) -> Result<()> {
     let node_path = if resolved.starts_with("system:") {
         PathBuf::from("node")
     } else {
-        nvm_dir.join(&resolved).join("bin").join("node")
+        exe_path(&version_bin_dir(&nvm_dir.join(&resolved)), "node")
     };
 
     if !resolved.starts_with("system:") && !node_path.exists() {
@@ -318,7 +318,7 @@ pub fn exec_version(version: &str, args: &[String]) -> Result<()> {
                 )
             );
         }
-        nvm_dir.join(&resolved).join("bin")
+        version_bin_dir(&nvm_dir.join(&resolved))
     };
 
     let cmd = &args[0];
@@ -367,7 +367,7 @@ pub fn which_version(version: Option<&str>) -> Result<()> {
     }
 
     let nvm_dir = get_nvm_dir();
-    let node_path = nvm_dir.join(&resolved).join("bin").join("node");
+    let node_path = exe_path(&version_bin_dir(&nvm_dir.join(&resolved)), "node");
 
     if !node_path.exists() {
         anyhow::bail!(
@@ -825,8 +825,8 @@ pub fn show_version_info() -> Result<()> {
         }
         Some(v) => {
             let nvm_dir = get_nvm_dir();
-            let bin = nvm_dir.join(&v).join("bin");
-            let node_bin = bin.join("node");
+            let bin = version_bin_dir(&nvm_dir.join(&v));
+            let node_bin = exe_path(&bin, "node");
             println!(
                 "{} {}",
                 T("active_node_label").green().bold(),

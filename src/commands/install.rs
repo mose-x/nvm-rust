@@ -14,8 +14,8 @@ use crate::download::{copy_from_cache, download_to_cache, is_cached};
 use crate::extract::{extract_archive, extract_iojs_archive};
 use crate::i18n::{format_t, T};
 use crate::system::{
-    fetch_shasums, get_nvm_dir, os_suffix, prepend_to_path, verify_checksum, verify_gpg_signature,
-    GpgStatus, IOJS_URI, NPM_REGISTRY,
+    exe_path, fetch_shasums, get_nvm_dir, os_suffix, prepend_to_path, verify_checksum,
+    verify_gpg_signature, version_bin_dir, GpgStatus, IOJS_URI, NPM_REGISTRY,
 };
 use crate::utils::{atomic_write, iojs_version_number};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -68,6 +68,16 @@ fn build_install_target(
 
     if is_iojs && cfg.source {
         anyhow::bail!("{}", T("iojs_source_unsupported"));
+    }
+
+    // `--source` drives a Unix-only toolchain (`./configure`, `make`, GNU
+    // `tar --strip-components`). It is unreachable on Windows, where the
+    // prebuilt-binary install path is the default and `make`/`configure` are
+    // not present. Refuse it up front with a clear message instead of failing
+    // later inside `install_from_source` with a cryptic "configure: No such
+    // file or directory".
+    if cfg.source && cfg!(windows) {
+        anyhow::bail!("{}", T("source_unsupported_windows"));
     }
 
     if is_iojs {
@@ -583,7 +593,7 @@ fn install_latest_package_inner(version: &str, package: &str) -> Result<()> {
             format_t("not_installed", std::slice::from_ref(&resolved))
         );
     }
-    let npm_path = version_dir.join("bin").join("npm");
+    let npm_path = exe_path(&version_bin_dir(&version_dir), "npm");
     if !npm_path.exists() {
         anyhow::bail!(
             "{}",
@@ -601,7 +611,7 @@ fn install_latest_package_inner(version: &str, package: &str) -> Result<()> {
         "▶".cyan().bold(),
         format_t(upgrading_key, std::slice::from_ref(&resolved)).cyan()
     );
-    let path_env = prepend_to_path(&version_dir.join("bin"));
+    let path_env = prepend_to_path(&version_bin_dir(&version_dir));
     // First attempt: plain `npm install -g <package>@latest`. Works for
     // yarn/pnpm (they don't replace themselves) and for npm 11+ (whose
     // reify no longer moves its own deps out from under itself).
@@ -662,15 +672,15 @@ fn reinstall_packages_inner(from: &str, to: &str) -> Result<()> {
     if !to_dir.exists() {
         anyhow::bail!("{}", format_t("target_not_installed", &[to.to_string()]));
     }
-    let from_npm = from_dir.join("bin").join("npm");
-    let to_npm = to_dir.join("bin").join("npm");
+    let from_npm = exe_path(&version_bin_dir(&from_dir), "npm");
+    let to_npm = exe_path(&version_bin_dir(&to_dir), "npm");
 
     let output = Command::new(&from_npm)
         .arg("list")
         .arg("-g")
         .arg("--depth=0")
         .arg("--json")
-        .env("PATH", prepend_to_path(&from_dir.join("bin")))
+        .env("PATH", prepend_to_path(&version_bin_dir(&from_dir)))
         .output()
         .context(T("list_global_packages_failed"))?;
 
@@ -695,7 +705,7 @@ fn reinstall_packages_inner(from: &str, to: &str) -> Result<()> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_default();
     if let Some(deps) = json.get("dependencies").and_then(|d| d.as_object()) {
-        let new_path = prepend_to_path(&to_dir.join("bin"));
+        let new_path = prepend_to_path(&version_bin_dir(&to_dir));
         // Exclude npm/corepack from the count: they are bundled, not migrated.
         let pkg_count = deps
             .keys()

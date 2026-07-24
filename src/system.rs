@@ -5,7 +5,7 @@ use sha2::Digest;
 use std::env;
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use sysinfo::System;
 
@@ -43,6 +43,65 @@ pub fn prepend_to_path(bin_dir: &std::path::Path) -> String {
         PATH_SEP,
         env::var("PATH").unwrap_or_default()
     )
+}
+
+/// Resolve the directory holding a version's executables.
+///
+/// On Unix, Node.js tarballs extract `node`/`npm`/... into a `bin/`
+/// subdirectory of the version dir. On Windows, the `.7z`/`.zip` archive
+/// extracts `node.exe`/`npm.cmd`/... directly into the version dir root
+/// (there is no `bin/` subdirectory). Routing every `version_dir.join("bin")`
+/// through this helper makes the same code path work on both layouts —
+/// previously ~20 call sites hardcoded `join("bin")`, which silently pointed
+/// at a non-existent directory on Windows and broke every `nvm use`/`exec`/
+///`which`/`corepack`/`reinstall-packages` invocation.
+pub fn version_bin_dir(version_dir: &Path) -> PathBuf {
+    if cfg!(windows) {
+        version_dir.to_path_buf()
+    } else {
+        version_dir.join("bin")
+    }
+}
+
+/// Resolve the on-disk path of an executable named `name` inside `bin_dir`,
+/// accounting for Windows executable extensions.
+///
+/// On Unix this is simply `bin_dir.join(name)`. On Windows, Node.js ships
+/// `node` as `node.exe` and `npm`/`npx`/`corepack` (and the corepack shims
+/// pnpm/yarn/...) as `.cmd` wrappers — newer Node also ships `corepack.exe`.
+/// Because the exact extension varies by tool and Node version, we probe the
+/// candidate extensions in order (`.exe`, `.cmd`, then bare) and return the
+/// first that exists on disk. If none exists we fall back to `.cmd` for the
+/// known shim tools and `.exe` otherwise (the canonical Windows Node layout),
+/// so both `Command::new(exe_path(...))` and `exe_path(...).exists()` behave
+/// correctly whether the tool is installed or not.
+pub fn exe_path(bin_dir: &Path, name: &str) -> PathBuf {
+    if cfg!(not(windows)) {
+        return bin_dir.join(name);
+    }
+    // First pass: return the first existing candidate. `.exe` is preferred
+    // (the real binary) over `.cmd` (a shim that re-invokes node).
+    for ext in &["exe", "cmd"] {
+        let p = bin_dir.join(name).with_extension(ext);
+        if p.exists() {
+            return p;
+        }
+    }
+    let bare = bin_dir.join(name);
+    if bare.exists() {
+        return bare;
+    }
+    // Nothing on disk: default to the canonical Windows extension so a
+    // not-yet-installed path still carries a sensible filename in errors.
+    let is_shim = matches!(
+        name,
+        "npm" | "npx" | "pnpm" | "pnpx" | "yarn" | "yarnpkg" | "corepack"
+    );
+    if is_shim {
+        bin_dir.join(name).with_extension("cmd")
+    } else {
+        bin_dir.join(name).with_extension("exe")
+    }
 }
 
 /// Get the user home directory cross-platform.
