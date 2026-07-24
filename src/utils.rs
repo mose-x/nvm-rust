@@ -8,6 +8,23 @@ use anyhow::Result;
 use crate::i18n::{format_t, T};
 use crate::system::get_nvm_dir;
 
+/// The four accepted io.js version prefixes, ordered longest-distinctive
+/// first so `strip_prefix` matches `iojs-v` before `iojs-` (otherwise
+/// `iojs-v3.3.1` would strip to `v3.3.1` and leave a stray `v`).
+///
+/// Single source of truth for the io.js spelling — previously each consumer
+/// carried its own `trim_start_matches` / `strip_prefix` chain, and an early
+/// copy that missed `io.js-v` made those versions invisible to the
+/// `package.json#engines.node` matcher.
+const IOJS_PREFIXES: &[&str] = &["iojs-v", "io.js-v", "iojs-", "io.js-"];
+
+/// Strip any known io.js prefix from `v`, returning the remainder (without
+/// the leading `v`). Returns `None` if `v` does not start with an io.js
+/// prefix.
+pub fn strip_iojs_prefix(v: &str) -> Option<&str> {
+    IOJS_PREFIXES.iter().find_map(|p| v.strip_prefix(p))
+}
+
 /// Strip all known version prefixes (Node.js `v`, io.js `iojs-v` / `iojs-` /
 /// `io.js-v` / `io.js-`) and parse the major.minor.patch tuple. Pre-release
 /// suffixes (e.g. `-rc.1`) are discarded via `split('-')`.
@@ -18,12 +35,7 @@ use crate::system::get_nvm_dir;
 /// `parse_v_tuple` missed `io.js-v` / `io.js-` caused io.js versions to be
 /// invisible to the `package.json#engines.node` range matcher).
 pub fn parse_version_parts(v: &str) -> Option<(u32, u32, u32)> {
-    let s = v
-        .trim_start_matches("iojs-v")
-        .trim_start_matches("io.js-v")
-        .trim_start_matches("iojs-")
-        .trim_start_matches("io.js-")
-        .trim_start_matches('v');
+    let s = strip_iojs_prefix(v).unwrap_or(v).trim_start_matches('v');
     let parts: Vec<&str> = s.split('-').next().unwrap_or("").split('.').collect();
     Some((
         parts.first().and_then(|s| s.parse().ok())?,
@@ -41,7 +53,7 @@ pub fn parse_version_parts(v: &str) -> Option<(u32, u32, u32)> {
 /// after `v20.20.2` (because '5' > '2' as chars), which is the wrong answer.
 pub fn compare_semver(a: &str, b: &str) -> Ordering {
     let parse_v = |v: &str| -> (bool, u32, u32, u32) {
-        let is_iojs = v.starts_with("iojs-") || v.starts_with("io.js-");
+        let is_iojs = is_iojs_version(v);
         let (maj, min, pat) = parse_version_parts(v).unwrap_or((0, 0, 0));
         (is_iojs, maj, min, pat)
     };
@@ -55,17 +67,13 @@ pub fn compare_semver(a: &str, b: &str) -> Ordering {
 
 /// Check if a version string is an io.js version (prefixes "iojs-" or "io.js-v")
 pub fn is_iojs_version(version: &str) -> bool {
-    version.starts_with("iojs-v")
-        || version.starts_with("io.js-v")
-        || version.starts_with("iojs-")
-        || version.starts_with("io.js-")
+    strip_iojs_prefix(version).is_some()
 }
 
 /// Normalize an io.js version name to canonical "iojs-vX.Y.Z"
 pub fn normalize_iojs_version(version: &str) -> String {
-    let v = version
-        .trim_start_matches("io.js-")
-        .trim_start_matches("iojs-")
+    let v = strip_iojs_prefix(version)
+        .unwrap_or(version)
         .trim_start_matches('v');
     format!("iojs-v{}", v)
 }
@@ -73,9 +81,8 @@ pub fn normalize_iojs_version(version: &str) -> String {
 /// Extract the version number from an io.js version (returns "X.Y.Z")
 pub fn iojs_version_number(version: &str) -> Option<String> {
     if is_iojs_version(version) {
-        let v = version
-            .trim_start_matches("io.js-")
-            .trim_start_matches("iojs-")
+        let v = strip_iojs_prefix(version)
+            .unwrap_or(version)
             .trim_start_matches('v');
         if v.matches('.').count() >= 2 {
             return Some(v.to_string());
@@ -184,16 +191,9 @@ pub(crate) fn validate_bare_major(input: &str) -> Option<&str> {
 /// - `iojs-vX.Y.Z` / `iojs-X.Y.Z`
 /// - `io.js-vX.Y.Z` / `io.js-X.Y.Z`
 pub fn is_version_dir_name(name: &str) -> bool {
-    if let Some(rest) = name.strip_prefix("iojs-v") {
-        return !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit() || c == '.');
-    }
-    if let Some(rest) = name.strip_prefix("iojs-") {
-        return !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit() || c == '.');
-    }
-    if let Some(rest) = name.strip_prefix("io.js-v") {
-        return !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit() || c == '.');
-    }
-    if let Some(rest) = name.strip_prefix("io.js-") {
+    // io.js variants all share the same body check via strip_iojs_prefix,
+    // so a new spelling only needs adding to IOJS_PREFIXES.
+    if let Some(rest) = strip_iojs_prefix(name) {
         return !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit() || c == '.');
     }
     if let Some(rest) = name.strip_prefix('v') {
@@ -573,6 +573,21 @@ mod tests {
         assert!(!is_iojs_version("20.0.0"));
         assert!(!is_iojs_version("node"));
         assert!(!is_iojs_version(""));
+    }
+
+    #[test]
+    fn test_strip_iojs_prefix() {
+        // All four spellings strip to the bare version (no leading `v`).
+        assert_eq!(strip_iojs_prefix("iojs-v3.3.1"), Some("3.3.1"));
+        assert_eq!(strip_iojs_prefix("io.js-v2.5.0"), Some("2.5.0"));
+        assert_eq!(strip_iojs_prefix("iojs-1.0.0"), Some("1.0.0"));
+        assert_eq!(strip_iojs_prefix("io.js-1.0.0"), Some("1.0.0"));
+        // Non-io.js strings are not stripped.
+        assert_eq!(strip_iojs_prefix("v20.0.0"), None);
+        assert_eq!(strip_iojs_prefix("20.0.0"), None);
+        assert_eq!(strip_iojs_prefix(""), None);
+        // Order matters: `iojs-v` must win over `iojs-` so the `v` is consumed.
+        assert_eq!(strip_iojs_prefix("iojs-v1.2.3"), Some("1.2.3"));
     }
 
     #[test]

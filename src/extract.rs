@@ -62,9 +62,8 @@ pub fn extract_iojs_archive(archive_path: &Path, dest_dir: &Path, version: &str)
 
     fs::create_dir_all(dest_dir).context(T("cannot_create_dir"))?;
 
-    let ver_num = version
-        .trim_start_matches("iojs-v")
-        .trim_start_matches("io.js-v")
+    let ver_num = crate::utils::strip_iojs_prefix(version)
+        .unwrap_or(version)
         .trim_start_matches('v');
 
     #[cfg(target_os = "windows")]
