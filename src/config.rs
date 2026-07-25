@@ -68,23 +68,30 @@ pub fn named_lts_aliases_with_remote(base_url: &str) -> BTreeMap<String, String>
 pub fn load_config() -> Result<Config> {
     let config_file = get_nvm_dir().join(CONFIG_FILE);
 
-    if config_file.exists() {
-        let content = fs::read_to_string(&config_file)?;
-        // Surface parse errors instead of silently dropping all settings.
-        // Returning default on a corrupt file would cause the next
-        // save_config to overwrite it with an empty config, permanently
-        // losing the user's mirror/aliases/language.
-        match serde_json::from_str::<Config>(&content) {
-            Ok(c) => Ok(c),
-            Err(e) => anyhow::bail!(
-                "{}: {} ({})",
-                config_file.display(),
-                e,
-                T("config_corrupt_hint")
-            ),
-        }
-    } else {
-        Ok(Config::default())
+    // Read directly and map NotFound → default, instead of `exists()` +
+    // `read_to_string`. The two-step form is a TOCTOU race — the file could
+    // be removed (or replaced) between the exists check and the read, and
+    // a concurrent `save_config` running on another CPU could even swap a
+    // fresh write into place between our stat and our open. A single read
+    // that maps NotFound to the default is both faster (one syscall) and
+    // race-free. Mirrors the pattern in `commands::get_current_version`.
+    let content = match fs::read_to_string(&config_file) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
+        Err(e) => return Err(e.into()),
+    };
+    // Surface parse errors instead of silently dropping all settings.
+    // Returning default on a corrupt file would cause the next
+    // save_config to overwrite it with an empty config, permanently
+    // losing the user's mirror/aliases/language.
+    match serde_json::from_str::<Config>(&content) {
+        Ok(c) => Ok(c),
+        Err(e) => anyhow::bail!(
+            "{}: {} ({})",
+            config_file.display(),
+            e,
+            T("config_corrupt_hint")
+        ),
     }
 }
 
@@ -98,19 +105,25 @@ pub fn save_config(config: &Config) -> Result<()> {
 pub fn load_aliases() -> Result<Aliases> {
     let alias_file = get_nvm_dir().join(ALIAS_FILE);
 
-    if alias_file.exists() {
-        let content = fs::read_to_string(&alias_file)?;
-        match serde_json::from_str::<Aliases>(&content) {
-            Ok(a) => Ok(a),
-            Err(e) => anyhow::bail!(
-                "{}: {} ({})",
-                alias_file.display(),
-                e,
-                T("config_corrupt_hint")
-            ),
-        }
-    } else {
-        Ok(Aliases::default())
+    // Read directly and map NotFound → default (same race-free pattern as
+    // `load_config` / `get_current_version`). The previous `exists()` +
+    // `read_to_string` was a TOCTOU race: a concurrent `save_aliases` or
+    // `uninstall` removing the file between the stat and the open would
+    // surface as a confusing "No such file" error instead of the expected
+    // "no aliases defined" default.
+    let content = match fs::read_to_string(&alias_file) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Aliases::default()),
+        Err(e) => return Err(e.into()),
+    };
+    match serde_json::from_str::<Aliases>(&content) {
+        Ok(a) => Ok(a),
+        Err(e) => anyhow::bail!(
+            "{}: {} ({})",
+            alias_file.display(),
+            e,
+            T("config_corrupt_hint")
+        ),
     }
 }
 
