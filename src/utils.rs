@@ -484,10 +484,26 @@ impl Drop for NvmLock {
             // drop path we reference it fully-qualified to avoid a stale
             // module-level import.
             //
-            // Surface unlock failures as a warning instead of `let _ =` — Drop
-            // can't propagate errors, but a kernel/AV-lock failure here would
-            // otherwise leave the OS lock held with `NVM_LOCK_HELD` reset to
-            // false, a confusing state for diagnosis.
+            // ORDER MATTERS: clear the process-local flag BEFORE releasing the
+            // OS lock. If we unlock first, there is a window where the OS lock
+            // is free but `NVM_LOCK_HELD` is still `true` — another thread in
+            // THIS process calling `acquire_nvm_lock` would then see `swap`
+            // return `true`, take the re-entrant no-op branch, and execute its
+            // critical section with NO OS lock while a different process has
+            // already grabbed the now-free OS lock. That breaks mutual
+            // exclusion silently.
+            //
+            // Clearing the flag first means a same-process contender sees
+            // `false`, tries `swap(true)` → `false`, and goes for the OS lock
+            // (still held by us) → blocks until we unlock. Correct.
+            //
+            // If `unlock` itself fails (extremely rare: invalid fd, kernel
+            // error), the OS lock stays held with `NVM_LOCK_HELD=false`. The
+            // next same-process acquire will then block on `lock_exclusive`
+            // rather than silently bypass — a safer failure mode than the
+            // silent-bypass window above. We still surface the failure as a
+            // warning so it is diagnosable.
+            NVM_LOCK_HELD.store(false, std::sync::atomic::Ordering::Release);
             if let Err(e) = fs4::fs_std::FileExt::unlock(&file) {
                 eprintln!(
                     "{} {}: {}",
@@ -496,7 +512,6 @@ impl Drop for NvmLock {
                     e
                 );
             }
-            NVM_LOCK_HELD.store(false, std::sync::atomic::Ordering::Release);
         }
         // Re-entrant guard (None): nothing to release; the outer guard still
         // owns the OS lock and the `NVM_LOCK_HELD` flag.
@@ -584,8 +599,17 @@ use colored::Colorize as _;
 mod tests {
     use super::*;
 
+    // Both lock tests mutate the process-global `NVM_LOCK_HELD` flag and
+    // acquire the OS lock on the real nvm dir. Running them in parallel
+    // (cargo test's default) would let one test's acquire race with the
+    // other's drop, producing flaky flag assertions and self-deadlock on
+    // `flock(LOCK_EX)`. This mutex serializes them without pulling in the
+    // `serial_test` crate.
+    static LOCK_TESTS_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn acquire_nvm_lock_is_reentrant_in_same_process() {
+        let _guard = LOCK_TESTS_MUTEX.lock().expect("LOCK_TESTS_MUTEX poisoned");
         // Two nested acquires in the SAME process must not deadlock: the
         // inner one returns a no-op guard (re-entrant) because the outer
         // already holds the OS lock. This is the `nvm use --install` →
@@ -599,6 +623,40 @@ mod tests {
         // After both drop, the flag must be cleared so a subsequent real
         // acquire works again.
         assert!(!NVM_LOCK_HELD.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn acquire_nvm_lock_can_be_reacquired_after_drop() {
+        let _guard = LOCK_TESTS_MUTEX.lock().expect("LOCK_TESTS_MUTEX poisoned");
+        // Regression for the drop-order bug: previously `drop` released the
+        // OS lock FIRST and only then cleared `NVM_LOCK_HELD`. If anything
+        // went wrong between those two steps (panic, reentrant re-acquire
+        // from another thread), the flag could be left `true` with the OS
+        // lock free, making every subsequent same-process acquire take the
+        // re-entrant no-op branch and silently bypass mutual exclusion.
+        //
+        // Here we exercise the acquire → drop → acquire → drop cycle several
+        // times. After each drop the flag MUST be `false` (proving the flag
+        // was cleared, not left dangling), and the next acquire MUST succeed
+        // as a REAL acquire (proving the OS lock was actually released, not
+        // leaked). If the OS lock were leaked, the second acquire would
+        // self-deadlock on `flock(LOCK_EX)` and hang the test.
+        let nvm_dir = crate::system::get_nvm_dir();
+        for i in 0..5 {
+            let guard = acquire_nvm_lock(&nvm_dir)
+                .unwrap_or_else(|e| panic!("iteration {i}: acquire failed: {e}"));
+            // While held, the flag must be true.
+            assert!(
+                NVM_LOCK_HELD.load(std::sync::atomic::Ordering::Acquire),
+                "iteration {i}: flag not set after acquire"
+            );
+            drop(guard);
+            // After drop, the flag must be cleared before any further acquire.
+            assert!(
+                !NVM_LOCK_HELD.load(std::sync::atomic::Ordering::Acquire),
+                "iteration {i}: flag not cleared after drop — drop order regression"
+            );
+        }
     }
 
     #[test]
