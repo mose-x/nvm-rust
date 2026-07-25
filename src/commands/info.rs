@@ -794,20 +794,18 @@ fn pick_version_for_range_single(expr: &str, installed: &[String]) -> Option<Str
     matching.pop() // newest
 }
 
-fn parse_v_tuple(v: &str) -> Option<(u64, u64, u64)> {
-    let (maj, min, pat) = crate::utils::parse_version_parts(v)?;
-    Some((maj as u64, min as u64, pat as u64))
-}
-
 fn version_matches_op(version: &str, op: &str, target: &str, wildcard: bool) -> bool {
-    let (maj, min, pat) = match parse_v_tuple(version) {
+    // `parse_version_parts` already returns (u32, u32, u32); the previous
+    // `parse_v_tuple` wrapper widened to u64, but Node.js version numbers
+    // fit in u32 and the comparison semantics are identical.
+    let (maj, min, pat) = match crate::utils::parse_version_parts(version) {
         Some(t) => t,
         None => return false,
     };
     let comps: Vec<&str> = target.split('.').collect();
-    let t_maj: u64 = comps.first().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let t_min: u64 = comps.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-    let t_pat: u64 = comps.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let t_maj: u32 = comps.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let t_min: u32 = comps.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let t_pat: u32 = comps.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
 
     match op {
         ">=" => maj > t_maj || (maj == t_maj && (min > t_min || (min == t_min && pat >= t_pat))),
@@ -844,7 +842,7 @@ fn version_matches_op(version: &str, op: &str, target: &str, wildcard: bool) -> 
                 if comps.len() > 1 {
                     let m = comps[1];
                     if !(m == "x" || m == "X" || m == "*") {
-                        let m: u64 = m.parse().unwrap_or(0);
+                        let m: u32 = m.parse().unwrap_or(0);
                         if min != m {
                             return false;
                         }
@@ -853,7 +851,7 @@ fn version_matches_op(version: &str, op: &str, target: &str, wildcard: bool) -> 
                 if comps.len() > 2 {
                     let p = comps[2];
                     if !(p == "x" || p == "X" || p == "*") {
-                        let p: u64 = p.parse().unwrap_or(0);
+                        let p: u32 = p.parse().unwrap_or(0);
                         if pat != p {
                             return false;
                         }
@@ -1442,39 +1440,57 @@ mod tests {
         assert_eq!(pick_version_for_range("^99", &installed()), None);
     }
 
-    // --- parse_v_tuple -----------------------------------------------------
+    // --- parse_version_parts (used by version_matches_op) ------------------
     #[test]
     fn parse_v_tuple_v_prefixed() {
-        assert_eq!(parse_v_tuple("v20.11.1"), Some((20, 11, 1)));
+        assert_eq!(
+            crate::utils::parse_version_parts("v20.11.1"),
+            Some((20, 11, 1))
+        );
     }
 
     #[test]
     fn parse_v_tuple_bare() {
-        assert_eq!(parse_v_tuple("18.20.0"), Some((18, 20, 0)));
+        assert_eq!(
+            crate::utils::parse_version_parts("18.20.0"),
+            Some((18, 20, 0))
+        );
     }
 
     #[test]
     fn parse_v_tuple_iojs_prefix() {
-        assert_eq!(parse_v_tuple("iojs-v3.3.1"), Some((3, 3, 1)));
+        assert_eq!(
+            crate::utils::parse_version_parts("iojs-v3.3.1"),
+            Some((3, 3, 1))
+        );
     }
 
     #[test]
     fn parse_v_tuple_iojs_dot_prefix() {
-        // Previously a bug: parse_v_tuple missed "io.js-v" / "io.js-" prefixes,
+        // Previously a bug: parse missed "io.js-v" / "io.js-" prefixes,
         // making io.js versions invisible to the engines.node range matcher.
-        assert_eq!(parse_v_tuple("io.js-v3.3.1"), Some((3, 3, 1)));
-        assert_eq!(parse_v_tuple("io.js-3.3.1"), Some((3, 3, 1)));
+        assert_eq!(
+            crate::utils::parse_version_parts("io.js-v3.3.1"),
+            Some((3, 3, 1))
+        );
+        assert_eq!(
+            crate::utils::parse_version_parts("io.js-3.3.1"),
+            Some((3, 3, 1))
+        );
     }
 
     #[test]
     fn parse_v_tuple_trailing_suffix() {
         // "v20.11.1-rc.1" → (20, 11, 1)
-        assert_eq!(parse_v_tuple("v20.11.1-rc.1"), Some((20, 11, 1)));
+        assert_eq!(
+            crate::utils::parse_version_parts("v20.11.1-rc.1"),
+            Some((20, 11, 1))
+        );
     }
 
     #[test]
     fn parse_v_tuple_missing_patch_defaults_zero() {
-        assert_eq!(parse_v_tuple("v22"), Some((22, 0, 0)));
+        assert_eq!(crate::utils::parse_version_parts("v22"), Some((22, 0, 0)));
     }
 
     #[test]
