@@ -14,6 +14,59 @@ use crate::system::{ensure_cache_dir, get_cache_dir};
 /// or half-downloaded file never satisfies the `cache_path.exists()` check.
 const PART_SUFFIX: &str = ".part";
 
+/// Sidecar suffix storing the `If-Range` validator (ETag or Last-Modified)
+/// captured when a fresh download started, so a resumed request can detect
+/// an upstream file swap. See `ifrange_sidecar_path` / `download_to_cache`.
+const IFRANGE_SUFFIX: &str = ".part.ifrange";
+
+/// A download is in-flight if its cache entry is a `.part` (partial body) or
+/// the matching `.part.ifrange` sidecar. Used by `list_cached_files` (hide
+/// them) and `clear_cache` (preserve them — a concurrent install may be
+/// actively writing them).
+fn is_inflight_cache_file(name: &str) -> bool {
+    name.ends_with(PART_SUFFIX) || name.ends_with(IFRANGE_SUFFIX)
+}
+
+/// Path of the sidecar that stores the `If-Range` validator (ETag or
+/// Last-Modified) captured when a fresh download started, so a resumed
+/// request can detect an upstream file swap of the same length.
+fn ifrange_sidecar_path(cache_dir: &Path, filename: &str) -> PathBuf {
+    cache_dir.join(format!("{}{}", filename, IFRANGE_SUFFIX))
+}
+
+/// Capture the strongest `If-Range` validator present on `response` and
+/// persist it to the sidecar. ETag is preferred over Last-Modified (more
+/// precise — a date has 1-second granularity). Writes are best-effort: a
+/// missing validator yields an empty sidecar, and write failures are silently
+/// ignored (we just lose swap protection for this download, which is strictly
+/// better than failing the install).
+fn save_ifrange_validator(sidecar_path: &Path, response: &reqwest::blocking::Response) {
+    // ETag is the stronger validator (RFC 9110 §8.8.3); prefer it when present.
+    let value = response
+        .headers()
+        .get("ETag")
+        .or_else(|| response.headers().get("Last-Modified"))
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    // Best-effort write; missing validator → empty sidecar → load returns None.
+    let _ = fs::write(sidecar_path, value);
+}
+
+/// Read the `If-Range` validator previously captured for this `.part`.
+/// Returns None if there is no sidecar or it's empty (server didn't send
+/// ETag/Last-Modified, so we can't defend against same-length swaps — resume
+/// falls back to plain Range, matching the pre-fix behaviour).
+fn load_ifrange_validator(sidecar_path: &Path) -> Option<String> {
+    let s = fs::read_to_string(sidecar_path).ok()?;
+    let s = s.trim();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
+}
+
 /// Refuse to open `path` for writing if it is (or points through) a symlink.
 ///
 /// The cache dir lives under the user's home, but any process that can write
@@ -113,6 +166,7 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
     ensure_cache_dir()?;
     let cache_path = cache_dir.join(filename);
     let part_path = cache_dir.join(format!("{}{}", filename, PART_SUFFIX));
+    let ifrange_path = ifrange_sidecar_path(&cache_dir, filename);
 
     if cache_path.exists() {
         println!("  {}", T("cached_file"));
@@ -133,6 +187,7 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
         // A zero-byte .part offers nothing to resume; treat as fresh.
         if start_offset == 0 {
             let _ = fs::remove_file(&part_path);
+            let _ = fs::remove_file(&ifrange_path);
         }
     }
 
@@ -143,6 +198,20 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
     let mut req = client.get(url);
     if start_offset > 0 {
         req = req.header("Range", format!("bytes={}-", start_offset));
+        // If-Range: defend against same-length upstream file swaps. Without
+        // this header, a Range request for the remaining bytes of a file that
+        // was replaced server-side with a *different* file of the same length
+        // would happily append the new file's tail to the old file's head,
+        // silently corrupting the archive. With If-Range, the server returns
+        // 200 OK (full body) instead of 206 Partial Content when its current
+        // representation doesn't match the validator we captured at the start
+        // of the original download — we then discard the stale .part and
+        // start over. Falls back to plain Range when no validator was
+        // captured (server sent neither ETag nor Last-Modified), matching the
+        // pre-fix behaviour.
+        if let Some(v) = load_ifrange_validator(&ifrange_path) {
+            req = req.header("If-Range", v);
+        }
     }
 
     // `mut` because the 416-retry path below rebinds this to a fresh
@@ -154,10 +223,11 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
     // was replaced with a shorter one, or the `.part` is corrupt/larger than
     // the real file. Without this handling the request falls into the generic
     // non-2xx branch below and bails, leaving the user stuck with a `.part`
-    // they can never resume past. Delete the stale `.part` and retry once
-    // from byte 0 without the Range header.
+    // they can never resume past. Delete the stale `.part` (and its sidecar)
+    // and retry once from byte 0 without the Range header.
     if start_offset > 0 && response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
         let _ = fs::remove_file(&part_path);
+        let _ = fs::remove_file(&ifrange_path);
         start_offset = 0;
         response = client.get(url).send().context(T("download_failed"))?;
     }
@@ -181,11 +251,18 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0)
     } else {
-        // 200 OK: full body. Reset offset and discard any stale .part.
+        // 200 OK: full body. Two possible causes:
+        //   (a) fresh download (start_offset was 0),
+        //   (b) resume attempt where If-Range mismatched (upstream file
+        //       swapped) OR the server ignored Range/If-Range entirely.
+        // Either way, the existing .part (if any) is now stale — discard it
+        // and the sidecar, then capture a fresh validator for THIS
+        // representation so a future resume can detect a subsequent swap.
         if start_offset > 0 {
             start_offset = 0;
             let _ = fs::remove_file(&part_path);
         }
+        save_ifrange_validator(&ifrange_path, &response);
         response.content_length().unwrap_or(0)
     };
 
@@ -240,6 +317,13 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
         })
         .with_context(|| format_t("cannot_rename_part", &[cache_path.display().to_string()]))?;
 
+    // The .part has been promoted to the final cache file; drop the validator
+    // sidecar so it doesn't linger as a stale in-flight marker (which would
+    // make `cache list` hide a non-existent .part and `cache clear` skip a
+    // non-existent file). Best-effort: a failure here leaves a 0-byte stray
+    // sidecar, which `is_inflight_cache_file` already handles gracefully.
+    let _ = fs::remove_file(&ifrange_path);
+
     println!("  {}", T("cached_saved"));
     Ok(cache_path)
 }
@@ -282,9 +366,12 @@ pub fn list_cached_files() -> Result<Vec<(String, u64)>> {
         let metadata = entry.path().symlink_metadata()?;
         if metadata.is_file() {
             if let Some(name) = entry.file_name().to_str() {
-                // Hide .part files from the listing: they are in-flight and
-                // not usable as a cache hit, so showing them would be noise.
-                if name.ends_with(PART_SUFFIX) {
+                // Hide in-flight files from the listing: a `.part` is a
+                // partial body, a `.part.ifrange` is its validator sidecar.
+                // Neither is usable as a cache hit, so showing them would
+                // be noise (and would leak the existence of a download that
+                // may still be in progress).
+                if is_inflight_cache_file(name) {
                     continue;
                 }
                 files.push((name.to_string(), metadata.len()));
@@ -323,18 +410,21 @@ pub fn clear_cache() -> Result<u64> {
             Err(e) => return Err(e.into()),
         };
         if metadata.is_file() {
-            // Don't delete in-flight `.part` files: a concurrent
-            // `nvm install` may be actively writing to one. Deleting it
-            // out from under the running download causes the next write to
-            // fail with a confusing "No such file" error.
-            // `list_cached_files` already hides `.part` from the listing;
-            // `clear_cache` must match that behavior so the user's "clear
-            // the cache" intent (completed downloads) doesn't nuke a
-            // partial download still in progress.
+            // Don't delete in-flight files: a concurrent `nvm install` may
+            // be actively writing to a `.part`, and the matching
+            // `.part.ifrange` sidecar holds the validator a future resume
+            // of that `.part` needs to detect an upstream swap. Deleting
+            // either out from under the running download causes the next
+            // write to fail with a confusing "No such file" error, or
+            // silently downgrades the next resume to plain Range (losing
+            // swap protection). `list_cached_files` already hides both
+            // suffixes from the listing; `clear_cache` must match that
+            // behaviour so the user's "clear the cache" intent (completed
+            // downloads) doesn't nuke a partial download still in progress.
             if entry
                 .file_name()
                 .to_str()
-                .is_some_and(|name| name.ends_with(PART_SUFFIX))
+                .is_some_and(is_inflight_cache_file)
             {
                 continue;
             }
@@ -402,6 +492,61 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), b"hello");
     }
 
+    // --- P1-15: If-Range sidecar helpers --------------------------------------
+
+    #[test]
+    fn is_inflight_cache_file_matches_both_suffixes() {
+        // The helper is what `list_cached_files`/`clear_cache` use to decide
+        // what to hide/preserve. A regression that drops either suffix from
+        // the match would either leak the sidecar into `cache list` output
+        // or let `cache clear` delete a validator a concurrent resume needs.
+        assert!(is_inflight_cache_file("node-v20.tar.xz.part"));
+        assert!(is_inflight_cache_file("node-v20.tar.xz.part.ifrange"));
+        // Completed cache files and unrelated files must NOT match.
+        assert!(!is_inflight_cache_file("node-v20.tar.xz"));
+        assert!(!is_inflight_cache_file("node-v20.tar.xz.part.ifrange.bak"));
+        assert!(!is_inflight_cache_file("README.md"));
+        assert!(!is_inflight_cache_file(""));
+    }
+
+    #[test]
+    fn ifrange_sidecar_path_appends_suffix() {
+        let dir = Path::new("/tmp/nvm-cache");
+        let p = ifrange_sidecar_path(dir, "node-v20.tar.xz");
+        assert_eq!(p, Path::new("/tmp/nvm-cache/node-v20.tar.xz.part.ifrange"));
+    }
+
+    #[test]
+    fn load_ifrange_validator_handles_missing_empty_and_present() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sidecar = tmp.path().join("node-v20.tar.xz.part.ifrange");
+
+        // Missing sidecar → None (server never sent a validator, or this is
+        // a pre-P1-15 .part left over from an older nvm-rust).
+        assert!(load_ifrange_validator(&sidecar).is_none());
+
+        // Empty sidecar → None (server's response had neither ETag nor
+        // Last-Modified; `save_ifrange_validator` writes an empty file).
+        fs::write(&sidecar, "").expect("write empty");
+        assert!(load_ifrange_validator(&sidecar).is_none());
+
+        // Whitespace-only sidecar → None (treated as empty after trim).
+        fs::write(&sidecar, "   \n\t ").expect("write whitespace");
+        assert!(load_ifrange_validator(&sidecar).is_none());
+
+        // ETag value (with surrounding quotes, as servers send them) → Some.
+        let etag = "\"deadbeef-1234\"";
+        fs::write(&sidecar, etag).expect("write etag");
+        assert_eq!(load_ifrange_validator(&sidecar).as_deref(), Some(etag));
+
+        // HTTP-date (Last-Modified) → Some. Trailing newline is trimmed so
+        // `save_ifrange_validator`'s `to_string()` (which has no trailing
+        // newline) and a hand-edited file with a trailing newline both work.
+        let date = "Wed, 21 Oct 2015 07:28:00 GMT";
+        fs::write(&sidecar, format!("{date}\n")).expect("write date");
+        assert_eq!(load_ifrange_validator(&sidecar).as_deref(), Some(date));
+    }
+
     // Serializes tests that mutate the process-global NVM_DIR env var and
     // operate on the real cache dir. Without this, parallel cargo test runs
     // would race on NVM_DIR and stomp each other's cache directories.
@@ -429,10 +574,19 @@ mod tests {
         fs::write(cache_dir.join("node-v99.9.9.tar.xz"), b"hello world").expect("write cached");
         // An in-flight partial download: 7 bytes. Must be preserved.
         fs::write(cache_dir.join("node-v99.9.9.tar.xz.part"), b"partial").expect("write part");
+        // P1-15: the If-Range validator sidecar for the in-flight .part.
+        // Must also be preserved — deleting it would silently downgrade the
+        // next resume of this .part to plain Range, losing same-length swap
+        // protection. 20 bytes of ETag text.
+        fs::write(
+            cache_dir.join("node-v99.9.9.tar.xz.part.ifrange"),
+            "\"deadbeef-1234-abcd\"",
+        )
+        .expect("write ifrange sidecar");
 
         let cleared = clear_cache().expect("clear_cache should succeed");
 
-        // The completed file is gone, the .part survives.
+        // The completed file is gone, both in-flight files survive.
         assert!(
             !cache_dir.join("node-v99.9.9.tar.xz").exists(),
             "completed cache file should be deleted"
@@ -441,14 +595,59 @@ mod tests {
             cache_dir.join("node-v99.9.9.tar.xz.part").exists(),
             "in-flight .part file must NOT be deleted (concurrent download protection)"
         );
+        assert!(
+            cache_dir.join("node-v99.9.9.tar.xz.part.ifrange").exists(),
+            "in-flight .part.ifrange sidecar must NOT be deleted (swap-detection protection)"
+        );
         // Cleared byte count reflects only the completed file (11 bytes),
-        // NOT the .part (7 bytes) — the user asked to clear completed cache.
+        // NOT the .part (7 bytes) or the sidecar (20 bytes) — the user asked
+        // to clear completed cache, not in-flight downloads.
         assert_eq!(
             cleared, 11,
-            "cleared bytes should count only completed files, not .part"
+            "cleared bytes should count only completed files, not .part / .part.ifrange"
         );
 
         // Restore NVM_DIR so we don't poison other tests.
+        match saved_nvm_dir {
+            Some(v) => std::env::set_var("NVM_DIR", v),
+            None => std::env::remove_var("NVM_DIR"),
+        }
+    }
+
+    #[test]
+    fn list_cached_files_hides_inflight_sidecars() {
+        // P1-15: `cache list` must hide BOTH in-flight files (the .part body
+        // and its .part.ifrange validator sidecar), not just the .part.
+        // Showing the sidecar would be noise (it's not a usable cache hit)
+        // and would leak the existence of a download still in progress.
+        let _guard = CACHE_TESTS_MUTEX
+            .lock()
+            .expect("CACHE_TESTS_MUTEX poisoned");
+        let saved_nvm_dir = std::env::var_os("NVM_DIR");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("NVM_DIR", tmp.path());
+        let cache_dir = get_cache_dir();
+        fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        fs::write(cache_dir.join("node-v20.0.0.tar.xz"), b"hello").expect("write cached");
+        fs::write(cache_dir.join("node-v20.0.0.tar.xz.part"), b"partial").expect("write part");
+        fs::write(
+            cache_dir.join("node-v20.0.0.tar.xz.part.ifrange"),
+            "\"etag-xyz\"",
+        )
+        .expect("write ifrange sidecar");
+
+        let files = list_cached_files().expect("list_cached_files should succeed");
+
+        // Only the completed file is listed.
+        assert_eq!(
+            files.len(),
+            1,
+            "only the completed cache file should be listed, got: {files:?}"
+        );
+        assert_eq!(files[0].0, "node-v20.0.0.tar.xz");
+        assert_eq!(files[0].1, 5); // "hello" is 5 bytes
+
         match saved_nvm_dir {
             Some(v) => std::env::set_var("NVM_DIR", v),
             None => std::env::remove_var("NVM_DIR"),
