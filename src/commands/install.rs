@@ -24,6 +24,17 @@ use indicatif::{ProgressBar, ProgressStyle};
 /// v4.0.0, so `nvm install iojs` (no explicit version) resolves to this.
 const IOJS_FINAL_VERSION: &str = "3.3.1";
 
+/// Build an `anyhow::Error` for a failed external command, formatted as
+/// `"<i18n message> (<exit code>)"`. Replaces the 4+ inline
+/// `anyhow::bail!("{} ({})", T(key), status.code().unwrap_or(-1))` sites in
+/// the source-install / npm-upgrade paths. `code()` is `None` when the
+/// process was killed by a signal; we report `-1` there to match the
+/// previous behaviour (callers that need signal-accurate exit codes use
+/// `exit_with_status` in `info.rs` instead).
+fn command_failed(key: &str, status: std::process::ExitStatus) -> anyhow::Error {
+    anyhow::anyhow!("{} ({})", T(key), status.code().unwrap_or(-1))
+}
+
 /// Resolved target for an install operation. Built by `build_install_target`
 /// and consumed by the source/binary/post-install phases so `install` itself
 /// stays a thin orchestrator.
@@ -246,11 +257,7 @@ fn install_from_source(
         .status()
         .context(T("tar_extract_failed"))?;
     if !status.success() {
-        anyhow::bail!(
-            "{} ({})",
-            T("extract_source_failed"),
-            status.code().unwrap_or(-1)
-        );
+        anyhow::bail!(command_failed("extract_source_failed", status));
     }
     // Source extracted into build_dir; the temp tarball copy is no longer
     // needed. Drop the guard early so it doesn't outlive its usefulness
@@ -268,7 +275,7 @@ fn install_from_source(
         .status()
         .context(T("configure_spawn_failed"))?;
     if !cfg.success() {
-        anyhow::bail!("{} ({})", T("configure_failed"), cfg.code().unwrap_or(-1));
+        anyhow::bail!(command_failed("configure_failed", cfg));
     }
 
     println!(
@@ -282,7 +289,7 @@ fn install_from_source(
         .status()
         .context(T("make_failed"))?;
     if !m.success() {
-        anyhow::bail!("{} ({})", T("make_failed"), m.code().unwrap_or(-1));
+        anyhow::bail!(command_failed("make_failed", m));
     }
 
     println!("  {} {}", "›".dimmed(), T("source_install"));
@@ -292,7 +299,7 @@ fn install_from_source(
         .status()
         .context(T("make_install_failed"))?;
     if !mi.success() {
-        anyhow::bail!("{} ({})", T("make_install_failed"), mi.code().unwrap_or(-1));
+        anyhow::bail!(command_failed("make_install_failed", mi));
     }
 
     // Install succeeded — clean up the build tree, matching the previous
@@ -753,7 +760,7 @@ fn install_latest_package_inner(version: &str, package: &str) -> Result<()> {
             return Ok(());
         }
     }
-    anyhow::bail!("{} ({})", T(failed_key), status.code().unwrap_or(-1));
+    anyhow::bail!(command_failed(failed_key, status));
 }
 
 fn reinstall_packages_inner(from: &str, to: &str) -> Result<()> {
