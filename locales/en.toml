@@ -430,6 +430,7 @@ cannot_rename_part = "Cannot rename .part to {0}"
 extraction_failed = "Extraction failed: {0}"
 extraction_failed_short = "Extraction failed"
 cannot_create_dir = "Cannot create directory"
+flatten_name_conflict = "Cannot flatten extracted dir: '{0}' already exists in {1} (destination must be empty)"
 cannot_open_archive = "Cannot open archive"
 # Source build spawn errors
 tar_extract_failed = "tar extraction failed"

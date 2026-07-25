@@ -430,6 +430,7 @@ cannot_rename_part = "无法将 .part 重命名为 {0}"
 extraction_failed = "解压失败：{0}"
 extraction_failed_short = "解压失败"
 cannot_create_dir = "无法创建目录"
+flatten_name_conflict = "无法展平解压目录：'{0}' 已存在于 {1}（目标目录必须为空）"
 cannot_open_archive = "无法打开归档文件"
 # Source build spawn errors
 tar_extract_failed = "tar 解压失败"

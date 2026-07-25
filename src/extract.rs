@@ -144,10 +144,38 @@ fn extracted_dir_name(label: &str) -> String {
 }
 
 fn flatten_dir(src: &Path, dest: &Path) -> Result<()> {
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
+    // Collect the entry list BEFORE renaming anything. `read_dir` yields a
+    // live directory stream, and `fs::rename` inside the loop mutates the
+    // very directory being iterated. On Linux `readdir(3)` is allowed to
+    // skip or revisit entries when the directory changes mid-scan — the
+    // previous loop could then leave some entries behind in `src` (silently
+    // skipped) and move others twice (revisited), producing a half-empty
+    // version dir with no error surfaced. Snapshotting first makes the move
+    // deterministic and complete.
+    let entries: Vec<fs::DirEntry> = fs::read_dir(src)?.collect::<Result<_, _>>()?;
+
+    for entry in entries {
         let target = dest.join(entry.file_name());
-        fs::rename(entry.path(), target)?;
+        // Bail on name conflict instead of letting `fs::rename` silently
+        // overwrite the existing target (Unix) or fail with a platform-
+        // specific error (Windows). The caller's contract is that `dest` is
+        // empty; a conflict means either a contract violation, a tarball
+        // with duplicate top-level entries, or a concurrent writer — all
+        // bugs we want to surface rather than paper over with silent data
+        // loss.
+        if target.exists() {
+            anyhow::bail!(
+                "{}",
+                crate::i18n::format_t(
+                    "flatten_name_conflict",
+                    &[
+                        entry.file_name().to_string_lossy().to_string(),
+                        dest.display().to_string(),
+                    ]
+                )
+            );
+        }
+        fs::rename(entry.path(), &target)?;
     }
     fs::remove_dir(src)?;
     Ok(())
@@ -193,6 +221,80 @@ mod tests {
 
         flatten_dir(&src, &dest).expect("flatten_dir on empty src should succeed");
         assert!(!src.exists(), "empty src should still be removed");
+    }
+
+    #[test]
+    fn flatten_dir_bails_on_name_conflict() {
+        // Regression for the silent-overwrite bug: if `dest` already has an
+        // entry with the same name as one in `src`, `flatten_dir` must bail
+        // with a clear error instead of letting `fs::rename` silently
+        // clobber the existing file (Unix) or fail with a platform-specific
+        // error (Windows).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        std::fs::create_dir_all(&src).expect("create src");
+        std::fs::create_dir_all(&dest).expect("create dest");
+        // Pre-existing file in dest with the same name as a src entry.
+        std::fs::write(dest.join("conflict.txt"), b"original").expect("write dest conflict");
+        std::fs::write(src.join("conflict.txt"), b"new").expect("write src conflict");
+        std::fs::write(src.join("unique.txt"), b"u").expect("write src unique");
+
+        let result = flatten_dir(&src, &dest);
+        assert!(
+            result.is_err(),
+            "flatten_dir should bail on name conflict, got: {:?}",
+            result
+        );
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("conflict.txt") || msg.to_lowercase().contains("conflict"),
+            "error should name the conflicting entry, got: {msg}"
+        );
+        // The pre-existing file must NOT have been overwritten — the bail
+        // happens before the rename of the conflicting entry.
+        assert_eq!(
+            std::fs::read_to_string(dest.join("conflict.txt")).unwrap(),
+            "original",
+            "original dest file must not be clobbered on conflict"
+        );
+    }
+
+    #[test]
+    fn flatten_dir_moves_all_entries_despite_iteration_mutation() {
+        // Regression for the rename-during-iteration bug: previously the
+        // loop called `fs::rename` while iterating `read_dir(src)`, which on
+        // some filesystems causes `readdir` to skip entries. With many
+        // entries the move could silently drop some. Snapshot-first must
+        // move every entry.
+        //
+        // We create enough entries that a buggy iterator would be unlikely
+        // to move all of them by luck.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        std::fs::create_dir_all(&src).expect("create src");
+        std::fs::create_dir_all(&dest).expect("create dest");
+
+        let n = 50;
+        for i in 0..n {
+            std::fs::write(src.join(format!("file_{i:03}.txt")), [i as u8])
+                .expect("write src file");
+        }
+
+        flatten_dir(&src, &dest).expect("flatten_dir should succeed");
+
+        // Every entry must be present in dest — none silently skipped.
+        for i in 0..n {
+            let p = dest.join(format!("file_{i:03}.txt"));
+            assert!(p.exists(), "file {i:03} should have been moved to dest");
+            assert_eq!(
+                std::fs::read(&p).unwrap(),
+                [i as u8],
+                "file {i:03} content should match"
+            );
+        }
+        assert!(!src.exists(), "src should be removed after flatten");
     }
 
     #[cfg(not(target_os = "windows"))]
