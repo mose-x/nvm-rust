@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::Result;
+use indicatif::ProgressStyle;
 
 use crate::i18n::{format_t, T};
 use crate::system::get_nvm_dir;
@@ -532,6 +533,22 @@ impl Drop for NvmLock {
 ///
 /// Returns an [`NvmLock`] whose `Drop` releases the lock. Hold it for the
 /// duration of the mutating operation (install / uninstall / use).
+/// Build the shared progress-bar style used by every byte-stream download
+/// (`download_to_cache`, `download_prebuilt_npm`). Centralising the template
+/// here means a single `expect` covers all call sites — `indicatif`'s
+/// `template()` returns `Result` because the template string is parsed at
+/// runtime, but this is a known-valid static literal. `expect` (not `unwrap`)
+/// makes the invariant explicit and gives a useful panic message if a future
+/// `indicatif` upgrade changes the template grammar.
+pub fn bytes_progress_style() -> indicatif::ProgressStyle {
+    ProgressStyle::default_bar()
+        .template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})",
+        )
+        .expect("progress template is a known-valid static literal")
+        .progress_chars("#>-")
+}
+
 pub fn acquire_nvm_lock(nvm_dir: &Path) -> Result<NvmLock> {
     use fs4::fs_std::FileExt;
 

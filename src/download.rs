@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::ProgressBar;
 use std::fs::{self, File, OpenOptions};
 use std::io::{copy, Write};
 use std::path::{Path, PathBuf};
@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::i18n::{format_t, T};
 use crate::proxy::build_http_client;
 use crate::system::{ensure_cache_dir, get_cache_dir};
+use crate::utils::bytes_progress_style;
 
 /// Suffix used for partial downloads. A file is only considered complete
 /// (and therefore cache-hit eligible) once it has been renamed from
@@ -279,12 +280,7 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
     // Progress bar starts at the resume offset so the user sees it continue.
     let pb = ProgressBar::new(total_size);
     pb.set_position(start_offset);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
-            .unwrap()
-            .progress_chars("#>-"),
-    );
+    pb.set_style(bytes_progress_style());
 
     let mut source = pb.wrap_read(response);
     copy(&mut source, &mut dest_file).context(T("write_failed"))?;

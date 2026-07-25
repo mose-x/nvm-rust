@@ -17,8 +17,8 @@ use crate::system::{
     exe_path, fetch_shasums, get_nvm_dir, os_suffix, prepend_to_path, verify_checksum,
     verify_gpg_signature, version_bin_dir, GpgStatus, IOJS_URI, NPM_REGISTRY,
 };
-use crate::utils::{atomic_write, iojs_version_number};
-use indicatif::{ProgressBar, ProgressStyle};
+use crate::utils::{atomic_write, bytes_progress_style, iojs_version_number};
+use indicatif::ProgressBar;
 
 /// Final io.js release (2015-05-21). io.js merged back into Node.js with
 /// v4.0.0, so `nvm install iojs` (no explicit version) resolves to this.
@@ -981,12 +981,7 @@ fn download_prebuilt_npm(version_dir: &Path, version: &str) -> Result<()> {
         }
         let total = response.content_length().unwrap_or(0);
         let pb = ProgressBar::new(total);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
-                .unwrap()
-                .progress_chars("#>-"),
-        );
+        pb.set_style(bytes_progress_style());
         let mut src = pb.wrap_read(response);
         let mut dest = std::fs::File::create(&npm_tar_path)?;
         let bytes_copied =
