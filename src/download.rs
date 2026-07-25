@@ -262,11 +262,17 @@ pub fn is_cached(filename: &str) -> bool {
 /// List all cached files (name, size_bytes).
 pub fn list_cached_files() -> Result<Vec<(String, u64)>> {
     let cache_dir = get_cache_dir();
-    if !cache_dir.exists() {
-        return Ok(Vec::new());
-    }
+    // Read directly and map NotFound → empty instead of `exists()` +
+    // `read_dir`: the two-step form is a TOCTOU race (another process could
+    // remove the cache dir between the stat and the open), and a single
+    // read_dir is one syscall instead of two.
+    let rd = match fs::read_dir(&cache_dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
     let mut files: Vec<(String, u64)> = Vec::new();
-    for entry in fs::read_dir(&cache_dir)? {
+    for entry in rd {
         let entry = entry?;
         // Use symlink_metadata (not entry.metadata()) so a dangling symlink
         // in the cache dir doesn't propagate an error and abort the whole
@@ -292,11 +298,15 @@ pub fn list_cached_files() -> Result<Vec<(String, u64)>> {
 /// Clear all cached files, returns total bytes cleared.
 pub fn clear_cache() -> Result<u64> {
     let cache_dir = get_cache_dir();
-    if !cache_dir.exists() {
-        return Ok(0);
-    }
+    // Read directly and map NotFound → 0 instead of `exists()` + `read_dir`
+    // (same race-free pattern as `list_cached_files`).
+    let rd = match fs::read_dir(&cache_dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
     let mut cleared: u64 = 0;
-    for entry in fs::read_dir(&cache_dir)? {
+    for entry in rd {
         let entry = match entry {
             Ok(e) => e,
             // Another process removed the entry between read_dir and the
