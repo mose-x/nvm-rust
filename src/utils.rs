@@ -461,7 +461,19 @@ impl Drop for NvmLock {
             // `use` inside `acquire_nvm_lock` for the acquire path; for the
             // drop path we reference it fully-qualified to avoid a stale
             // module-level import.
-            let _ = fs4::fs_std::FileExt::unlock(&file);
+            //
+            // Surface unlock failures as a warning instead of `let _ =` — Drop
+            // can't propagate errors, but a kernel/AV-lock failure here would
+            // otherwise leave the OS lock held with `NVM_LOCK_HELD` reset to
+            // false, a confusing state for diagnosis.
+            if let Err(e) = fs4::fs_std::FileExt::unlock(&file) {
+                eprintln!(
+                    "{} {}: {}",
+                    "⚠".yellow().bold(),
+                    crate::i18n::T("lock_release_failed"),
+                    e
+                );
+            }
             NVM_LOCK_HELD.store(false, std::sync::atomic::Ordering::Release);
         }
         // Re-entrant guard (None): nothing to release; the outer guard still
