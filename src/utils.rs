@@ -389,20 +389,32 @@ pub fn backup_file(path: &Path) -> Result<(), std::io::Error> {
 /// reports nothing. This is the cross-platform replacement for the
 /// `Command::new("which").arg("node")` pattern that silently failed on
 /// Windows.
+///
+/// Result is cached for the process lifetime: a single `nvm` invocation may
+/// resolve `system` in multiple places (`resolve_alias`, `exec_version`,
+/// `which_version`), each previously spawning a fresh `which`/`where`
+/// subprocess. The system Node path cannot change mid-process, so we memoize
+/// the first lookup.
 pub fn find_system_node_path() -> Option<std::path::PathBuf> {
-    use std::process::Command;
-    let output = if cfg!(unix) {
-        Command::new("which").arg("node").output().ok()?
-    } else if cfg!(windows) {
-        Command::new("where").arg("node").output().ok()?
-    } else {
-        return None;
-    };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // `where` on Windows prints one path per line; `which` prints one line.
-    // Take the first non-empty trimmed line in both cases.
-    let first = stdout.lines().map(|l| l.trim()).find(|l| !l.is_empty())?;
-    Some(std::path::PathBuf::from(first))
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            use std::process::Command;
+            let output = if cfg!(unix) {
+                Command::new("which").arg("node").output().ok()?
+            } else if cfg!(windows) {
+                Command::new("where").arg("node").output().ok()?
+            } else {
+                return None;
+            };
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            // `where` on Windows prints one path per line; `which` prints one line.
+            // Take the first non-empty trimmed line in both cases.
+            let first = stdout.lines().map(|l| l.trim()).find(|l| !l.is_empty())?;
+            Some(std::path::PathBuf::from(first))
+        })
+        .clone()
 }
 
 // ---------------------------------------------------------------------------
