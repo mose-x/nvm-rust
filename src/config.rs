@@ -412,65 +412,77 @@ fn bare_major_prefix(name: &str) -> Option<String> {
     Some(format!("v{}.", s))
 }
 
-fn find_latest_installed(prefix: &str) -> Result<String> {
+/// Walk the nvm directory and collect version directory names that satisfy
+/// `predicate`. Shared by [`find_latest_installed`] and
+/// [`find_latest_installed_lts`] so the read_dir + sort logic lives in one
+/// place. Returns the names unsorted; callers sort by semver.
+fn collect_installed_versions(predicate: impl Fn(&str) -> bool) -> Vec<String> {
     let nvm_dir = get_nvm_dir();
     let mut versions: Vec<String> = Vec::new();
     if let Ok(rd) = fs::read_dir(&nvm_dir) {
         for entry in rd.flatten() {
             if let Some(s) = entry.file_name().to_str() {
-                // Only consider real version directories — `versions` (nvm-sh's
-                // nested dir) starts with "v" but isn't a version, and would
-                // otherwise pollute `use lts` / `use node` lookups.
-                if !s.starts_with(prefix) || !crate::utils::is_version_dir_name(s) {
-                    continue;
+                if crate::utils::is_version_dir_name(s) && predicate(s) {
+                    versions.push(s.to_string());
                 }
-                // Strict major match when prefix is `vN` (no dot). Without
-                // this, `lts/hydrogen` (prefix "v18") would also match a
-                // hypothetical "v180.0.0" install. The `v22.` form returned
-                // by `bare_major_prefix` already encodes the dot so the
-                // starts_with check above is sufficient there; this branch
-                // only adds the major equality for the bare `vN` aliases.
-                if !prefix.contains('.') && prefix.len() > 1 {
-                    let prefix_major = prefix.trim_start_matches('v');
-                    if let Some(major) = crate::utils::parse_major(s) {
-                        if prefix_major != major.to_string() {
-                            continue;
-                        }
-                    } else {
-                        continue;
-                    }
-                }
-                versions.push(s.to_string());
             }
         }
     }
+    versions
+}
+
+/// Pick the newest entry from `versions` by semver. Returns `Err` when empty
+/// rather than `unwrap()`-ing on the implicit non-empty contract — a future
+/// refactor that moves the empty-check could otherwise trigger a panic.
+fn pick_latest(versions: Vec<String>) -> Result<String> {
+    let mut v = versions;
+    v.sort_by(|a, b| crate::utils::compare_semver(a, b));
+    v.last()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("no versions collected"))
+}
+
+fn find_latest_installed(prefix: &str) -> Result<String> {
+    // Strict major match when prefix is `vN` (no dot). Without
+    // this, `lts/hydrogen` (prefix "v18") would also match a
+    // hypothetical "v180.0.0" install. The `v22.` form returned
+    // by `bare_major_prefix` already encodes the dot so the
+    // starts_with check above is sufficient there; this branch
+    // only adds the major equality for the bare `vN` aliases.
+    let prefix_major: Option<String> = if !prefix.contains('.') && prefix.len() > 1 {
+        Some(prefix.trim_start_matches('v').to_string())
+    } else {
+        None
+    };
+    let prefix_owned = prefix.to_string();
+    let versions = collect_installed_versions(|s| {
+        if !s.starts_with(&prefix_owned) {
+            return false;
+        }
+        if let Some(ref want_major) = prefix_major {
+            match crate::utils::parse_major(s) {
+                Some(m) => m.to_string() == *want_major,
+                None => false,
+            }
+        } else {
+            true
+        }
+    });
     if versions.is_empty() {
         anyhow::bail!("{}", format_t("no_matching_version", &[prefix.to_string()]));
     }
     // Sort semantically (numeric major.minor.patch), not alphabetically:
     // alphabetical sort would put `v20.5.0` after `v20.20.2` ('5' > '2'),
     // returning the older version as "latest".
-    versions.sort_by(|a, b| crate::utils::compare_semver(a, b));
-    Ok(versions.last().unwrap().clone())
+    pick_latest(versions)
 }
 
 fn find_latest_installed_lts() -> Result<String> {
-    let nvm_dir = get_nvm_dir();
-    let mut versions: Vec<String> = Vec::new();
-    if let Ok(rd) = fs::read_dir(&nvm_dir) {
-        for entry in rd.flatten() {
-            if let Some(s) = entry.file_name().to_str() {
-                if crate::utils::is_version_dir_name(s) && crate::utils::is_lts_version(s) {
-                    versions.push(s.to_string());
-                }
-            }
-        }
-    }
+    let versions = collect_installed_versions(crate::utils::is_lts_version);
     if versions.is_empty() {
         anyhow::bail!("{}", T("no_installed_lts"));
     }
-    versions.sort_by(|a, b| crate::utils::compare_semver(a, b));
-    Ok(versions.last().unwrap().clone())
+    pick_latest(versions)
 }
 
 /// Resolve `lts/-N`: pick the LTS *line* that is `offset` lines older than
