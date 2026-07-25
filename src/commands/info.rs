@@ -552,49 +552,133 @@ fn find_nvmrc_recursive(silent: bool) -> Result<Option<String>> {
     Ok(None)
 }
 
-/// Find Node.js version from package.json engines.node field.
+/// Find Node.js version from the closest `package.json` with an `engines.node`
+/// field, walking up from the current directory to the filesystem root.
 ///
-/// `engines.node` may be:
+/// Mirrors `find_nvmrc_recursive`'s walk-up semantics so `nvm use` from a
+/// sub-directory of a project picks up the project-root `package.json`
+/// constraint, just as it would for `.nvmrc` / `.node-version`. A
+/// `package.json` that exists but has no `engines.node` does *not* terminate
+/// the search — this is what makes the common monorepo layout (root
+/// `package.json` declares `engines.node` for the whole repo, sub-packages
+/// don't) work without requiring every sub-package to repeat the constraint.
+///
+/// The first `package.json` (closest to cwd) with a non-empty `engines.node`
+/// wins; lower levels are not consulted.
+fn find_package_json_node_version(silent: bool) -> Result<Option<String>> {
+    let current_dir = std::env::current_dir()?;
+    let mut dir = current_dir.as_path();
+
+    loop {
+        let package_json = dir.join("package.json");
+        // Read the file directly without a pre-check `.exists()` — that would
+        // be a redundant stat + a TOCTOU window. Distinguish NotFound (no
+        // package.json at this level — keep walking up) from real read errors
+        // (permission denied, I/O) so the user gets a warning instead of a
+        // silent "no engines.node found".
+        let content = match fs::read_to_string(&package_json) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                dir = match dir.parent() {
+                    Some(parent) => parent,
+                    None => break,
+                };
+                continue;
+            }
+            Err(e) => {
+                eprintln!(
+                    "{} {} {}: {}",
+                    "⚠".yellow().bold(),
+                    package_json.display(),
+                    T("package_json_read_failed"),
+                    e
+                );
+                dir = match dir.parent() {
+                    Some(parent) => parent,
+                    None => break,
+                };
+                continue;
+            }
+        };
+
+        // A malformed package.json at this level shouldn't crash auto-
+        // detection or shadow a valid one higher up — skip and try the parent.
+        let json: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => {
+                dir = match dir.parent() {
+                    Some(parent) => parent,
+                    None => break,
+                };
+                continue;
+            }
+        };
+
+        let raw = match json
+            .get("engines")
+            .and_then(|e| e.get("node"))
+            .and_then(|n| n.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            Some(v) => v,
+            None => {
+                // package.json exists but has no engines.node — keep walking
+                // up so a sub-package without engines.node doesn't shadow the
+                // project root's engines.node constraint.
+                dir = match dir.parent() {
+                    Some(parent) => parent,
+                    None => break,
+                };
+                continue;
+            }
+        };
+
+        // Found a package.json with engines.node at this level — resolve it.
+        return resolve_engines_node(&raw, silent, dir);
+    }
+
+    Ok(None)
+}
+
+/// Resolve an `engines.node` raw value into a concrete version, printing the
+/// standard "Found engines.node in package.json:" notice (including the
+/// directory where the package.json was located) unless `silent`.
+///
+/// `raw` may be:
 /// - a bare version:        `"22.0.0"` or `"v22.0.0"`
 /// - a range expression:    `">=18.0.0"`, `"^20.11.0"`, `"~22.0.0"`,
 ///   `"22.x"`, `"22 || 20"`, etc.
 /// - the wildcard `"*"` / `"x"` / `""`  (no preference)
+/// - an alias:              `"lts/*"`, `"lts"`, `"node"`, `"stable"`, `"latest"`
 ///
 /// For ranges we pick the newest locally installed version that satisfies the
 /// range. If none is installed we return the range expression itself verbatim,
 /// so the caller can show a helpful "not installed, run nvm install <ver>"
 /// message (matching the original behavior for bare versions).
-fn find_package_json_node_version(silent: bool) -> Result<Option<String>> {
-    let current_dir = std::env::current_dir()?;
-    let package_json = current_dir.join("package.json");
-
-    if !package_json.exists() {
-        return Ok(None);
-    }
-
-    let content = fs::read_to_string(&package_json)?;
-    // A malformed package.json shouldn't crash auto-detection — skip it and
-    // fall through to the .nvmrc/.node-version lookup.
-    let json: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return Ok(None),
-    };
-
-    let raw = match json
-        .get("engines")
-        .and_then(|e| e.get("node"))
-        .and_then(|n| n.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-    {
-        Some(v) => v,
-        None => return Ok(None),
-    };
-
+fn resolve_engines_node(raw: &str, silent: bool, found_at: &Path) -> Result<Option<String>> {
     // "lts/*", "lts", "node", "stable", "latest" — resolve as aliases against
     // the installed set: lts/* → newest LTS installed, node/stable/latest →
     // newest installed. Falls through to range parsing if not an alias.
     let installed = get_installed_versions();
+
+    // Single point for the informational message so every resolution branch
+    // stays in sync. Includes the directory where the package.json was found,
+    // mirroring the `Found .nvmrc in: <dir>` notice — useful now that the
+    // search is recursive and the matched package.json may be several levels
+    // above the current directory.
+    let announce = |chosen: &str| {
+        if !silent {
+            println!(
+                "{} {} {} {} {}",
+                "ℹ".cyan().bold(),
+                T("found_engines_node").cyan(),
+                raw.white().bold(),
+                format!("→ {}", chosen).dimmed(),
+                format!("({})", found_at.display()).dimmed()
+            );
+        }
+    };
 
     // Resolve alias-like expressions before range parsing so that "lts/*" /
     // "lts" don't get misinterpreted as version strings.
@@ -607,19 +691,11 @@ fn find_package_json_node_version(silent: bool) -> Result<Option<String>> {
             .collect();
         lts.sort_by(|a, b| crate::utils::compare_semver(a, b));
         if let Some(chosen) = lts.last() {
-            if !silent {
-                println!(
-                    "{} {} {} {}",
-                    "ℹ".cyan().bold(),
-                    T("found_engines_node").cyan(),
-                    raw.white().bold(),
-                    format!("→ {}", chosen).dimmed()
-                );
-            }
+            announce(chosen);
             return Ok(Some(chosen.clone()));
         }
         // No LTS installed — surface the alias so use_version reports it.
-        return Ok(Some(raw));
+        return Ok(Some(raw.to_string()));
     }
     if lower == "node" || lower == "stable" || lower == "latest" || lower == "*" || lower == "x" {
         if let Some(chosen) = installed
@@ -627,15 +703,7 @@ fn find_package_json_node_version(silent: bool) -> Result<Option<String>> {
             .max_by(|a, b| crate::utils::compare_semver(a, b))
             .cloned()
         {
-            if !silent {
-                println!(
-                    "{} {} {} {}",
-                    "ℹ".cyan().bold(),
-                    T("found_engines_node").cyan(),
-                    raw.white().bold(),
-                    format!("→ {}", chosen).dimmed()
-                );
-            }
+            announce(&chosen);
             return Ok(Some(chosen));
         }
         return Ok(None);
@@ -646,27 +714,19 @@ fn find_package_json_node_version(silent: bool) -> Result<Option<String>> {
     // caret/tilde, and operator-prefixed forms. If it resolves to an installed
     // version we return that; otherwise we fall back to the raw expression so
     // use_version prints the standard "not installed" hint.
-    if let Some(chosen) = pick_version_for_range(&raw, &installed) {
-        if !silent {
-            println!(
-                "{} {} {} {}",
-                "ℹ".cyan().bold(),
-                T("found_engines_node").cyan(),
-                raw.white().bold(),
-                format!("→ {}", chosen).dimmed()
-            );
-        }
+    if let Some(chosen) = pick_version_for_range(raw, &installed) {
+        announce(&chosen);
         return Ok(Some(chosen));
     }
 
     // Plain bare version like "22.0.0" or "v22.0.0" — pass through verbatim.
     if raw.starts_with(|c: char| c.is_ascii_digit() || c == 'v') && !raw.contains(' ') {
-        return Ok(Some(raw));
+        return Ok(Some(raw.to_string()));
     }
 
     // Nothing installed satisfies the range and it isn't a bare version. Surface
     // the original constraint so the user sees what was requested.
-    Ok(Some(raw))
+    Ok(Some(raw.to_string()))
 }
 
 /// Best-effort semver-ish range matcher. Supports `>=`, `>`, `<=`, `<`, `^`,

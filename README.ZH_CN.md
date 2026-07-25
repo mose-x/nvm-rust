@@ -29,7 +29,7 @@ nvm-rs 是一个用 Rust 编写、高性能且功能丰富的 Node.js 版本管�
 - **Shell 补全** — `nvm completion <bash|zsh|fish|powershell>`
 - **Corepack 支持** — `nvm corepack <enable|disable|status>`
 - **递归 .nvmrc 查找** — 自动切换时向上搜索父目录
-- **package.json engines.node** — 从 package.json 读取 Node.js 版本要求
+- **package.json engines.node** — 从 `package.json` 读取 Node.js 版本要求，递归向上搜索至项目根目录
 - **多 Shell 支持** — bash、zsh、Fish、PowerShell，带自动切换
 
 ## 与 fnm、nvm-sh 的对比
@@ -489,7 +489,7 @@ nvm corepack disable          # 禁用当前版本
 
 如果存在 `package.json` 且包含 `engines.node`，`nvm auto` 会使用该版本。
 
-同时支持递归查找 `.nvmrc` 和 `.node-version` 文件——从当前目录向上搜索到根目录。
+同时支持递归查找 `.nvmrc`、`.node-version` 和 `package.json`——从当前目录向上搜索到根目录。若某一层 `package.json` 不含 `engines.node`，查找不会终止，子包仍能命中项目根目录的版本约束。
 
 ## 配置
 
