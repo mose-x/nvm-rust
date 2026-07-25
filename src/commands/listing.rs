@@ -2,10 +2,7 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use std::fs;
 
-use super::{
-    compare_versions, get_base_url, get_codename, get_codename_from_map, get_current_version,
-    render_table,
-};
+use super::{get_base_url, get_codename, get_codename_from_map, get_current_version, render_table};
 use crate::config::{load_config, resolve_alias};
 use crate::i18n::{format_t, T};
 use crate::system::{get_cache_dir, get_nvm_dir, get_tags};
@@ -69,10 +66,22 @@ pub fn uninstall(version: &str) -> Result<()> {
     println!(" {}", "✓".green().bold());
 
     // Clear `current` if we just removed the active version, so subsequent
-    // `nvm current` / `nvm ls` don't point at a deleted directory.
+    // `nvm current` / `nvm ls` don't point at a deleted directory. A plain
+    // `let _ =` here would silently swallow errors (permissions, AV lock,
+    // read-only fs) and leave `current` pointing at the just-deleted dir —
+    // surface as a warning so the user knows `current` is stale.
     if is_current_active {
         let current_file = nvm_dir.join("current");
-        let _ = fs::remove_file(&current_file);
+        if let Err(e) = fs::remove_file(&current_file) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "{} {}: {}",
+                    "⚠".yellow().bold(),
+                    T("current_clear_failed"),
+                    e
+                );
+            }
+        }
     }
 
     Ok(())
@@ -99,7 +108,7 @@ pub fn list_versions() -> Result<()> {
     }
 
     // Sort descending (newest first) using semantic version comparison
-    versions.sort_by(|a, b| compare_versions(b, a));
+    versions.sort_by(|a, b| crate::utils::compare_semver(b, a));
 
     let has_iojs = versions.iter().any(|v| v.starts_with("iojs-"));
 
@@ -204,9 +213,9 @@ pub fn remote_versions(
     // Sort descending by semantic version (newest first) or ascending if requested
     let ascending = sort.map(|s| s.to_lowercase() == "asc").unwrap_or(false);
     if ascending {
-        all_versions.sort_by(|a, b| compare_versions(&a.0, &b.0));
+        all_versions.sort_by(|a, b| crate::utils::compare_semver(&a.0, &b.0));
     } else {
-        all_versions.sort_by(|a, b| compare_versions(&b.0, &a.0));
+        all_versions.sort_by(|a, b| crate::utils::compare_semver(&b.0, &a.0));
     }
 
     // Apply filters. `into_iter` moves matching tuples out of `all_versions`
@@ -438,7 +447,7 @@ pub fn uninstall_latest_lts() -> Result<()> {
     if lts.is_empty() {
         anyhow::bail!("{}", T("no_installed_lts"));
     }
-    lts.sort_by(|a, b| compare_versions(b, a));
+    lts.sort_by(|a, b| crate::utils::compare_semver(b, a));
     uninstall(&lts[0])
 }
 
@@ -450,7 +459,7 @@ pub fn uninstall_latest() -> Result<()> {
         anyhow::bail!("{}", T("no_installed_versions"));
     }
     let mut all: Vec<String> = versions;
-    all.sort_by(|a, b| compare_versions(b, a));
+    all.sort_by(|a, b| crate::utils::compare_semver(b, a));
     uninstall(&all[0])
 }
 

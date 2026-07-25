@@ -147,9 +147,9 @@ pub fn available_lang_codes() -> &'static [&'static str] {
 }
 
 #[allow(non_snake_case)]
-pub fn T(key: &str) -> String {
+pub fn T(key: &str) -> std::borrow::Cow<'static, str> {
     let lang = get_language();
-    t(key, lang).into_owned()
+    t(key, lang)
 }
 
 /// Format a translation with parameter substitution.

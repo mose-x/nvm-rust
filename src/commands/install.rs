@@ -398,8 +398,10 @@ fn install_binary(
     }
 
     if target.is_iojs {
+        println!("{}", T("extracting"));
         extract_iojs_archive(&extract_path, version_dir, &target.target_version)?;
     } else {
+        println!("{}", T("extracting"));
         extract_archive(&extract_path, version_dir, &target.target_version)?;
     }
     // Only delete the extracted archive when it's our own temp copy (offline

@@ -31,7 +31,7 @@ A fast, feature-rich Node.js version manager written in Rust — a Rust-native r
 - **Shell completions** — `nvm completion <bash|zsh|fish|powershell>`
 - **Corepack support** — `nvm corepack <enable|disable|status>`
 - **Recursive .nvmrc search** — auto-switch searches parent directories
-- **package.json engines.node** — reads Node.js version requirement from package.json
+- **package.json engines.node** — reads Node.js version requirement from `package.json`, searched recursively up to the project root
 - **Multi-shell support** — bash, zsh, Fish, PowerShell with auto-switch
 
 ## Comparison with fnm and nvm-sh
@@ -497,7 +497,7 @@ The `nvm auto` command now supports reading Node.js version from `package.json`:
 
 If `package.json` exists with `engines.node`, `nvm auto` will use that version.
 
-Also supports recursive `.nvmrc` and `.node-version` search — searches from current directory up to root.
+Also supports recursive `.nvmrc`, `.node-version`, and `package.json` search — searches from current directory up to root. A `package.json` without `engines.node` does not terminate the search, so a sub-package without the field still picks up the project-root constraint.
 
 ## Configuration
 

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{compare_versions, get_base_url, get_codename, get_current_version};
+use super::{get_base_url, get_codename, get_current_version};
 use crate::config::{
     handle_mirror, list_all_aliases, load_config, remove_alias, remove_from_shell_config,
     resolve_alias, save_config, set_alias, update_shell_config,
@@ -504,33 +504,33 @@ fn find_nvmrc_recursive(silent: bool) -> Result<Option<String>> {
 
     loop {
         let nvmrc = dir.join(".nvmrc");
-        if nvmrc.exists() {
-            if let Some(version) = read_first_version_line(&nvmrc) {
-                if !silent {
-                    println!(
-                        "{} {} {}",
-                        "ℹ".cyan().bold(),
-                        T("found_nvmrc").cyan(),
-                        dir.display().to_string().dimmed()
-                    );
-                }
-                return Ok(Some(version));
+        // `read_first_version_line` already maps NotFound -> None, so a
+        // pre-check with `.exists()` would be a redundant stat call and a
+        // TOCTOU window (file could be created/removed between the check
+        // and the read). Just try the read directly.
+        if let Some(version) = read_first_version_line(&nvmrc) {
+            if !silent {
+                println!(
+                    "{} {} {}",
+                    "ℹ".cyan().bold(),
+                    T("found_nvmrc").cyan(),
+                    dir.display().to_string().dimmed()
+                );
             }
+            return Ok(Some(version));
         }
 
         let node_version = dir.join(".node-version");
-        if node_version.exists() {
-            if let Some(version) = read_first_version_line(&node_version) {
-                if !silent {
-                    println!(
-                        "{} {} {}",
-                        "ℹ".cyan().bold(),
-                        T("found_node_version").cyan(),
-                        dir.display().to_string().dimmed()
-                    );
-                }
-                return Ok(Some(version));
+        if let Some(version) = read_first_version_line(&node_version) {
+            if !silent {
+                println!(
+                    "{} {} {}",
+                    "ℹ".cyan().bold(),
+                    T("found_node_version").cyan(),
+                    dir.display().to_string().dimmed()
+                );
             }
+            return Ok(Some(version));
         }
 
         // Move to parent directory. `Path::parent()` returns `None` for the
@@ -552,49 +552,133 @@ fn find_nvmrc_recursive(silent: bool) -> Result<Option<String>> {
     Ok(None)
 }
 
-/// Find Node.js version from package.json engines.node field.
+/// Find Node.js version from the closest `package.json` with an `engines.node`
+/// field, walking up from the current directory to the filesystem root.
 ///
-/// `engines.node` may be:
+/// Mirrors `find_nvmrc_recursive`'s walk-up semantics so `nvm use` from a
+/// sub-directory of a project picks up the project-root `package.json`
+/// constraint, just as it would for `.nvmrc` / `.node-version`. A
+/// `package.json` that exists but has no `engines.node` does *not* terminate
+/// the search — this is what makes the common monorepo layout (root
+/// `package.json` declares `engines.node` for the whole repo, sub-packages
+/// don't) work without requiring every sub-package to repeat the constraint.
+///
+/// The first `package.json` (closest to cwd) with a non-empty `engines.node`
+/// wins; lower levels are not consulted.
+fn find_package_json_node_version(silent: bool) -> Result<Option<String>> {
+    let current_dir = std::env::current_dir()?;
+    let mut dir = current_dir.as_path();
+
+    loop {
+        let package_json = dir.join("package.json");
+        // Read the file directly without a pre-check `.exists()` — that would
+        // be a redundant stat + a TOCTOU window. Distinguish NotFound (no
+        // package.json at this level — keep walking up) from real read errors
+        // (permission denied, I/O) so the user gets a warning instead of a
+        // silent "no engines.node found".
+        let content = match fs::read_to_string(&package_json) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                dir = match dir.parent() {
+                    Some(parent) => parent,
+                    None => break,
+                };
+                continue;
+            }
+            Err(e) => {
+                eprintln!(
+                    "{} {} {}: {}",
+                    "⚠".yellow().bold(),
+                    package_json.display(),
+                    T("package_json_read_failed"),
+                    e
+                );
+                dir = match dir.parent() {
+                    Some(parent) => parent,
+                    None => break,
+                };
+                continue;
+            }
+        };
+
+        // A malformed package.json at this level shouldn't crash auto-
+        // detection or shadow a valid one higher up — skip and try the parent.
+        let json: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => {
+                dir = match dir.parent() {
+                    Some(parent) => parent,
+                    None => break,
+                };
+                continue;
+            }
+        };
+
+        let raw = match json
+            .get("engines")
+            .and_then(|e| e.get("node"))
+            .and_then(|n| n.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            Some(v) => v,
+            None => {
+                // package.json exists but has no engines.node — keep walking
+                // up so a sub-package without engines.node doesn't shadow the
+                // project root's engines.node constraint.
+                dir = match dir.parent() {
+                    Some(parent) => parent,
+                    None => break,
+                };
+                continue;
+            }
+        };
+
+        // Found a package.json with engines.node at this level — resolve it.
+        return resolve_engines_node(&raw, silent, dir);
+    }
+
+    Ok(None)
+}
+
+/// Resolve an `engines.node` raw value into a concrete version, printing the
+/// standard "Found engines.node in package.json:" notice (including the
+/// directory where the package.json was located) unless `silent`.
+///
+/// `raw` may be:
 /// - a bare version:        `"22.0.0"` or `"v22.0.0"`
 /// - a range expression:    `">=18.0.0"`, `"^20.11.0"`, `"~22.0.0"`,
 ///   `"22.x"`, `"22 || 20"`, etc.
 /// - the wildcard `"*"` / `"x"` / `""`  (no preference)
+/// - an alias:              `"lts/*"`, `"lts"`, `"node"`, `"stable"`, `"latest"`
 ///
 /// For ranges we pick the newest locally installed version that satisfies the
 /// range. If none is installed we return the range expression itself verbatim,
 /// so the caller can show a helpful "not installed, run nvm install <ver>"
 /// message (matching the original behavior for bare versions).
-fn find_package_json_node_version(silent: bool) -> Result<Option<String>> {
-    let current_dir = std::env::current_dir()?;
-    let package_json = current_dir.join("package.json");
-
-    if !package_json.exists() {
-        return Ok(None);
-    }
-
-    let content = fs::read_to_string(&package_json)?;
-    // A malformed package.json shouldn't crash auto-detection — skip it and
-    // fall through to the .nvmrc/.node-version lookup.
-    let json: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return Ok(None),
-    };
-
-    let raw = match json
-        .get("engines")
-        .and_then(|e| e.get("node"))
-        .and_then(|n| n.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-    {
-        Some(v) => v,
-        None => return Ok(None),
-    };
-
+fn resolve_engines_node(raw: &str, silent: bool, found_at: &Path) -> Result<Option<String>> {
     // "lts/*", "lts", "node", "stable", "latest" — resolve as aliases against
     // the installed set: lts/* → newest LTS installed, node/stable/latest →
     // newest installed. Falls through to range parsing if not an alias.
     let installed = get_installed_versions();
+
+    // Single point for the informational message so every resolution branch
+    // stays in sync. Includes the directory where the package.json was found,
+    // mirroring the `Found .nvmrc in: <dir>` notice — useful now that the
+    // search is recursive and the matched package.json may be several levels
+    // above the current directory.
+    let announce = |chosen: &str| {
+        if !silent {
+            println!(
+                "{} {} {} {} {}",
+                "ℹ".cyan().bold(),
+                T("found_engines_node").cyan(),
+                raw.white().bold(),
+                format!("→ {}", chosen).dimmed(),
+                format!("({})", found_at.display()).dimmed()
+            );
+        }
+    };
 
     // Resolve alias-like expressions before range parsing so that "lts/*" /
     // "lts" don't get misinterpreted as version strings.
@@ -605,37 +689,21 @@ fn find_package_json_node_version(silent: bool) -> Result<Option<String>> {
             .filter(|v| is_lts_version(v))
             .cloned()
             .collect();
-        lts.sort_by(|a, b| compare_versions(a, b));
+        lts.sort_by(|a, b| crate::utils::compare_semver(a, b));
         if let Some(chosen) = lts.last() {
-            if !silent {
-                println!(
-                    "{} {} {} {}",
-                    "ℹ".cyan().bold(),
-                    T("found_engines_node").cyan(),
-                    raw.white().bold(),
-                    format!("→ {}", chosen).dimmed()
-                );
-            }
+            announce(chosen);
             return Ok(Some(chosen.clone()));
         }
         // No LTS installed — surface the alias so use_version reports it.
-        return Ok(Some(raw));
+        return Ok(Some(raw.to_string()));
     }
     if lower == "node" || lower == "stable" || lower == "latest" || lower == "*" || lower == "x" {
         if let Some(chosen) = installed
             .iter()
-            .max_by(|a, b| compare_versions(a, b))
+            .max_by(|a, b| crate::utils::compare_semver(a, b))
             .cloned()
         {
-            if !silent {
-                println!(
-                    "{} {} {} {}",
-                    "ℹ".cyan().bold(),
-                    T("found_engines_node").cyan(),
-                    raw.white().bold(),
-                    format!("→ {}", chosen).dimmed()
-                );
-            }
+            announce(&chosen);
             return Ok(Some(chosen));
         }
         return Ok(None);
@@ -646,27 +714,19 @@ fn find_package_json_node_version(silent: bool) -> Result<Option<String>> {
     // caret/tilde, and operator-prefixed forms. If it resolves to an installed
     // version we return that; otherwise we fall back to the raw expression so
     // use_version prints the standard "not installed" hint.
-    if let Some(chosen) = pick_version_for_range(&raw, &installed) {
-        if !silent {
-            println!(
-                "{} {} {} {}",
-                "ℹ".cyan().bold(),
-                T("found_engines_node").cyan(),
-                raw.white().bold(),
-                format!("→ {}", chosen).dimmed()
-            );
-        }
+    if let Some(chosen) = pick_version_for_range(raw, &installed) {
+        announce(&chosen);
         return Ok(Some(chosen));
     }
 
     // Plain bare version like "22.0.0" or "v22.0.0" — pass through verbatim.
     if raw.starts_with(|c: char| c.is_ascii_digit() || c == 'v') && !raw.contains(' ') {
-        return Ok(Some(raw));
+        return Ok(Some(raw.to_string()));
     }
 
     // Nothing installed satisfies the range and it isn't a bare version. Surface
     // the original constraint so the user sees what was requested.
-    Ok(Some(raw))
+    Ok(Some(raw.to_string()))
 }
 
 /// Best-effort semver-ish range matcher. Supports `>=`, `>`, `<=`, `<`, `^`,
@@ -701,11 +761,13 @@ fn pick_version_for_range(range: &str, installed: &[String]) -> Option<String> {
             .cloned()
             .collect();
         if !matching.is_empty() {
-            matching.sort_by(|a, b| compare_versions(a, b));
+            matching.sort_by(|a, b| crate::utils::compare_semver(a, b));
             candidates.push(matching.pop().unwrap());
         }
     }
-    candidates.into_iter().max_by(|a, b| compare_versions(a, b))
+    candidates
+        .into_iter()
+        .max_by(|a, b| crate::utils::compare_semver(a, b))
 }
 
 /// Lightweight single-token matcher used by the compound AND branch above.
@@ -764,7 +826,7 @@ fn pick_version_for_range_single(expr: &str, installed: &[String]) -> Option<Str
         // Match any — pick newest installed
         return installed
             .iter()
-            .max_by(|a, b| compare_versions(a, b))
+            .max_by(|a, b| crate::utils::compare_semver(a, b))
             .cloned();
     }
 
@@ -790,24 +852,22 @@ fn pick_version_for_range_single(expr: &str, installed: &[String]) -> Option<Str
     if matching.is_empty() {
         return None;
     }
-    matching.sort_by(|a, b| compare_versions(a, b));
+    matching.sort_by(|a, b| crate::utils::compare_semver(a, b));
     matching.pop() // newest
 }
 
-fn parse_v_tuple(v: &str) -> Option<(u64, u64, u64)> {
-    let (maj, min, pat) = crate::utils::parse_version_parts(v)?;
-    Some((maj as u64, min as u64, pat as u64))
-}
-
 fn version_matches_op(version: &str, op: &str, target: &str, wildcard: bool) -> bool {
-    let (maj, min, pat) = match parse_v_tuple(version) {
+    // `parse_version_parts` already returns (u32, u32, u32); the previous
+    // `parse_v_tuple` wrapper widened to u64, but Node.js version numbers
+    // fit in u32 and the comparison semantics are identical.
+    let (maj, min, pat) = match crate::utils::parse_version_parts(version) {
         Some(t) => t,
         None => return false,
     };
     let comps: Vec<&str> = target.split('.').collect();
-    let t_maj: u64 = comps.first().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let t_min: u64 = comps.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-    let t_pat: u64 = comps.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let t_maj: u32 = comps.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let t_min: u32 = comps.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let t_pat: u32 = comps.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
 
     match op {
         ">=" => maj > t_maj || (maj == t_maj && (min > t_min || (min == t_min && pat >= t_pat))),
@@ -844,7 +904,7 @@ fn version_matches_op(version: &str, op: &str, target: &str, wildcard: bool) -> 
                 if comps.len() > 1 {
                     let m = comps[1];
                     if !(m == "x" || m == "X" || m == "*") {
-                        let m: u64 = m.parse().unwrap_or(0);
+                        let m: u32 = m.parse().unwrap_or(0);
                         if min != m {
                             return false;
                         }
@@ -853,7 +913,7 @@ fn version_matches_op(version: &str, op: &str, target: &str, wildcard: bool) -> 
                 if comps.len() > 2 {
                     let p = comps[2];
                     if !(p == "x" || p == "X" || p == "*") {
-                        let p: u64 = p.parse().unwrap_or(0);
+                        let p: u32 = p.parse().unwrap_or(0);
                         if pat != p {
                             return false;
                         }
@@ -997,7 +1057,7 @@ pub fn show_remote_version_info() -> Result<()> {
             versions.push(tag.trim_end_matches('/').to_string());
         }
     }
-    versions.sort_by(|a, b| compare_versions(b, a));
+    versions.sort_by(|a, b| crate::utils::compare_semver(b, a));
 
     println!();
     print!("  ");
@@ -1442,39 +1502,57 @@ mod tests {
         assert_eq!(pick_version_for_range("^99", &installed()), None);
     }
 
-    // --- parse_v_tuple -----------------------------------------------------
+    // --- parse_version_parts (used by version_matches_op) ------------------
     #[test]
     fn parse_v_tuple_v_prefixed() {
-        assert_eq!(parse_v_tuple("v20.11.1"), Some((20, 11, 1)));
+        assert_eq!(
+            crate::utils::parse_version_parts("v20.11.1"),
+            Some((20, 11, 1))
+        );
     }
 
     #[test]
     fn parse_v_tuple_bare() {
-        assert_eq!(parse_v_tuple("18.20.0"), Some((18, 20, 0)));
+        assert_eq!(
+            crate::utils::parse_version_parts("18.20.0"),
+            Some((18, 20, 0))
+        );
     }
 
     #[test]
     fn parse_v_tuple_iojs_prefix() {
-        assert_eq!(parse_v_tuple("iojs-v3.3.1"), Some((3, 3, 1)));
+        assert_eq!(
+            crate::utils::parse_version_parts("iojs-v3.3.1"),
+            Some((3, 3, 1))
+        );
     }
 
     #[test]
     fn parse_v_tuple_iojs_dot_prefix() {
-        // Previously a bug: parse_v_tuple missed "io.js-v" / "io.js-" prefixes,
+        // Previously a bug: parse missed "io.js-v" / "io.js-" prefixes,
         // making io.js versions invisible to the engines.node range matcher.
-        assert_eq!(parse_v_tuple("io.js-v3.3.1"), Some((3, 3, 1)));
-        assert_eq!(parse_v_tuple("io.js-3.3.1"), Some((3, 3, 1)));
+        assert_eq!(
+            crate::utils::parse_version_parts("io.js-v3.3.1"),
+            Some((3, 3, 1))
+        );
+        assert_eq!(
+            crate::utils::parse_version_parts("io.js-3.3.1"),
+            Some((3, 3, 1))
+        );
     }
 
     #[test]
     fn parse_v_tuple_trailing_suffix() {
         // "v20.11.1-rc.1" → (20, 11, 1)
-        assert_eq!(parse_v_tuple("v20.11.1-rc.1"), Some((20, 11, 1)));
+        assert_eq!(
+            crate::utils::parse_version_parts("v20.11.1-rc.1"),
+            Some((20, 11, 1))
+        );
     }
 
     #[test]
     fn parse_v_tuple_missing_patch_defaults_zero() {
-        assert_eq!(parse_v_tuple("v22"), Some((22, 0, 0)));
+        assert_eq!(crate::utils::parse_version_parts("v22"), Some((22, 0, 0)));
     }
 
     #[test]

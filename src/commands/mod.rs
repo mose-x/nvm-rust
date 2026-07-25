@@ -148,7 +148,7 @@ pub(crate) fn render_table(title: &str, columns: &[(&str, u8)], rows: &[Vec<Stri
                     let dw = display_width(cell);
                     let lp = (w - dw) / 2;
                     let rp = w - dw - lp;
-                    format!("{}{}{}", " ".repeat(lp), cell, " ".repeat(rp))
+                    std::borrow::Cow::Owned(format!("{}{}{}", " ".repeat(lp), cell, " ".repeat(rp)))
                 }
                 _ => pad_right(cell, col_widths[i]),
             };
@@ -165,13 +165,6 @@ pub(crate) fn render_table(title: &str, columns: &[(&str, u8)], rows: &[Vec<Stri
 
     // Bottom border
     println!("  ╰{}╯", "─".repeat(total_width));
-}
-
-/// Compare two version strings by semantic version (major.minor.patch).
-/// Returns greater if a is newer than b. Delegates to `utils::compare_semver`
-/// so all version comparisons share one implementation.
-pub(crate) fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
-    crate::utils::compare_semver(a, b)
 }
 
 pub(crate) fn get_current_version() -> Result<Option<String>> {

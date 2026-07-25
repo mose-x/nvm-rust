@@ -70,20 +70,24 @@ pub fn is_iojs_version(version: &str) -> bool {
     strip_iojs_prefix(version).is_some()
 }
 
+/// Strip the io.js prefix and leading `v`, returning the bare "X.Y.Z" part.
+/// Shared by [`normalize_iojs_version`] and [`iojs_version_number`] so the
+/// prefix-stripping logic lives in one place.
+fn iojs_bare_version(version: &str) -> &str {
+    strip_iojs_prefix(version)
+        .unwrap_or(version)
+        .trim_start_matches('v')
+}
+
 /// Normalize an io.js version name to canonical "iojs-vX.Y.Z"
 pub fn normalize_iojs_version(version: &str) -> String {
-    let v = strip_iojs_prefix(version)
-        .unwrap_or(version)
-        .trim_start_matches('v');
-    format!("iojs-v{}", v)
+    format!("iojs-v{}", iojs_bare_version(version))
 }
 
 /// Extract the version number from an io.js version (returns "X.Y.Z")
 pub fn iojs_version_number(version: &str) -> Option<String> {
     if is_iojs_version(version) {
-        let v = strip_iojs_prefix(version)
-            .unwrap_or(version)
-            .trim_start_matches('v');
+        let v = iojs_bare_version(version);
         if v.matches('.').count() >= 2 {
             return Some(v.to_string());
         }
@@ -292,14 +296,14 @@ pub fn validate_version_name(version: &str) -> Result<()> {
 /// The temp file is created in the same directory as the target (required for
 /// rename to be atomic — cross-device rename is not). On failure the temp
 /// file is removed by `NamedTempFile`'s Drop.
-pub fn atomic_write(path: &Path, contents: &str) -> Result<(), std::io::Error> {
+pub fn atomic_write(path: &Path, contents: &str) -> Result<()> {
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     std::io::Write::write_all(&mut tmp, contents.as_bytes())?;
-    tmp.persist(path).map_err(|e| e.error)?;
+    tmp.persist(path).map_err(|e| anyhow::anyhow!(e.error))?;
     Ok(())
 }
 
@@ -346,22 +350,26 @@ pub fn display_width(s: &str) -> usize {
 
 /// Left-align `s` to `width` columns, padding with spaces on the right.
 /// Uses `display_width` so ANSI-coloured and CJK strings pad correctly.
-pub fn pad_right(s: &str, width: usize) -> String {
+///
+/// Returns a borrowed `Cow` when `s` is already at least `width` columns
+/// (no padding needed), avoiding an allocation in the common case where the
+/// input already fits — e.g. `render_table` calls this per cell.
+pub fn pad_right(s: &str, width: usize) -> std::borrow::Cow<'_, str> {
     let w = display_width(s);
     if w >= width {
-        s.to_string()
+        std::borrow::Cow::Borrowed(s)
     } else {
-        format!("{}{}", s, " ".repeat(width - w))
+        std::borrow::Cow::Owned(format!("{}{}", s, " ".repeat(width - w)))
     }
 }
 
 /// Right-align `s` to `width` columns, padding with spaces on the left.
-pub fn pad_left(s: &str, width: usize) -> String {
+pub fn pad_left(s: &str, width: usize) -> std::borrow::Cow<'_, str> {
     let w = display_width(s);
     if w >= width {
-        s.to_string()
+        std::borrow::Cow::Borrowed(s)
     } else {
-        format!("{}{}", " ".repeat(width - w), s)
+        std::borrow::Cow::Owned(format!("{}{}", " ".repeat(width - w), s))
     }
 }
 
@@ -389,20 +397,32 @@ pub fn backup_file(path: &Path) -> Result<(), std::io::Error> {
 /// reports nothing. This is the cross-platform replacement for the
 /// `Command::new("which").arg("node")` pattern that silently failed on
 /// Windows.
+///
+/// Result is cached for the process lifetime: a single `nvm` invocation may
+/// resolve `system` in multiple places (`resolve_alias`, `exec_version`,
+/// `which_version`), each previously spawning a fresh `which`/`where`
+/// subprocess. The system Node path cannot change mid-process, so we memoize
+/// the first lookup.
 pub fn find_system_node_path() -> Option<std::path::PathBuf> {
-    use std::process::Command;
-    let output = if cfg!(unix) {
-        Command::new("which").arg("node").output().ok()?
-    } else if cfg!(windows) {
-        Command::new("where").arg("node").output().ok()?
-    } else {
-        return None;
-    };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // `where` on Windows prints one path per line; `which` prints one line.
-    // Take the first non-empty trimmed line in both cases.
-    let first = stdout.lines().map(|l| l.trim()).find(|l| !l.is_empty())?;
-    Some(std::path::PathBuf::from(first))
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            use std::process::Command;
+            let output = if cfg!(unix) {
+                Command::new("which").arg("node").output().ok()?
+            } else if cfg!(windows) {
+                Command::new("where").arg("node").output().ok()?
+            } else {
+                return None;
+            };
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            // `where` on Windows prints one path per line; `which` prints one line.
+            // Take the first non-empty trimmed line in both cases.
+            let first = stdout.lines().map(|l| l.trim()).find(|l| !l.is_empty())?;
+            Some(std::path::PathBuf::from(first))
+        })
+        .clone()
 }
 
 // ---------------------------------------------------------------------------
