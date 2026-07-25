@@ -81,7 +81,14 @@ fn build_install_target(
     }
 
     if is_iojs {
-        let ver = cfg.version.as_ref().unwrap();
+        // `is_iojs` is only set to true above when `cfg.version` is Some, but
+        // encode that invariant explicitly instead of `unwrap()`-ing — a future
+        // refactor (e.g. an `--iojs` flag with no version arg) would otherwise
+        // panic with no context.
+        let ver = cfg
+            .version
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("io.js install requested but no version provided"))?;
         let lv = ver.to_lowercase();
         let ver_input = if lv == "iojs" || lv == "io.js" {
             "3.3.1".to_string()
