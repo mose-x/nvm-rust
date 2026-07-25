@@ -459,12 +459,29 @@ fn bare_major_prefix(name: &str) -> Option<String> {
 fn collect_installed_versions(predicate: impl Fn(&str) -> bool) -> Vec<String> {
     let nvm_dir = get_nvm_dir();
     let mut versions: Vec<String> = Vec::new();
-    if let Ok(rd) = fs::read_dir(&nvm_dir) {
-        for entry in rd.flatten() {
-            if let Some(s) = entry.file_name().to_str() {
-                if crate::utils::is_version_dir_name(s) && predicate(s) {
-                    versions.push(s.to_string());
-                }
+    // Distinguish NotFound (fresh install — no versions yet) from real
+    // read_dir failures. The previous `if let Ok(rd)` folded both into an
+    // empty list, so an unreadable nvm_dir made every alias resolution
+    // (`lts/*`, `node`, `stable`, bare major) silently return "not found"
+    // instead of surfacing the permission/IO error. Mirrors
+    // `list_all_aliases` and `get_installed_versions`.
+    let rd = match fs::read_dir(&nvm_dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return versions,
+        Err(e) => {
+            eprintln!(
+                "{} Failed to list installed versions in {}: {}",
+                "⚠".yellow().bold(),
+                nvm_dir.display(),
+                e
+            );
+            return versions;
+        }
+    };
+    for entry in rd.flatten() {
+        if let Some(s) = entry.file_name().to_str() {
+            if crate::utils::is_version_dir_name(s) && predicate(s) {
+                versions.push(s.to_string());
             }
         }
     }
