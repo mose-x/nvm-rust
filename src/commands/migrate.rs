@@ -308,32 +308,51 @@ pub fn cmd_migrate(source: &str) -> Result<()> {
     if imported + skipped > 0 {
         if let Some(root) = nvm_sh_root {
             if let Some(default_ver) = detect_nvm_sh_default(&root) {
-                let dest = nvm_dir.join(&default_ver);
-                if dest.exists() {
-                    let mut config = load_config()?;
-                    config.default_version = Some(default_ver.clone());
-                    save_config(&config)?;
-                    // Also overwrite `aliases.aliases["default"]` if it exists:
-                    // `resolve_alias("default")` checks user-defined aliases
-                    // FIRST and only falls back to `config.default_version`,
-                    // so writing config alone is not enough — a pre-existing
-                    // `default` alias (e.g. from an earlier `nvm alias default
-                    // lts`) would shadow the migrated value and `nvm use
-                    // default` would resolve to the old alias instead.
-                    if let Ok(mut aliases) = crate::config::load_aliases() {
-                        if aliases.aliases.contains_key("default") {
-                            aliases
-                                .aliases
-                                .insert("default".to_string(), default_ver.clone());
-                            crate::config::save_aliases(&aliases)?;
-                        }
-                    }
-                    println!();
-                    println!(
-                        "  {} {}",
-                        "✓".green().bold(),
-                        format_t("migrate_default_set", &[default_ver]).green()
+                // Defense-in-depth: `detect_nvm_sh_default` reads
+                // `~/.nvm/alias/default` from the source nvm-sh install.
+                // A hand-edited or malicious default file could contain a
+                // path-traversal payload like `v../../etc/passwd`. We are
+                // about to `nvm_dir.join(&default_ver)` and write it into
+                // `config.default_version`, so validate FIRST. Only concrete
+                // version forms (`v20.11.0`, `iojs-v3.3.1`) can pass the
+                // subsequent `dest.exists()` check anyway — alias forms
+                // like `lts/*` would never match an installed version dir —
+                // so rejecting traversal here cannot break the happy path.
+                if crate::utils::validate_version_name(&default_ver).is_err() {
+                    eprintln!(
+                        "{} {}: {}",
+                        "⚠".yellow().bold(),
+                        crate::i18n::T("invalid_version_name"),
+                        default_ver
                     );
+                } else {
+                    let dest = nvm_dir.join(&default_ver);
+                    if dest.exists() {
+                        let mut config = load_config()?;
+                        config.default_version = Some(default_ver.clone());
+                        save_config(&config)?;
+                        // Also overwrite `aliases.aliases["default"]` if it exists:
+                        // `resolve_alias("default")` checks user-defined aliases
+                        // FIRST and only falls back to `config.default_version`,
+                        // so writing config alone is not enough — a pre-existing
+                        // `default` alias (e.g. from an earlier `nvm alias default
+                        // lts`) would shadow the migrated value and `nvm use
+                        // default` would resolve to the old alias instead.
+                        if let Ok(mut aliases) = crate::config::load_aliases() {
+                            if aliases.aliases.contains_key("default") {
+                                aliases
+                                    .aliases
+                                    .insert("default".to_string(), default_ver.clone());
+                                crate::config::save_aliases(&aliases)?;
+                            }
+                        }
+                        println!();
+                        println!(
+                            "  {} {}",
+                            "✓".green().bold(),
+                            format_t("migrate_default_set", &[default_ver]).green()
+                        );
+                    }
                 }
             }
         }
@@ -455,4 +474,115 @@ fn detect_nvm_sh_default(nvm_sh_root: &Path) -> Option<String> {
     // `v20.20.2` ('5' > '2') and pick the older version as "latest".
     candidates.sort_by(|a, b| crate::utils::compare_semver(a, b));
     candidates.last().cloned()
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a fake nvm-sh root with `<root>/.nvm/alias/default` containing
+    /// `contents`, and (optionally) a `versions/node/` dir populated with the
+    /// given version dir names. Returns the root path.
+    fn fake_nvm_sh_root(default_contents: &str, versions: &[&str]) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let alias_dir = tmp.path().join(".nvm").join("alias");
+        fs::create_dir_all(&alias_dir).expect("create alias dir");
+        fs::write(alias_dir.join("default"), default_contents).expect("write default");
+        if !versions.is_empty() {
+            let versions_root = tmp.path().join(".nvm").join("versions").join("node");
+            fs::create_dir_all(&versions_root).expect("create versions root");
+            for v in versions {
+                fs::create_dir_all(versions_root.join(v)).expect("create version dir");
+            }
+        }
+        tmp
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_passes_through_v_prefixed_version() {
+        // Happy path: a fully-qualified `vX.Y.Z` default file is returned
+        // verbatim (the common case for nvm-sh users who set a specific
+        // version as default).
+        let root = fake_nvm_sh_root("v20.11.0", &[]);
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            Some("v20.11.0".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_passes_through_iojs_version() {
+        // All four io.js spellings should be accepted by the shared
+        // `is_iojs_version` detector used in the v-prefix branch.
+        for s in ["iojs-v3.3.1", "iojs-3.3.1", "io.js-v3.3.1", "io.js-3.3.1"] {
+            let root = fake_nvm_sh_root(s, &[]);
+            assert_eq!(
+                detect_nvm_sh_default(root.path()),
+                Some(s.to_string()),
+                "io.js spelling {s:?} should pass through"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_adds_v_prefix_to_bare_full_version() {
+        // "20.11.0" (no leading v) gets a `v` prepended.
+        let root = fake_nvm_sh_root("20.11.0", &[]);
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            Some("v20.11.0".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_returns_none_for_missing_file() {
+        // No default file → None (not an error). This is the expected case
+        // when nvm-sh is installed but no default alias was ever set.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(tmp.path().join(".nvm").join("alias")).expect("create alias dir");
+        assert_eq!(detect_nvm_sh_default(tmp.path()), None);
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_returns_none_for_empty_file() {
+        // An empty/whitespace default file is treated as "no default".
+        let root = fake_nvm_sh_root("   \n  ", &[]);
+        assert_eq!(detect_nvm_sh_default(root.path()), None);
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_passes_through_traversal_payload_unvalidated() {
+        // SECURITY CONTRACT TEST:
+        //
+        // `detect_nvm_sh_default` is a pure parser — it does NOT validate the
+        // contents of the default file. A hand-edited or malicious file
+        // containing `v../../etc/passwd` is returned verbatim because it
+        // starts with `v`. This is intentional: the validation gate lives
+        // in `cmd_migrate` (the only caller), which calls
+        // `validate_version_name` before `nvm_dir.join(&default_ver)` and
+        // before writing to config.default_version.
+        //
+        // This test locks the contract: if someone moves validation INTO
+        // `detect_nvm_sh_default` they must update this test; if someone
+        // REMOVES validation from `cmd_migrate`, this test still passes but
+        // the safety gap reopens — the `validate_version_name` test below
+        // is the second layer of the contract.
+        let root = fake_nvm_sh_root("v../../etc/passwd", &[]);
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            Some("v../../etc/passwd".to_string()),
+            "detect_nvm_sh_default must return the raw value; cmd_migrate validates"
+        );
+        // And the validator MUST reject this payload — this is the gate
+        // cmd_migrate relies on. If validate_version_name ever started
+        // accepting `..` or `/`, cmd_migrate's defense would be defeated.
+        assert!(
+            crate::utils::validate_version_name("v../../etc/passwd").is_err(),
+            "validate_version_name must reject path-traversal payloads"
+        );
+    }
 }
