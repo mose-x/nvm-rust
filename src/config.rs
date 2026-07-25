@@ -963,9 +963,15 @@ pub fn update_shell_config(version: &str, use_on_cd: bool) -> Result<()> {
     // On Windows the PowerShell profile directory (`Documents\PowerShell\`)
     // may not exist yet on a fresh install; atomic_write's temp file lives in
     // the parent dir, so create it first or the write fails with ENOENT.
+    //
+    // Propagate the create_dir_all error instead of `.ok()`-ing it: a
+    // permission denial or read-only filesystem here would otherwise surface
+    // as a confusing "cannot update shell config" from the atomic_write
+    // below, hiding the real cause (the parent dir could not be created).
     if let Some(parent) = config_path.parent() {
         if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).ok();
+            fs::create_dir_all(parent)
+                .with_context(|| format!("{}: {}", T("cannot_create_dir"), parent.display()))?;
         }
     }
     atomic_write(config_path, &new_config).context(T("cannot_update_shell_config"))?;
@@ -1386,5 +1392,70 @@ mod tests {
         // lts/<codename>), not `lts/../../etc`.
         assert!(validated("lts/../../etc").is_err());
         assert!(validated("lts/\0x").is_err());
+    }
+
+    // Serialize env-var mutations: `update_shell_config` reads HOME (via
+    // detect_shell_config) and NVM_DIR (via get_nvm_dir) from the process
+    // environment, and `std::env::set_var` is not thread-safe. Without this
+    // mutex a parallel test could observe a half-set environment or restore
+    // HOME before this test finished reading it.
+    static SHELL_CFG_TESTS_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn update_shell_config_surfaces_create_dir_all_failure() {
+        let _guard = SHELL_CFG_TESTS_MUTEX
+            .lock()
+            .expect("SHELL_CFG_TESTS_MUTEX poisoned");
+
+        // Set up a HOME whose `.bashrc` parent cannot be created: place a
+        // regular file where the parent directory would go. `create_dir_all`
+        // then fails with NotADirectory (ENOTDIR), which must propagate
+        // instead of being swallowed by the old `.ok()`.
+        let tmp = tempfile::TempDir::new().expect("tempdir for HOME blocker");
+        let blocker = tmp.path().join("blocker_file");
+        std::fs::write(&blocker, b"not a directory").expect("write blocker file");
+
+        let nvm_tmp = tempfile::TempDir::new().expect("tempdir for NVM_DIR");
+
+        let old_home = std::env::var_os("HOME");
+        let old_nvm_dir = std::env::var_os("NVM_DIR");
+        std::env::set_var("HOME", &blocker);
+        std::env::set_var("NVM_DIR", nvm_tmp.path());
+
+        // Restore env even if assertions fail — leaking HOME=<blocker> would
+        // break every subsequent test that touches the shell config.
+        struct EnvGuard {
+            old_home: Option<std::ffi::OsString>,
+            old_nvm_dir: Option<std::ffi::OsString>,
+        }
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.old_home {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
+                match &self.old_nvm_dir {
+                    Some(v) => std::env::set_var("NVM_DIR", v),
+                    None => std::env::remove_var("NVM_DIR"),
+                }
+            }
+        }
+        let _guard_env = EnvGuard {
+            old_home,
+            old_nvm_dir,
+        };
+
+        let result = update_shell_config("v20.0.0", false);
+
+        let err = result
+            .expect_err("update_shell_config should fail when the parent dir cannot be created");
+        let msg = format!("{err:#}");
+        // The error must mention directory creation (the real cause) rather
+        // than the downstream "cannot update shell config" that the old
+        // `.ok()` path would have produced instead.
+        assert!(
+            msg.to_lowercase().contains("directory") || msg.to_lowercase().contains("create"),
+            "expected create_dir_all error context, got: {msg}"
+        );
     }
 }
