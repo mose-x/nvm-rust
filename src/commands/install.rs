@@ -387,6 +387,12 @@ fn install_binary(
         (cached_path, false)
     };
 
+    // RAII guard so the offline temp copy is removed on every exit path
+    // (checksum failure, GPG failure, extract failure), not just the
+    // success path at the end. Online path used the shared cache and must
+    // not be deleted — guard is only armed when `owns_extract_file`.
+    let extract_guard = owns_extract_file.then(|| SourceGuard::file(extract_path.clone()));
+
     if !target.is_iojs {
         print!("  {} ", T("checksum_label").dimmed());
         if offline {
@@ -459,12 +465,11 @@ fn install_binary(
         println!("{}", T("extracting"));
         extract_archive(&extract_path, version_dir, &target.target_version)?;
     }
-    // Only delete the extracted archive when it's our own temp copy (offline
-    // path). The online path extracted straight from the shared cache file,
-    // which must persist for future installs / `--offline`.
-    if owns_extract_file {
-        fs::remove_file(&extract_path).ok();
-    }
+    // Extraction succeeded — drop the guard to remove the offline temp copy
+    // (online path had no guard armed). Matches the previous `if owns_extract_file
+    // { fs::remove_file(&extract_path).ok(); }` but now also runs on every
+    // error path above via the guard's Drop.
+    drop(extract_guard);
 
     println!();
     println!(
