@@ -231,18 +231,35 @@ pub fn is_version_dir_name(name: &str) -> bool {
 pub fn get_installed_versions() -> Vec<String> {
     let nvm_dir = get_nvm_dir();
     let mut versions: Vec<String> = Vec::new();
-    if let Ok(rd) = fs::read_dir(&nvm_dir) {
-        for entry in rd.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                if let Some(name) = path.file_name() {
-                    let name = name.to_string_lossy().to_string();
-                    // Accept "vX.Y.Z" (digit must follow the `v`), "iojs-vX.Y.Z",
-                    // "io.js-vX.Y.Z". Rejects "current", "versions" (nvm-sh's
-                    // nested dir), "v8-flags" and any other non-version `v*`.
-                    if name != "current" && is_version_dir_name(&name) {
-                        versions.push(name);
-                    }
+    // Distinguish NotFound (legitimate on a fresh install — no versions
+    // downloaded yet) from real read_dir failures (permission denied, I/O
+    // error). The previous `if let Ok(rd)` folded both into an empty list,
+    // so an unreadable nvm_dir silently looked like "no versions installed"
+    // and the user got confusing "version not installed" errors downstream
+    // instead of a clear permission warning. Mirrors `list_all_aliases`.
+    let rd = match fs::read_dir(&nvm_dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return versions,
+        Err(e) => {
+            eprintln!(
+                "{} Failed to list installed versions in {}: {}",
+                "⚠".yellow().bold(),
+                nvm_dir.display(),
+                e
+            );
+            return versions;
+        }
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(name) = path.file_name() {
+                let name = name.to_string_lossy().to_string();
+                // Accept "vX.Y.Z" (digit must follow the `v`), "iojs-vX.Y.Z",
+                // "io.js-vX.Y.Z". Rejects "current", "versions" (nvm-sh's
+                // nested dir), "v8-flags" and any other non-version `v*`.
+                if name != "current" && is_version_dir_name(&name) {
+                    versions.push(name);
                 }
             }
         }
