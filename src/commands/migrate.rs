@@ -196,6 +196,14 @@ pub fn cmd_migrate(source: &str) -> Result<()> {
     let nvm_dir = get_nvm_dir();
     ensure_nvm_dir().context(T("cannot_create_nvm_dir"))?;
 
+    // Serialize against concurrent install/uninstall/use. `import_version`
+    // does a `dest.exists()` check then `copy_dir_recursive` — without the
+    // lock, two concurrent `nvm migrate` (or a migrate racing an install of
+    // the same version) would both pass the exists check and then clobber
+    // each other's copy, producing a corrupted version directory. Same race
+    // class as the one `install`/`uninstall` already guard against.
+    let _nvm_lock = crate::utils::acquire_nvm_lock(&nvm_dir)?;
+
     println!();
     println!(
         "  {} {}",
