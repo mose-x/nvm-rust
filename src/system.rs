@@ -649,6 +649,28 @@ pub fn os_suffix() -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
+// Test-only global mutex serializing all tests that read or write NVM_DIR
+// ---------------------------------------------------------------------------
+
+/// Process-global mutex serializing every test that touches the `NVM_DIR`
+/// environment variable (reading it via `get_nvm_dir`/`get_cache_dir`, or
+/// mutating it via `std::env::set_var`).
+///
+/// `std::env::set_var` is process-global and not thread-safe: cargo test runs
+/// tests in parallel within the same binary, so two tests touching `NVM_DIR`
+/// concurrently race — one test's `set_var` can land between another test's
+/// `set_var` and its `get_cache_dir()` call, pointing the second test at the
+/// wrong directory. The per-module mutexes that existed before
+/// (`CACHE_TESTS_MUTEX`, `SHELL_CFG_TESTS_MUTEX`, `LOCK_TESTS_MUTEX`) only
+/// serialized tests *within* one module; a download.rs test could still race
+/// with a proxy.rs test.
+///
+/// This single mutex closes the cross-module gap. Every test that reads or
+/// writes `NVM_DIR` acquires it for the duration of its env interaction.
+#[cfg(test)]
+pub(crate) static ENV_TESTS_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

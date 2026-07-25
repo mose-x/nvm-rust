@@ -543,10 +543,13 @@ mod tests {
         assert_eq!(load_ifrange_validator(&sidecar).as_deref(), Some(date));
     }
 
-    // Serializes tests that mutate the process-global NVM_DIR env var and
-    // operate on the real cache dir. Without this, parallel cargo test runs
-    // would race on NVM_DIR and stomp each other's cache directories.
-    static CACHE_TESTS_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Tests that mutate NVM_DIR acquire `crate::system::ENV_TESTS_MUTEX`,
+    // the process-global mutex that serializes ALL such tests across every
+    // module (download / proxy / config / utils). The previous per-module
+    // `CACHE_TESTS_MUTEX` only serialized within download.rs, so a parallel
+    // proxy.rs test could stomp NVM_DIR between this test's `set_var` and its
+    // `get_cache_dir()` call, pointing `clear_cache` at the wrong directory.
+    use crate::system::ENV_TESTS_MUTEX;
 
     #[test]
     fn clear_cache_skips_inflight_part_files() {
@@ -556,9 +559,7 @@ mod tests {
         // to. The next write to the deleted .part would fail with a
         // confusing "No such file" error. list_cached_files already hid
         // .part from listings; clear_cache must match that behavior.
-        let _guard = CACHE_TESTS_MUTEX
-            .lock()
-            .expect("CACHE_TESTS_MUTEX poisoned");
+        let _guard = ENV_TESTS_MUTEX.lock().expect("ENV_TESTS_MUTEX poisoned");
         // Save and override NVM_DIR so get_cache_dir() points at our tempdir.
         let saved_nvm_dir = std::env::var_os("NVM_DIR");
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -616,9 +617,7 @@ mod tests {
         // and its .part.ifrange validator sidecar), not just the .part.
         // Showing the sidecar would be noise (it's not a usable cache hit)
         // and would leak the existence of a download still in progress.
-        let _guard = CACHE_TESTS_MUTEX
-            .lock()
-            .expect("CACHE_TESTS_MUTEX poisoned");
+        let _guard = ENV_TESTS_MUTEX.lock().expect("ENV_TESTS_MUTEX poisoned");
         let saved_nvm_dir = std::env::var_os("NVM_DIR");
         let tmp = tempfile::tempdir().expect("tempdir");
         std::env::set_var("NVM_DIR", tmp.path());

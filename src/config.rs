@@ -1413,18 +1413,15 @@ mod tests {
         assert!(validated("lts/\0x").is_err());
     }
 
-    // Serialize env-var mutations: `update_shell_config` reads HOME (via
-    // detect_shell_config) and NVM_DIR (via get_nvm_dir) from the process
-    // environment, and `std::env::set_var` is not thread-safe. Without this
-    // mutex a parallel test could observe a half-set environment or restore
-    // HOME before this test finished reading it.
-    static SHELL_CFG_TESTS_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Tests that mutate NVM_DIR (and HOME) acquire the process-global
+    // `ENV_TESTS_MUTEX`, serializing them against NVM_DIR-mutating tests in
+    // download.rs / proxy.rs / utils.rs. The previous per-module
+    // `SHELL_CFG_TESTS_MUTEX` only serialized within config.rs.
+    use crate::system::ENV_TESTS_MUTEX;
 
     #[test]
     fn update_shell_config_surfaces_create_dir_all_failure() {
-        let _guard = SHELL_CFG_TESTS_MUTEX
-            .lock()
-            .expect("SHELL_CFG_TESTS_MUTEX poisoned");
+        let _guard = ENV_TESTS_MUTEX.lock().expect("ENV_TESTS_MUTEX poisoned");
 
         // Set up a HOME whose `.bashrc` parent cannot be created: place a
         // regular file where the parent directory would go. `create_dir_all`
