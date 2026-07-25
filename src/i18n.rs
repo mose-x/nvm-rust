@@ -149,12 +149,19 @@ pub fn available_lang_codes() -> &'static [&'static str] {
 #[allow(non_snake_case)]
 pub fn T(key: &str) -> String {
     let lang = get_language();
-    t(key, lang)
+    t(key, lang).into_owned()
 }
 
-/// Format a translation with parameter substitution
+/// Format a translation with parameter substitution.
+///
+/// Looks up the template as `&'static str` (borrowed from the `LOCALES`
+/// table) and substitutes params in-place, so the only allocation is the
+/// final returned String — no intermediate `String` for the template
+/// itself. Hot in `ls-remote` (called per remote LTS line for the
+/// "codename (LTS: {0})" rendering).
 pub fn format_t(key: &str, args: &[String]) -> String {
-    let template = T(key);
+    let lang = get_language();
+    let template = t(key, lang);
     substitute_params(&template, args)
 }
 
@@ -210,18 +217,27 @@ fn substitute_params(template: &str, args: &[String]) -> String {
     out
 }
 
-fn t(key: &str, lang: Lang) -> String {
+/// Resolve a translation key for `lang`, falling back to English then to
+/// the raw key.
+///
+/// Returns `Cow<'static, str>`: when the key is found in a locale table
+/// (the common case), the borrow is `&'static str` drawn from the
+/// `lazy_static` `LOCALES` map — zero allocation. Only the raw-key
+/// fallback (a missing key, which shouldn't happen in practice) needs
+/// to allocate a `String`. Callers in hot paths can keep the borrow;
+/// `T()` itself calls `.into_owned()` for API back-compat.
+fn t(key: &str, lang: Lang) -> std::borrow::Cow<'static, str> {
     // Look up the requested language first; fall back to English if the
     // key is missing. English is always present (enforced by build.rs) and
     // itself falls back to the raw key name, so a missing key never panics
     // and never returns an empty string.
     if let Some(s) = lookup(lang, key) {
-        return s.to_string();
+        return std::borrow::Cow::Borrowed(s);
     }
     if let Some(s) = lookup(Lang::EN, key) {
-        return s.to_string();
+        return std::borrow::Cow::Borrowed(s);
     }
-    key.to_string()
+    std::borrow::Cow::Owned(key.to_string())
 }
 
 // Lazy-loaded per-language string tables. Parsed from the TOML embedded by
@@ -271,7 +287,13 @@ fn collect_string_values(root: &toml::Value) -> HashMap<String, String> {
 
 /// Look up a key in a specific language. Returns None if the language or
 /// the key is missing (caller decides on fallback).
-fn lookup(lang: Lang, key: &str) -> Option<&str> {
+///
+/// The returned `&'static str` borrows from the `lazy_static` `LOCALES`
+/// table, which lives for the entire process — so callers can hand the
+/// string around without copying. This is the hot path for `T()` (called
+/// hundreds of times per `ls-remote`); returning `&'static str` instead
+/// of `String` removes a heap allocation per call.
+fn lookup(lang: Lang, key: &str) -> Option<&'static str> {
     LOCALES
         .get(lang.as_str())
         .and_then(|m| m.get(key))
