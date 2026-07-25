@@ -448,7 +448,8 @@ npm_download_truncated = "npm tarball download truncated — connection dropped 
 npm_no_length_no_integrity = "server sent no Content-Length and no integrity hash is available; a truncated download would only fail at extraction"
 # Version lifecycle
 uninstall_failed = "Uninstall failed"
-cannot_write_current = "Cannot write current version"
+cannot_write_current = "Cannot write current version file"
+current_clear_failed = "Failed to clear stale 'current' symlink after uninstall"
 execution_failed = "Execution failed"
 copy_version_dir_failed = "Failed to copy version directory"
 cannot_create_nvm_dir = "Cannot create nvm directory"

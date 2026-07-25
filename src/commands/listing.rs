@@ -66,10 +66,22 @@ pub fn uninstall(version: &str) -> Result<()> {
     println!(" {}", "✓".green().bold());
 
     // Clear `current` if we just removed the active version, so subsequent
-    // `nvm current` / `nvm ls` don't point at a deleted directory.
+    // `nvm current` / `nvm ls` don't point at a deleted directory. A plain
+    // `let _ =` here would silently swallow errors (permissions, AV lock,
+    // read-only fs) and leave `current` pointing at the just-deleted dir —
+    // surface as a warning so the user knows `current` is stale.
     if is_current_active {
         let current_file = nvm_dir.join("current");
-        let _ = fs::remove_file(&current_file);
+        if let Err(e) = fs::remove_file(&current_file) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "{} {}: {}",
+                    "⚠".yellow().bold(),
+                    T("current_clear_failed"),
+                    e
+                );
+            }
+        }
     }
 
     Ok(())
