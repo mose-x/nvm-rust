@@ -7,7 +7,7 @@ nvm-rs 是一个用 Rust 编写、高性能且功能丰富的 Node.js 版本管�
 - 安装、卸载、切换多个 Node.js 版本
 - 支持模糊版本号（`20` → 最新的 `v20.x.x`）
 - 内置特殊别名：`node`、`stable`、`unstable`、`lts`、`lts/<代号>`、`system`、`default`
-- LTS 代号别名：`lts/argon`、`lts/boron`、`lts/carbon`、`lts/dubnium`、`lts/erbium`、`lts/fermium`、`lts/gallium`、`lts/hydrogen`、`lts/iron`、`lts/jod`
+- LTS 代号别名：`lts/argon`、`lts/boron`、`lts/carbon`、`lts/dubnium`、`lts/erbium`、`lts/fermium`、`lts/gallium`、`lts/hydrogen`、`lts/iron`、`lts/jodhpur`
 - **io.js 支持** — 安装和管理历史 io.js 版本（`nvm install iojs`）
 - 支持 `.nvmrc` 和 `.node-version` 自动切换
 - 用户自定义别名

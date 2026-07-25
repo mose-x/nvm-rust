@@ -110,7 +110,7 @@ lazy_static::lazy_static! {
         m.insert("gallium", 16);
         m.insert("hydrogen", 18);
         m.insert("iron", 20);
-        m.insert("jod", 22);
+        m.insert("jodhpur", 22);
         m.insert("krypton", 24);
         m
     };
@@ -650,7 +650,7 @@ mod tests {
         assert_eq!(map.get("argon"), Some(&4));
         assert_eq!(map.get("boron"), Some(&6));
         assert_eq!(map.get("iron"), Some(&20));
-        assert_eq!(map.get("jod"), Some(&22));
+        assert_eq!(map.get("jodhpur"), Some(&22));
         assert_eq!(map.get("krypton"), Some(&24));
         assert_eq!(map.get("non-existent"), None);
     }

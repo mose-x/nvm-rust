@@ -1,5 +1,4 @@
 use anyhow::Result;
-use colored::Colorize;
 use scraper::{Html, Selector};
 use sha2::Digest;
 use std::env;
@@ -169,54 +168,40 @@ pub fn ensure_cache_dir() -> Result<()> {
     Ok(())
 }
 
-pub fn get_tags(u: &str) -> Vec<String> {
+pub fn get_tags(u: &str) -> Result<Vec<String>> {
     let client = build_listing_client();
-    let response = match client.get(u).send() {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!(
-                "{} {}",
-                "⚠".yellow().bold(),
-                format_t("fetch_versions_failed", &[format!("{} ({})", u, e)])
-            );
-            return Vec::new();
-        }
-    };
+    let response = client.get(u).send().map_err(|e| {
+        anyhow::anyhow!(
+            "{}",
+            format_t("fetch_versions_failed", &[format!("{} ({})", u, e)])
+        )
+    })?;
 
     if !response.status().is_success() {
-        eprintln!(
-            "{} {}",
-            "⚠".yellow().bold(),
+        anyhow::bail!(
+            "{}",
             format_t(
                 "fetch_versions_failed",
                 &[format!("{} (HTTP {})", u, response.status())]
             )
         );
-        return Vec::new();
     }
 
-    let body = match response.text_with_charset("utf-8") {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!(
-                "{} {}",
-                "⚠".yellow().bold(),
-                format_t("fetch_versions_failed", &[format!("{} ({})", u, e)])
-            );
-            return Vec::new();
-        }
-    };
+    let body = response.text_with_charset("utf-8").map_err(|e| {
+        anyhow::anyhow!(
+            "{}",
+            format_t("fetch_versions_failed", &[format!("{} ({})", u, e)])
+        )
+    })?;
 
     let fragment = Html::parse_document(&body);
-    let selector = match Selector::parse("body pre a") {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
+    let selector =
+        Selector::parse("body pre a").map_err(|_| anyhow::anyhow!("invalid selector for {}", u))?;
 
-    fragment
+    Ok(fragment
         .select(&selector)
         .map(|element| element.inner_html())
-        .collect()
+        .collect())
 }
 
 /// Fetch `index.json` from the Node.js mirror and extract the LTS

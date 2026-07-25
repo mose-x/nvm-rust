@@ -179,7 +179,7 @@ pub fn remote_versions(
     let base_url = get_base_url(&config);
 
     print!("  {} {}", "⟳".cyan().bold(), T("fetching_remote").cyan());
-    let tags = get_tags(base_url);
+    let tags = get_tags(base_url)?;
     println!(" {}", "✓".green().bold());
 
     let mut all_versions: Vec<(String, bool, String)> = Vec::new();
@@ -260,12 +260,24 @@ pub fn remote_versions(
     ];
 
     let mut rows: Vec<Vec<String>> = Vec::new();
-    for (i, (v, _is_lts, _codename)) in page_items.iter().enumerate() {
+    for (i, (v, is_lts, codename)) in page_items.iter().enumerate() {
         let idx = (start + i + 1).to_string();
         let idx_str = idx.dimmed().to_string();
         let version_str = v.white().to_string();
-        let lts_str = version_lts_colored(v);
-        let codename_str = version_codename_colored(v);
+        // Use the precomputed (remotely-augmented) values from the tuple
+        // instead of re-deriving via get_codename(), which only sees the
+        // static fallback map and would render "-" for any new LTS line
+        // whose codename isn't shipped in the binary yet.
+        let lts_str = if *is_lts {
+            T("lts_badge").green().to_string()
+        } else {
+            "".to_string()
+        };
+        let codename_str = if codename == "-" {
+            "-".dimmed().to_string()
+        } else {
+            codename.magenta().bold().to_string()
+        };
         rows.push(vec![idx_str, version_str, lts_str, codename_str]);
     }
 

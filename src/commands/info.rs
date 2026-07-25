@@ -989,7 +989,7 @@ pub fn show_version_info() -> Result<()> {
 pub fn show_remote_version_info() -> Result<()> {
     let config = load_config()?;
     let base_url = get_base_url(&config);
-    let tags = get_tags(base_url);
+    let tags = get_tags(base_url)?;
 
     let mut versions: Vec<String> = Vec::new();
     for tag in tags {

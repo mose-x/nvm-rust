@@ -325,7 +325,7 @@ pub fn resolve_alias(name: &str) -> Result<String> {
         // `lts/-N` (N >= 1) → the Nth-previous LTS *line* relative to the
         // newest known LTS line, then the newest installed version on that
         // line. e.g. if the newest LTS line is v24 (krypton):
-        //   lts/-1 → v22 (jod), lts/-2 → v20 (iron), ...
+        //   lts/-1 → v22 (jodhpur), lts/-2 → v20 (iron), ...
         // This is nvm-sh's `lts/-1` / `lts/-2` shorthand for "the LTS before
         // the latest". We resolve against the known LTS table (not just
         // installed versions) so `lts/-1` is stable even if the newest line
@@ -521,7 +521,7 @@ fn find_latest_unstable() -> Result<String> {
     let base_url = load_config()
         .map(|c| c.mirror.unwrap_or_else(|| URI.to_string()))
         .unwrap_or_else(|_| URI.to_string());
-    let tags = get_tags(&base_url);
+    let tags = get_tags(&base_url)?;
     let mut odd_max: Option<(u32, String)> = None;
     for tag in tags {
         let v = tag.trim_end_matches('/');
@@ -951,7 +951,7 @@ mod tests {
         assert_eq!(aliases.len(), 11);
         assert_eq!(aliases.get("lts/argon"), Some(&"v4".to_string()));
         assert_eq!(aliases.get("lts/iron"), Some(&"v20".to_string()));
-        assert_eq!(aliases.get("lts/jod"), Some(&"v22".to_string()));
+        assert_eq!(aliases.get("lts/jodhpur"), Some(&"v22".to_string()));
         assert_eq!(aliases.get("lts/krypton"), Some(&"v24".to_string()));
         assert_eq!(aliases.get("lts/unknown"), None);
     }

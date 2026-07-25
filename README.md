@@ -9,7 +9,7 @@ A fast, feature-rich Node.js version manager written in Rust — a Rust-native r
 - Install, uninstall, switch between multiple Node.js versions
 - Support for fuzzy version numbers (`20` → latest `v20.x.x`)
 - Special aliases: `node`, `stable`, `unstable`, `lts`, `lts/<codename>`, `system`, `default`
-- LTS code-name aliases: `lts/argon`, `lts/boron`, `lts/carbon`, `lts/dubnium`, `lts/erbium`, `lts/fermium`, `lts/gallium`, `lts/hydrogen`, `lts/iron`, `lts/jod`
+- LTS code-name aliases: `lts/argon`, `lts/boron`, `lts/carbon`, `lts/dubnium`, `lts/erbium`, `lts/fermium`, `lts/gallium`, `lts/hydrogen`, `lts/iron`, `lts/jodhpur`
 - **io.js support** — install and manage historical io.js versions (`nvm install iojs`)
 - `.nvmrc` and `.node-version` auto-switch support
 - User-defined aliases
