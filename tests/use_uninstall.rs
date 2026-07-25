@@ -152,3 +152,203 @@ fn deactivate_with_no_current_succeeds() {
         "deactivate with no current should succeed"
     );
 }
+
+// --- `nvm use --use-on-cd` and the `nvm auto --silent` cd-hook path -------
+//
+// `--use-on-cd` is on `nvm use`; `--silent` is on `nvm auto`. The real-world
+// flow is: the user runs `nvm use <ver> --use-on-cd` once to install the
+// shell cd hook, and thereafter every `cd` into a directory with a .nvmrc
+// fires `nvm auto --silent` to switch versions without flooding the
+// terminal. These tests pin both halves of that contract:
+//   1. `--use-on-cd` persists `use_on_cd: true` in config.json AND writes
+//      the `current` file (the version switch still happens).
+//   2. `nvm auto --silent` switches the version (writes `current`) while
+//      producing NO stdout — the cd hook must be invisible to the user.
+//   3. Combined: after `--use-on-cd` is enabled, a subsequent
+//      `nvm auto --silent` against a different .nvmrc switches silently.
+
+#[test]
+fn use_with_use_on_cd_persists_config_flag_and_writes_current() {
+    // `nvm use v20.0.0 --use-on-cd` must:
+    //   - succeed (the version is fake-installed)
+    //   - write `current` with "v20.0.0" (the actual version switch)
+    //   - persist `"use_on_cd":true` in config.json (the flag's whole job)
+    //   - print SOMETHING (silent=false on `nvm use`, so the success + cd-hook
+    //     notice must appear — guards against a regression that silently
+    //     flipped the silent flag on the `use` path).
+    //
+    // HOME isolation is mandatory here: `nvm use` (non-silent) calls
+    // `update_shell_config`, which probes HOME for `.bashrc`/`.zshrc` and
+    // rewrites the first one it finds. Without isolating HOME the test
+    // would clobber the developer's real shell rc.
+    let (dir, nvm_dir) = common::isolated_nvm_dir();
+    let home = tempfile::tempdir().expect("tempdir for HOME");
+    create_fake_version(dir.path(), "v20.0.0", true);
+
+    let out = std::process::Command::new(common::nvm_bin())
+        .arg("use")
+        .arg("v20.0.0")
+        .arg("--use-on-cd")
+        .env("NVM_DIR", &nvm_dir)
+        .env("HOME", home.path())
+        .output()
+        .expect("run nvm use --use-on-cd");
+    assert!(
+        out.status.success(),
+        "use v20.0.0 --use-on-cd should succeed: {}",
+        combined_output(&out)
+    );
+
+    // `current` must reflect the switched version.
+    let current = std::fs::read_to_string(dir.path().join("current"))
+        .expect("current file should exist after use");
+    assert_eq!(
+        current.trim(),
+        "v20.0.0",
+        "current file must contain v20.0.0 after use --use-on-cd"
+    );
+
+    // config.json must persist `use_on_cd: true` — this is the flag's
+    // entire purpose, and the cd hook installer checks this to decide
+    // whether to fire `nvm auto` on cd.
+    let config = std::fs::read_to_string(dir.path().join("config.json"))
+        .expect("config.json should exist after use --use-on-cd");
+    assert!(
+        config.contains("\"use_on_cd\":true") || config.contains("\"use_on_cd\": true"),
+        "config.json must persist use_on_cd:true, got: {config}"
+    );
+
+    // `nvm use` is non-silent, so the success path MUST print something
+    // (the "now using" line and the "use_on_cd_enabled" notice). An empty
+    // stdout here would mean the silent flag was wrongly applied to the
+    // `use` path, breaking user feedback.
+    let out_str = stdout(&out);
+    assert!(
+        !out_str.trim().is_empty(),
+        "non-silent `nvm use --use-on-cd` must produce stdout, got empty output"
+    );
+}
+
+#[test]
+fn auto_silent_switches_version_and_produces_no_stdout() {
+    // `nvm auto --silent` is the cd-hook invocation. It must:
+    //   - switch to the version named in .nvmrc (write `current`)
+    //   - produce NO stdout (the whole point of --silent is that `cd` does
+    //     not flood the terminal)
+    //   - NOT rewrite the shell rc (silent=true skips update_shell_config,
+    //     avoiding a backup+read+filter+write of the rc on every cd)
+    //
+    // HOME is isolated defensively even though silent=true skips the shell
+    // rc rewrite — `nvm auto` resolves the version via `get_home_dir()` in
+    // some paths, and we don't want a future code change to silently start
+    // touching the real HOME.
+    let (dir, nvm_dir) = common::isolated_nvm_dir();
+    let home = tempfile::tempdir().expect("tempdir for HOME");
+    create_fake_version(dir.path(), "v20.0.0", true);
+    // .nvmrc lives in CWD; `nvm auto` reads it via find_nvmrc_recursive.
+    std::fs::write(dir.path().join(".nvmrc"), "v20.0.0\n").expect("write .nvmrc");
+
+    let out = std::process::Command::new(common::nvm_bin())
+        .arg("auto")
+        .arg("--silent")
+        .env("NVM_DIR", &nvm_dir)
+        .env("HOME", home.path())
+        .current_dir(dir.path())
+        .output()
+        .expect("run nvm auto --silent");
+    assert!(
+        out.status.success(),
+        "nvm auto --silent should succeed: {}",
+        combined_output(&out)
+    );
+
+    // The version switch must still happen despite silence.
+    let current = std::fs::read_to_string(dir.path().join("current"))
+        .expect("current file should exist after auto --silent");
+    assert_eq!(
+        current.trim(),
+        "v20.0.0",
+        "current file must contain v20.0.0 after auto --silent"
+    );
+
+    // The cd hook must be invisible: stdout must be empty. (stderr may
+    // still carry warnings on real errors, but the happy path is silent.)
+    let out_str = stdout(&out);
+    assert!(
+        out_str.trim().is_empty(),
+        "nvm auto --silent must produce no stdout, got: {out_str:?}"
+    );
+}
+
+#[test]
+fn use_on_cd_then_auto_silent_switches_silently() {
+    // Full cd-hook lifecycle:
+    //   1. `nvm use v20.0.0 --use-on-cd` enables the hook + sets current=v20.0.0
+    //   2. A subdirectory has a .nvmrc pinning v18.0.0
+    //   3. `nvm auto --silent` (simulating the cd hook firing) must switch
+    //      `current` to v18.0.0 with no stdout.
+    //
+    // This locks the end-to-end contract: enabling --use-on-cd does not
+    // interfere with a later silent switch to a DIFFERENT version. A
+    // regression that, e.g., cached the first version or skipped the
+    // `current` write on silent would be caught here.
+    //
+    // HOME is isolated because step 1 (`nvm use --use-on-cd`, non-silent)
+    // rewrites the shell rc — without isolation it would clobber the real
+    // `~/.bashrc`.
+    let (dir, nvm_dir) = common::isolated_nvm_dir();
+    let home = tempfile::tempdir().expect("tempdir for HOME");
+    create_fake_version(dir.path(), "v20.0.0", true);
+    create_fake_version(dir.path(), "v18.0.0", true);
+
+    // Step 1: enable the cd hook and switch to v20.0.0.
+    let out = std::process::Command::new(common::nvm_bin())
+        .arg("use")
+        .arg("v20.0.0")
+        .arg("--use-on-cd")
+        .env("NVM_DIR", &nvm_dir)
+        .env("HOME", home.path())
+        .output()
+        .expect("run nvm use --use-on-cd");
+    assert!(
+        out.status.success(),
+        "use v20.0.0 --use-on-cd should succeed: {}",
+        combined_output(&out)
+    );
+
+    // Step 2: a subdirectory pins v18.0.0 via .nvmrc.
+    let subdir = dir.path().join("project");
+    std::fs::create_dir_all(&subdir).expect("mkdir project");
+    std::fs::write(subdir.join(".nvmrc"), "v18.0.0\n").expect("write .nvmrc");
+
+    // Step 3: simulate the cd hook firing silently.
+    let out = std::process::Command::new(common::nvm_bin())
+        .arg("auto")
+        .arg("--silent")
+        .env("NVM_DIR", &nvm_dir)
+        .env("HOME", home.path())
+        .current_dir(&subdir)
+        .output()
+        .expect("run nvm auto --silent");
+    assert!(
+        out.status.success(),
+        "nvm auto --silent should succeed: {}",
+        combined_output(&out)
+    );
+
+    // The silent hook must have switched `current` to v18.0.0.
+    let current =
+        std::fs::read_to_string(dir.path().join("current")).expect("current file should exist");
+    assert_eq!(
+        current.trim(),
+        "v18.0.0",
+        "current must be v18.0.0 after silent cd-hook switch, got: {current}"
+    );
+
+    // And the switch must have been silent.
+    let out_str = stdout(&out);
+    assert!(
+        out_str.trim().is_empty(),
+        "cd-hook `nvm auto --silent` must produce no stdout, got: {out_str:?}"
+    );
+}

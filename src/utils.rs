@@ -519,20 +519,59 @@ impl Drop for NvmLock {
     }
 }
 
-/// Acquire an exclusive lock on the nvm directory, blocking until any other
-/// `nvm` process releases it.
+/// RAII guard that removes a file when dropped, unless disarmed.
 ///
-/// The lock file lives at `<nvm_dir>/.nvm.lock`. We open it `create(true)`
-/// so the first-ever invocation creates it; subsequent invocations reuse the
-/// same file and contend on the OS lock, not on file creation (which would
-/// be racy).
+/// Used by `download_prebuilt_npm` to ensure the npm tarball is cleaned up
+/// on EVERY exit path (download `io::copy` failure, truncation, integrity
+/// mismatch, tar extraction failure, symlink failure), not just the success
+/// path. Previously only the truncation/integrity branches and the final
+/// success line cleaned up; an `io::copy` `?` left a half-written
+/// `npm-v*.tgz` that the next run's `exists()` cache-hit check treated as
+/// complete, silently skipping re-download and then failing at extraction
+/// with a confusing "unexpected EOF".
 ///
-/// **Re-entrant within a process**: if the current process already holds the
-/// lock (e.g. `nvm use --install` → `install`), this returns a no-op guard
-/// instead of deadlocking on a second `flock(LOCK_EX)` on the same file.
-///
-/// Returns an [`NvmLock`] whose `Drop` releases the lock. Hold it for the
-/// duration of the mutating operation (install / uninstall / use).
+/// On the success path the caller removes the file explicitly (so a failure
+/// between staging and disarm still triggers cleanup via `Drop`) and then
+/// calls `disarm()` so `Drop` does not issue a redundant `remove_file`.
+pub struct FileGuard {
+    path: std::path::PathBuf,
+    armed: bool,
+}
+
+impl FileGuard {
+    /// Create an armed guard for `path`. The file at `path` need not exist
+    /// yet (e.g. it is about to be created by a download); `Drop` will
+    /// silently tolerate a missing file via `remove_file`'s `Err` being
+    /// ignored.
+    pub fn new(path: &Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            armed: true,
+        }
+    }
+
+    /// Disarm the guard so `Drop` does not remove the file. Call this only
+    /// after the file has been successfully consumed (extracted + wired up)
+    /// AND explicitly removed by the caller, so a failure between staging
+    /// and disarm still triggers cleanup.
+    pub fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for FileGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            // Best-effort: a missing file (e.g. download never started, or
+            // caller already removed it) is not an error. Any other I/O
+            // error (permission denied, etc.) is swallowed because we are
+            // on an unwind/early-return path where surfacing it would mask
+            // the real error in flight.
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
 /// Build the shared progress-bar style used by every byte-stream download
 /// (`download_to_cache`, `download_prebuilt_npm`). Centralising the template
 /// here means a single `expect` covers all call sites — `indicatif`'s
@@ -549,6 +588,20 @@ pub fn bytes_progress_style() -> indicatif::ProgressStyle {
         .progress_chars("#>-")
 }
 
+/// Acquire an exclusive lock on the nvm directory, blocking until any other
+/// `nvm` process releases it.
+///
+/// The lock file lives at `<nvm_dir>/.nvm.lock`. We open it `create(true)`
+/// so the first-ever invocation creates it; subsequent invocations reuse the
+/// same file and contend on the OS lock, not on file creation (which would
+/// be racy).
+///
+/// **Re-entrant within a process**: if the current process already holds the
+/// lock (e.g. `nvm use --install` → `install`), this returns a no-op guard
+/// instead of deadlocking on a second `flock(LOCK_EX)` on the same file.
+///
+/// Returns an [`NvmLock`] whose `Drop` releases the lock. Hold it for the
+/// duration of the mutating operation (install / uninstall / use).
 pub fn acquire_nvm_lock(nvm_dir: &Path) -> Result<NvmLock> {
     use fs4::fs_std::FileExt;
 

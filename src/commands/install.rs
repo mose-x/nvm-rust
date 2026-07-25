@@ -931,6 +931,17 @@ fn download_prebuilt_npm(version_dir: &Path, version: &str) -> Result<()> {
     let npm_tarball = format!("npm-v{}.tgz", ver_num);
     let fallback_url = format!("{}/npm/-/npm-{}.tgz", NPM_REGISTRY, ver_num);
     let npm_tar_path = get_nvm_dir().join(&npm_tarball);
+    // RAII guard: removes `npm_tar_path` on drop, covering EVERY exit path
+    // (download `io::copy` failure, truncation, integrity mismatch, tar
+    // extraction failure, symlink failure, AND the normal success path).
+    // Previously only the truncation/integrity branches and the final
+    // success line cleaned up; an `io::copy` `?` left a half-written
+    // `npm-v*.tgz` that the next run's `exists()` cache-hit check treated as
+    // complete, silently skipping re-download and then failing at extraction
+    // with a confusing "unexpected EOF". `disarm()` is called only after the
+    // tarball has been successfully extracted AND wired up, so a failure
+    // between staging and disarm still triggers cleanup.
+    let mut tar_guard = crate::utils::FileGuard::new(&npm_tar_path);
 
     if !npm_tar_path.exists() {
         println!("  {} {}", "›".dimmed(), T("downloading_npm"));
@@ -993,7 +1004,6 @@ fn download_prebuilt_npm(version_dir: &Path, version: &str) -> Result<()> {
         // Without this check, `tar xzf` below would fail with a confusing
         // "unexpected EOF" instead of a clear "truncated" message.
         if total > 0 && bytes_copied < total {
-            std::fs::remove_file(&npm_tar_path).ok();
             anyhow::bail!("{}", T("npm_download_truncated"));
         }
         // When the server omits Content-Length (chunked-only responses, some
@@ -1014,7 +1024,6 @@ fn download_prebuilt_npm(version_dir: &Path, version: &str) -> Result<()> {
         // the legitimate URL — TLS alone doesn't protect against that.
         if let Some(integrity) = expected_integrity {
             if verify_npm_integrity(&npm_tar_path, &integrity).is_err() {
-                std::fs::remove_file(&npm_tar_path).ok();
                 anyhow::bail!("{}", T("npm_integrity_failed"));
             }
         }
@@ -1063,6 +1072,11 @@ fn download_prebuilt_npm(version_dir: &Path, version: &str) -> Result<()> {
     // Best-effort cleanup of the downloaded tarball; a failure here doesn't
     // invalidate the install, so don't surface it as an error.
     let _ = std::fs::remove_file(&npm_tar_path);
+    // The tarball has been extracted and npm wired up — disarm the guard so
+    // its `Drop` doesn't issue a redundant `remove_file` on an already-removed
+    // path. Any `?` early-return above leaves the guard armed, so a partial
+    // download / extraction failure still cleans up.
+    tar_guard.disarm();
     Ok(())
 }
 

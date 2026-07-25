@@ -19,8 +19,23 @@ use crate::utils::{atomic_write, get_installed_versions, is_lts_version, pad_rig
 /// shell convention is to exit with `128 + signal_number`. The previous
 /// `status.code().unwrap_or(1)` collapsed every signal death into exit
 /// code `1`, so a script could not distinguish "command failed" from
-/// "command was killed" (e.g. by Ctrl-C). On non-Unix targets there is no
-/// signal information available, so we keep the legacy `1` fallback there.
+/// "command was killed" (e.g. by Ctrl-C).
+///
+/// # Platform behavior
+///
+/// - **Unix** (`linux`/`macos`): `ExitStatus::code()` returns `None` when the
+///   child was killed by a signal. We then read the signal number via
+///   `ExitStatusExt::signal()` and emit `128 + signal`, matching the POSIX
+///   shell convention (`bash`, `zsh`, `sh` all use this). `signal()` returns
+///   `None` only if the process exited normally, which contradicts `code()`
+///   returning `None` — we fall back to `1` defensively in case a platform
+///   reports neither.
+/// - **Windows**: `ExitStatus::code()` *always* returns `Some` because
+///   Windows processes exit with a 32-bit code and have no signal concept.
+///   The `#[cfg(not(unix))]` branch below is therefore unreachable in
+///   practice; it is kept as a defensive fallback so the function compiles
+///   and stays total on any future non-Unix target where `code()` might
+///   return `None` (no current such target exists in std).
 fn exit_with_status(status: std::process::ExitStatus) -> ! {
     let code = status.code().unwrap_or_else(|| {
         #[cfg(unix)]
@@ -166,10 +181,7 @@ pub fn use_version_silent(
         } else {
             anyhow::bail!(
                 "{}",
-                format_t(
-                    "not_installed_run_install",
-                    &[resolved.clone(), resolved.clone()]
-                )
+                format_t("not_installed_run_install", std::slice::from_ref(&resolved))
             );
         }
     }
@@ -373,10 +385,7 @@ pub fn exec_version(version: &str, args: &[String]) -> Result<()> {
         if !version_dir.exists() {
             anyhow::bail!(
                 "{}",
-                format_t(
-                    "not_installed_run_install",
-                    &[resolved.clone(), resolved.clone()]
-                )
+                format_t("not_installed_run_install", std::slice::from_ref(&resolved))
             );
         }
         version_bin_dir(&nvm_dir.join(&resolved))
@@ -1665,6 +1674,105 @@ mod tests {
     fn compound_and_empty_intersection() {
         let r = pick_version_for_range(">=21 <22", &installed());
         assert_eq!(r, None);
+    }
+
+    #[test]
+    fn compound_and_closed_interval_inclusive_both_ends() {
+        // Both bounds inclusive: v20.11.0 and v20.11.1 satisfy
+        // >=20.11.0 AND <=20.11.1. Newest is v20.11.1.
+        let r = pick_version_for_range(">=20.11.0 <=20.11.1", &installed());
+        assert_eq!(r.as_deref(), Some("v20.11.1"));
+    }
+
+    #[test]
+    fn compound_and_closed_interval_single_match() {
+        // Tight closed interval pinning exactly one version:
+        // >=20.11.1 AND <=20.11.1 → only v20.11.1.
+        let r = pick_version_for_range(">=20.11.1 <=20.11.1", &installed());
+        assert_eq!(r.as_deref(), Some("v20.11.1"));
+    }
+
+    #[test]
+    fn compound_and_strict_lower_excludes_floor() {
+        // >20.11.0 (strict) excludes v20.11.0; <22 excludes v22.5.0.
+        // Only v20.11.1 survives both → v20.11.1. This locks the
+        // semantic difference between `>` and `>=` inside an AND.
+        let r = pick_version_for_range(">20.11.0 <22", &installed());
+        assert_eq!(r.as_deref(), Some("v20.11.1"));
+    }
+
+    #[test]
+    fn compound_and_three_tokens_intersects_correctly() {
+        // Three-token AND: >=18 (includes all) AND >20.11.0 (excludes
+        // v18.20.0 and v20.11.0) AND <22 (excludes v22.5.0). Only
+        // v20.11.1 satisfies all three. Exercises the
+        // `tokens.iter().all(...)` filter with len > 2.
+        let r = pick_version_for_range(">=18 >20.11.0 <22", &installed());
+        assert_eq!(r.as_deref(), Some("v20.11.1"));
+    }
+
+    #[test]
+    fn compound_and_caret_with_lower_bound() {
+        // ^20.11.0 := >=20.11.0 <21.0.0; intersected with >=20.11.1
+        // leaves only v20.11.1. Locks the caret upper-bound semantics
+        // inside the compound AND path (which uses
+        // `version_matches_simple` rather than the single-token
+        // resolver).
+        let r = pick_version_for_range("^20.11.0 >=20.11.1", &installed());
+        assert_eq!(r.as_deref(), Some("v20.11.1"));
+    }
+
+    #[test]
+    fn compound_and_tilde_with_lower_bound() {
+        // ~20.11.0 := >=20.11.0 <20.12.0; intersected with >=20.11.1
+        // leaves only v20.11.1. Locks the tilde upper-bound semantics
+        // inside the compound AND path.
+        let r = pick_version_for_range("~20.11.0 >=20.11.1", &installed());
+        assert_eq!(r.as_deref(), Some("v20.11.1"));
+    }
+
+    #[test]
+    fn compound_and_picks_newest_when_multiple_match() {
+        // >=20 AND <23 matches v20.11.0, v20.11.1, AND v22.5.0
+        // (`<=22` would NOT match v22.5.0 — in semver `<=22` means
+        // `<=22.0.0`, so a major-bounded upper limit must use `<next`
+        // to include patch releases). The picker must return the NEWEST
+        // (v22.5.0), not the first match in iteration order — guards
+        // against a regression that returned the first filter hit
+        // without sorting.
+        let r = pick_version_for_range(">=20 <23", &installed());
+        assert_eq!(r.as_deref(), Some("v22.5.0"));
+    }
+
+    #[test]
+    fn compound_and_inside_union_first_arm_wins_on_value() {
+        // Union of two AND arms: (>=20 <22) picks v20.11.1; (^18) picks
+        // v18.20.0. The overall result is the MAX across arms, so
+        // v20.11.1 wins. Locks the `candidates.max_by` at the end of
+        // `pick_version_for_range`.
+        let r = pick_version_for_range(">=20 <22 || ^18", &installed());
+        assert_eq!(r.as_deref(), Some("v20.11.1"));
+    }
+
+    #[test]
+    fn compound_and_inside_union_second_arm_can_win() {
+        // (>=22 <23) picks v22.5.0; (^18) picks v18.20.0. v22.5.0 is
+        // newer, so the first arm wins — but if the first arm had no
+        // match, the second arm alone must still produce a result.
+        // Here we verify the AND arm (first) wins over the single-token
+        // arm (second) when both have matches.
+        let r = pick_version_for_range(">=22 <23 || ^18", &installed());
+        assert_eq!(r.as_deref(), Some("v22.5.0"));
+    }
+
+    #[test]
+    fn compound_and_inside_union_and_arm_no_match_falls_through() {
+        // First AND arm (>=21 <22) matches nothing; the union must
+        // fall through to the second arm (^18), which picks v18.20.0.
+        // Guards against an early-return on the first arm that would
+        // miss the union semantics.
+        let r = pick_version_for_range(">=21 <22 || ^18", &installed());
+        assert_eq!(r.as_deref(), Some("v18.20.0"));
     }
 
     // --- edge cases --------------------------------------------------------

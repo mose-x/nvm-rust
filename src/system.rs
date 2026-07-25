@@ -168,7 +168,27 @@ pub fn ensure_cache_dir() -> Result<()> {
     Ok(())
 }
 
+// Per-process cache of `get_tags` results, keyed by URL. A single
+// `nvm install` / `nvm ls-remote` invocation calls `get_tags(base_url)`
+// from 4+ different sites (resolve_version, get_latest_version,
+// get_latest_lts_version, listing, config alias resolution). Each call
+// previously re-fetched the same ~100KB HTML index page and re-parsed it;
+// the page does not change mid-process, so caching by URL saves N-1 fetches.
+lazy_static::lazy_static! {
+    static ref TAGS_CACHE: std::sync::Mutex<std::collections::HashMap<String, Vec<String>>> =
+        std::sync::Mutex::new(std::collections::HashMap::new());
+}
+
 pub fn get_tags(u: &str) -> Result<Vec<String>> {
+    // Cache hit: return a clone. The Vec is ~600 short strings; cloning is
+    // negligible vs. a network fetch + HTML parse. Only successes are cached
+    // (below), so a cache hit is always a previously-verified result.
+    if let Ok(guard) = TAGS_CACHE.lock() {
+        if let Some(cached) = guard.get(u) {
+            return Ok(cached.clone());
+        }
+    }
+
     let client = build_listing_client();
     let response = client.get(u).send().map_err(|e| {
         anyhow::anyhow!(
@@ -198,10 +218,28 @@ pub fn get_tags(u: &str) -> Result<Vec<String>> {
     let selector =
         Selector::parse("body pre a").map_err(|_| anyhow::anyhow!("invalid selector for {}", u))?;
 
-    Ok(fragment
+    let tags: Vec<String> = fragment
         .select(&selector)
         .map(|element| element.inner_html())
-        .collect())
+        .collect();
+    // Cache the successful result (not failures — a transient network error
+    // or HTTP non-2xx shouldn't persist for the process lifetime, since the
+    // user may retry after fixing connectivity).
+    if let Ok(mut guard) = TAGS_CACHE.lock() {
+        guard.insert(u.to_string(), tags.clone());
+    }
+    Ok(tags)
+}
+
+// Per-process cache of `fetch_lts_codename_map` results, keyed by
+// `base_url`. `lts_codename_to_major_with_remote` is called from listing
+// and install paths, and `config` also fetches the map for alias
+// resolution — without caching, a single `nvm ls-remote` fetches
+// `index.json` twice. The data is immutable for the process lifetime.
+lazy_static::lazy_static! {
+    static ref LTS_CODENAME_MAP_CACHE: std::sync::Mutex<
+        std::collections::HashMap<String, std::collections::BTreeMap<String, u32>>,
+    > = std::sync::Mutex::new(std::collections::HashMap::new());
 }
 
 /// Fetch `index.json` from the Node.js mirror and extract the LTS
@@ -219,6 +257,12 @@ pub fn get_tags(u: &str) -> Result<Vec<String>> {
 /// means "use the shipped table" (which is always correct for past LTS
 /// lines and only lags behind a brand-new line until the next release).
 pub fn fetch_lts_codename_map(base_url: &str) -> std::collections::BTreeMap<String, u32> {
+    if let Ok(guard) = LTS_CODENAME_MAP_CACHE.lock() {
+        if let Some(cached) = guard.get(base_url) {
+            return cached.clone();
+        }
+    }
+
     let index_url = format!("{}index.json", base_url);
     let client = build_listing_client();
     let mut map = std::collections::BTreeMap::new();
@@ -263,6 +307,13 @@ pub fn fetch_lts_codename_map(base_url: &str) -> std::collections::BTreeMap<Stri
                 *entry_major = maj;
             }
         }
+    }
+    // Cache only on the success path (all `match` guards above passed). The
+    // early `return map` branches return an empty map on failure and skip
+    // this insert, so a transient fetch error doesn't persist for the
+    // process lifetime.
+    if let Ok(mut guard) = LTS_CODENAME_MAP_CACHE.lock() {
+        guard.insert(base_url.to_string(), map.clone());
     }
     map
 }

@@ -283,7 +283,14 @@ fn substitute_params(template: &str, args: &[String]) -> String {
         // Not a `{<digits>}` placeholder — copy this byte verbatim. We must
         // advance by `char_len` (not always 1) because `i` is a byte index
         // and the template may contain multibyte UTF-8.
-        let ch = template[i..].chars().next().unwrap();
+        //
+        // `chars().next()` is `None` only for an empty slice; the loop guard
+        // `i < bytes.len()` makes that unreachable, but the `let-else` break
+        // keeps the function total (no `unwrap` panic) if a future edit
+        // violates that invariant.
+        let Some(ch) = template[i..].chars().next() else {
+            break;
+        };
         out.push(ch);
         i += ch.len_utf8();
     }
