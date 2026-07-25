@@ -494,7 +494,14 @@ pub fn acquire_nvm_lock(nvm_dir: &Path) -> Result<NvmLock> {
         return Ok(NvmLock(None));
     }
 
-    crate::system::ensure_nvm_dir()?;
+    // `ensure_nvm_dir` may fail (permissions, disk full, parent removed
+    // mid-run). The flag was already flipped to `true` above, so we MUST
+    // roll it back on failure — otherwise every subsequent `acquire_nvm_lock`
+    // in this process takes the re-entrant branch and returns a no-op guard,
+    // silently bypassing the OS lock and breaking mutual exclusion.
+    crate::system::ensure_nvm_dir().inspect_err(|_| {
+        NVM_LOCK_HELD.store(false, std::sync::atomic::Ordering::Release);
+    })?;
     let lock_path = nvm_dir.join(".nvm.lock");
     let file = fs::OpenOptions::new()
         .create(true)
