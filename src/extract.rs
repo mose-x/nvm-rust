@@ -39,8 +39,6 @@ pub fn extract_iojs_archive(archive_path: &Path, dest_dir: &Path, version: &str)
 /// `iojs-v3.3.1`); the platform/arch tail is derived from `os_suffix()` on
 /// Unix or hardcoded `win-x64` on Windows.
 fn extract_inner(archive_path: &Path, dest_dir: &Path, label: &str) -> Result<()> {
-    println!("{}", T("extracting"));
-
     fs::create_dir_all(dest_dir).context(T("cannot_create_dir"))?;
 
     #[cfg(target_os = "windows")]
