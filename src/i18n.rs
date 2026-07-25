@@ -1,5 +1,4 @@
 use anyhow::Result;
-use colored::Colorize as _;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -115,30 +114,11 @@ pub fn get_language() -> Lang {
             return cached;
         }
     }
-    // Mirror `proxy::is_proxy_enabled`: a malformed `config.json` bails in
-    // `load_config` (see `config::config_corrupt_hint`); the previous `.ok()`
-    // here folded that into `None`, silently falling back to English and
-    // caching the fallback so a retry after the user fixes the config would
-    // keep serving English. Surface the corruption once and skip the cache.
-    let lang = match load_config() {
-        Ok(c) => c
-            .language
-            .as_deref()
-            .and_then(Lang::from_str)
-            .unwrap_or_default(),
-        Err(e) => {
-            // Hardcoded English (not T()) to avoid re-entering get_language()
-            // → T() → get_language() recursion when config is corrupt.
-            eprintln!(
-                "{} Failed to read language from config ({})",
-                "⚠".yellow().bold(),
-                e
-            );
-            // Do NOT cache: a retry after the user fixes the config should
-            // re-read rather than keep serving the English fallback.
-            return Lang::default();
-        }
-    };
+    let lang = load_config()
+        .ok()
+        .and_then(|c| c.language.clone())
+        .and_then(|s| Lang::from_str(&s))
+        .unwrap_or_default();
     if let Ok(mut guard) = lang_cache().lock() {
         *guard = Some(lang);
     }
