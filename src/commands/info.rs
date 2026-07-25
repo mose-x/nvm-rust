@@ -898,11 +898,68 @@ fn version_matches_op(version: &str, op: &str, target: &str, wildcard: bool) -> 
         "<=" => maj < t_maj || (maj == t_maj && (min < t_min || (min == t_min && pat <= t_pat))),
         "<" => maj < t_maj || (maj == t_maj && (min < t_min || (min == t_min && pat < t_pat))),
         "^" => {
-            // Compatible with: same major, >= target
+            // Caret: allow changes that do not modify the left-most non-zero
+            // element of [major, minor, patch], per the npm semver spec.
+            //   ^1.2.3 := >=1.2.3 <2.0.0  (major nonzero → fix major only)
+            //   ^0.2.3 := >=0.2.3 <0.3.0  (minor nonzero → fix major.minor)
+            //   ^0.0.3 := >=0.0.3 <0.0.4  (patch nonzero → fix all three)
+            //   ^0.0.0 := >=0.0.0 <0.0.1  (all zero → exact)
+            // Wildcard components widen the upper bound (treated as
+            // "unspecified" rather than zero):
+            //   ^0.x   := >=0.0.0 <1.0.0
+            //   ^0.0.x := >=0.0.0 <0.1.0
+            //   ^1.x   := >=1.0.0 <2.0.0
+            //
+            // The previous implementation only checked `maj == t_maj &&
+            // (min, pat) >= (t_min, t_pat)`, which treats `^0.2.3` as
+            // `>=0.2.3 <1.0.0` — incorrectly matching 0.3.0, 0.10.0, etc.
             if maj != t_maj {
                 return false;
             }
-            (min, pat) >= (t_min, t_pat)
+            // Lower bound: version >= target.
+            if (min, pat) < (t_min, t_pat) {
+                return false;
+            }
+            // Determine how many components were explicitly specified,
+            // treating a wildcard as "end of specified components" (a
+            // wildcard in position i means positions i.. are unspecified).
+            //   "0.2.3"  → n=3
+            //   "0.2.x"  → n=2 (patch is wildcard → unspecified)
+            //   "0.x"    → n=1
+            //   "1"      → n=1
+            let n_specified = comps
+                .iter()
+                .position(|c| *c == "x" || *c == "X" || *c == "*")
+                .unwrap_or(comps.len().min(3));
+            if n_specified == 0 {
+                // Entirely wildcard (e.g. `^x`); already handled by the
+                // early-return in pick_version_for_range_single, but guard
+                // here too — match anything in the same major.
+                return true;
+            }
+            // Find the left-most non-zero position among the specified
+            // components. If all specified are zero, increment the LAST
+            // specified component (this is what makes `^0.0.0` → `<0.0.1`
+            // and `^0` → `<1.0.0`).
+            let inc_pos: usize = if t_maj > 0 {
+                0
+            } else if n_specified >= 2 && t_min > 0 {
+                1
+            } else if n_specified >= 3 && t_pat > 0 {
+                2
+            } else {
+                // All specified components are zero (or fewer specified).
+                // Increment the last specified component.
+                n_specified - 1
+            };
+            // Upper bound = (inc_pos component + 1, everything after = 0).
+            let (u_maj, u_min, u_pat) = match inc_pos {
+                0 => (t_maj + 1, 0u32, 0u32),
+                1 => (0u32, t_min + 1, 0u32),
+                _ => (0u32, 0u32, t_pat + 1),
+            };
+            // version < upper bound (strictly).
+            (maj, min, pat) < (u_maj, u_min, u_pat)
         }
         "~" => {
             // Same major.minor, >= target patch
@@ -1391,6 +1448,99 @@ mod tests {
     fn caret_rejects_lower_minor_in_same_major() {
         // ^18.21.0 requires >=18.21.0 in major 18; v18.20.0 is too old.
         assert_eq!(pick_version_for_range("^18.21.0", &installed()), None);
+    }
+
+    // --- caret (^) with 0.x.y — the P1-12 regression tests ----------------
+    //
+    // Per the npm semver spec, the caret locks the left-most NON-ZERO
+    // component of [major, minor, patch]:
+    //   ^1.2.3  := >=1.2.3 <2.0.0   (major nonzero → fix major)
+    //   ^0.2.3  := >=0.2.3 <0.3.0   (minor nonzero → fix major.minor)
+    //   ^0.0.3  := >=0.0.3 <0.0.4   (patch nonzero → fix all three)
+    //   ^0.0.0  := >=0.0.0 <0.0.1   (all zero → exact)
+    // The previous implementation only checked `maj == t_maj && version >=
+    // target`, treating ^0.2.3 as >=0.2.3 <1.0.0 — incorrectly matching
+    // 0.3.0, 0.10.0, etc. These tests pin the correct behaviour.
+
+    fn installed_with_zero_major() -> Vec<String> {
+        vec![
+            "v0.8.0".to_string(),
+            "v0.10.0".to_string(),
+            "v0.10.5".to_string(),
+            "v0.11.0".to_string(),
+            "v0.12.0".to_string(),
+            "v0.0.3".to_string(),
+            "v0.0.4".to_string(),
+            "v0.1.0".to_string(),
+            "v20.11.0".to_string(),
+        ]
+    }
+
+    #[test]
+    fn caret_zero_minor_locks_major_minor() {
+        // ^0.10.0 := >=0.10.0 <0.11.0. Must match 0.10.5 (newest in 0.10.x)
+        // and reject 0.11.0 / 0.12.0 (different minor in major 0).
+        let r = pick_version_for_range("^0.10.0", &installed_with_zero_major());
+        assert_eq!(r.as_deref(), Some("v0.10.5"));
+    }
+
+    #[test]
+    fn caret_zero_minor_rejects_higher_minor() {
+        // ^0.10.5 must NOT match 0.11.0 or 0.12.0 — the old code did.
+        let r = pick_version_for_range("^0.10.5", &installed_with_zero_major());
+        assert_eq!(r.as_deref(), Some("v0.10.5"));
+        // And 0.11.0 is explicitly out of range:
+        let only_0_11 = vec!["v0.11.0".to_string()];
+        assert_eq!(pick_version_for_range("^0.10.5", &only_0_11), None);
+    }
+
+    #[test]
+    fn caret_zero_zero_patch_is_exact() {
+        // ^0.0.3 := >=0.0.3 <0.0.4 — only 0.0.3 matches (not 0.0.4).
+        let r = pick_version_for_range("^0.0.3", &installed_with_zero_major());
+        assert_eq!(r.as_deref(), Some("v0.0.3"));
+        // A pool with only 0.0.4 must not satisfy ^0.0.3:
+        let only_0_0_4 = vec!["v0.0.4".to_string()];
+        assert_eq!(pick_version_for_range("^0.0.3", &only_0_0_4), None);
+    }
+
+    #[test]
+    fn caret_zero_zero_zero_is_exact() {
+        // ^0.0.0 := >=0.0.0 <0.0.1 — only 0.0.0 matches.
+        let pool = vec!["v0.0.0".to_string(), "v0.0.1".to_string()];
+        assert_eq!(
+            pick_version_for_range("^0.0.0", &pool).as_deref(),
+            Some("v0.0.0")
+        );
+    }
+
+    #[test]
+    fn caret_zero_wildcard_minor_matches_all_zero_x() {
+        // ^0.x := >=0.0.0 <1.0.0 — any 0.x version matches. Picks newest.
+        let r = pick_version_for_range("^0.x", &installed_with_zero_major());
+        assert_eq!(r.as_deref(), Some("v0.12.0"));
+    }
+
+    #[test]
+    fn caret_zero_zero_wildcard_patch_matches_only_zero_zero_x() {
+        // ^0.0.x := >=0.0.0 <0.1.0 — matches 0.0.3 and 0.0.4, not 0.1.0.
+        let r = pick_version_for_range("^0.0.x", &installed_with_zero_major());
+        assert_eq!(r.as_deref(), Some("v0.0.4"));
+    }
+
+    #[test]
+    fn caret_zero_bare_major_matches_all_zero_x() {
+        // ^0 := >=0.0.0 <1.0.0 (same as ^0.x). Picks newest 0.x.
+        let r = pick_version_for_range("^0", &installed_with_zero_major());
+        assert_eq!(r.as_deref(), Some("v0.12.0"));
+    }
+
+    #[test]
+    fn caret_nonzero_major_still_works() {
+        // Regression guard: the fix must not break the existing ^1.x.y path.
+        // ^20.10.0 := >=20.10.0 <21.0.0 — picks newest 20.x.
+        let r = pick_version_for_range("^20.10.0", &installed_with_zero_major());
+        assert_eq!(r.as_deref(), Some("v20.11.0"));
     }
 
     // --- tilde (~) ---------------------------------------------------------
