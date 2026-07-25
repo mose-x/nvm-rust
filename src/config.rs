@@ -890,10 +890,15 @@ pub fn update_shell_config(version: &str, use_on_cd: bool) -> Result<()> {
     // otherwise we'd overwrite content we couldn't see, with no safe way
     // back. The previous `unwrap_or_default()` collapsed both cases into
     // an empty string and proceeded to overwrite.
-    let content = if config_path.exists() {
-        fs::read_to_string(config_path).context(T("shell_config_read_failed"))?
-    } else {
-        String::new()
+    //
+    // Read directly and map NotFound → empty string instead of `exists()` +
+    // `read_to_string`: the two-step form is a TOCTOU race (another process
+    // could remove the rc file between the stat and the open), and a single
+    // read is one syscall instead of two.
+    let content = match fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).context(T("shell_config_read_failed")),
     };
 
     let nvm_dir_str = nvm_dir.display().to_string();
