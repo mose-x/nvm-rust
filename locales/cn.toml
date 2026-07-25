@@ -80,7 +80,6 @@ mirror_insecure_http = "镜像源 URL 必须使用 HTTPS（收到：{0}）。拒
 mirror_https_upgraded = "⚠ 镜像源 URL 缺少协议前缀，已自动升级为 HTTPS：{0}"
 lock_open_failed = "无法打开 nvm 锁文件"
 lock_acquire_failed = "无法获取 nvm 锁"
-lock_release_failed = "无法释放 nvm 锁"
 lock_wait_another = "另一个 nvm 操作正在进行，等待其完成..."
 part_refused_symlink = "拒绝写入作为符号链接的下载分片文件：{0}。请移除该链接或使用其他缓存目录。"
 shell_config_removed = "NVM Rust 已从 shell 配置中移除"

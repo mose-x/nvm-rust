@@ -68,30 +68,23 @@ pub fn named_lts_aliases_with_remote(base_url: &str) -> BTreeMap<String, String>
 pub fn load_config() -> Result<Config> {
     let config_file = get_nvm_dir().join(CONFIG_FILE);
 
-    // Read directly and map NotFound → default, instead of `exists()` +
-    // `read_to_string`. The two-step form is a TOCTOU race — the file could
-    // be removed (or replaced) between the exists check and the read, and
-    // a concurrent `save_config` running on another CPU could even swap a
-    // fresh write into place between our stat and our open. A single read
-    // that maps NotFound to the default is both faster (one syscall) and
-    // race-free. Mirrors the pattern in `commands::get_current_version`.
-    let content = match fs::read_to_string(&config_file) {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
-        Err(e) => return Err(e.into()),
-    };
-    // Surface parse errors instead of silently dropping all settings.
-    // Returning default on a corrupt file would cause the next
-    // save_config to overwrite it with an empty config, permanently
-    // losing the user's mirror/aliases/language.
-    match serde_json::from_str::<Config>(&content) {
-        Ok(c) => Ok(c),
-        Err(e) => anyhow::bail!(
-            "{}: {} ({})",
-            config_file.display(),
-            e,
-            T("config_corrupt_hint")
-        ),
+    if config_file.exists() {
+        let content = fs::read_to_string(&config_file)?;
+        // Surface parse errors instead of silently dropping all settings.
+        // Returning default on a corrupt file would cause the next
+        // save_config to overwrite it with an empty config, permanently
+        // losing the user's mirror/aliases/language.
+        match serde_json::from_str::<Config>(&content) {
+            Ok(c) => Ok(c),
+            Err(e) => anyhow::bail!(
+                "{}: {} ({})",
+                config_file.display(),
+                e,
+                T("config_corrupt_hint")
+            ),
+        }
+    } else {
+        Ok(Config::default())
     }
 }
 
@@ -105,25 +98,19 @@ pub fn save_config(config: &Config) -> Result<()> {
 pub fn load_aliases() -> Result<Aliases> {
     let alias_file = get_nvm_dir().join(ALIAS_FILE);
 
-    // Read directly and map NotFound → default (same race-free pattern as
-    // `load_config` / `get_current_version`). The previous `exists()` +
-    // `read_to_string` was a TOCTOU race: a concurrent `save_aliases` or
-    // `uninstall` removing the file between the stat and the open would
-    // surface as a confusing "No such file" error instead of the expected
-    // "no aliases defined" default.
-    let content = match fs::read_to_string(&alias_file) {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Aliases::default()),
-        Err(e) => return Err(e.into()),
-    };
-    match serde_json::from_str::<Aliases>(&content) {
-        Ok(a) => Ok(a),
-        Err(e) => anyhow::bail!(
-            "{}: {} ({})",
-            alias_file.display(),
-            e,
-            T("config_corrupt_hint")
-        ),
+    if alias_file.exists() {
+        let content = fs::read_to_string(&alias_file)?;
+        match serde_json::from_str::<Aliases>(&content) {
+            Ok(a) => Ok(a),
+            Err(e) => anyhow::bail!(
+                "{}: {} ({})",
+                alias_file.display(),
+                e,
+                T("config_corrupt_hint")
+            ),
+        }
+    } else {
+        Ok(Aliases::default())
     }
 }
 
@@ -200,37 +187,20 @@ pub fn list_all_aliases() -> Result<()> {
     // version directory. The previous loop called fs::read_dir once per LTS
     // alias (11 directory scans) and re-parsed every entry each time, even
     // though the listing is identical across iterations.
-    //
-    // `NotFound` is legitimate on a fresh install (no versions downloaded
-    // yet) and is treated as an empty list silently. Any other read_dir
-    // failure (permission denied, I/O error, ...) was previously folded
-    // into an empty list by `.unwrap_or_default()`, which made the alias
-    // listing look empty without any hint that something was wrong.
-    let installed_majors: Vec<(String, u32)> = match fs::read_dir(&nvm_dir) {
-        Ok(rd) => rd
-            .flatten()
-            .filter_map(|entry| {
-                let s = entry.file_name().to_str()?.to_string();
-                if crate::utils::is_version_dir_name(&s) {
-                    crate::utils::parse_major(&s).map(|m| (s, m))
-                } else {
-                    None
-                }
-            })
-            .collect(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => {
-            // Surface the real cause but keep the command usable: custom
-            // aliases (from the alias file) can still be listed below.
-            eprintln!(
-                "{} Failed to list installed versions in {}: {}",
-                "⚠".yellow().bold(),
-                nvm_dir.display(),
-                e
-            );
-            Vec::new()
-        }
-    };
+    let installed_majors: Vec<(String, u32)> = fs::read_dir(&nvm_dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter_map(|entry| {
+                    let s = entry.file_name().to_str()?.to_string();
+                    if crate::utils::is_version_dir_name(&s) {
+                        crate::utils::parse_major(&s).map(|m| (s, m))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     for (name, prefix) in named_lts_aliases() {
         // Strict match: the version's major must equal the alias's target
@@ -314,22 +284,12 @@ pub fn resolve_alias(name: &str) -> Result<String> {
     // `nvm use current`, `nvm exec current ...`, etc.
     if name == "current" {
         let current_file = get_nvm_dir().join("current");
-        // Read directly and map NotFound → "no current version set" instead
-        // of `exists()` + `read_to_string`. The two-step form is a TOCTOU
-        // race (file could be removed between stat and open) and the
-        // previous `if let Ok(content)` silently swallowed real read errors
-        // (permission denied, I/O) as "no current version set", hiding the
-        // actual cause from the user.
-        match fs::read_to_string(&current_file) {
-            Ok(content) => {
+        if current_file.exists() {
+            if let Ok(content) = fs::read_to_string(&current_file) {
                 let v = content.trim();
                 if !v.is_empty() {
                     return Ok(v.to_string());
                 }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                eprintln!("{} {}: {}", "⚠".yellow().bold(), current_file.display(), e);
             }
         }
         anyhow::bail!("{}", T("no_current_version_set"));
@@ -459,29 +419,12 @@ fn bare_major_prefix(name: &str) -> Option<String> {
 fn collect_installed_versions(predicate: impl Fn(&str) -> bool) -> Vec<String> {
     let nvm_dir = get_nvm_dir();
     let mut versions: Vec<String> = Vec::new();
-    // Distinguish NotFound (fresh install — no versions yet) from real
-    // read_dir failures. The previous `if let Ok(rd)` folded both into an
-    // empty list, so an unreadable nvm_dir made every alias resolution
-    // (`lts/*`, `node`, `stable`, bare major) silently return "not found"
-    // instead of surfacing the permission/IO error. Mirrors
-    // `list_all_aliases` and `get_installed_versions`.
-    let rd = match fs::read_dir(&nvm_dir) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return versions,
-        Err(e) => {
-            eprintln!(
-                "{} Failed to list installed versions in {}: {}",
-                "⚠".yellow().bold(),
-                nvm_dir.display(),
-                e
-            );
-            return versions;
-        }
-    };
-    for entry in rd.flatten() {
-        if let Some(s) = entry.file_name().to_str() {
-            if crate::utils::is_version_dir_name(s) && predicate(s) {
-                versions.push(s.to_string());
+    if let Ok(rd) = fs::read_dir(&nvm_dir) {
+        for entry in rd.flatten() {
+            if let Some(s) = entry.file_name().to_str() {
+                if crate::utils::is_version_dir_name(s) && predicate(s) {
+                    versions.push(s.to_string());
+                }
             }
         }
     }
@@ -907,15 +850,10 @@ pub fn update_shell_config(version: &str, use_on_cd: bool) -> Result<()> {
     // otherwise we'd overwrite content we couldn't see, with no safe way
     // back. The previous `unwrap_or_default()` collapsed both cases into
     // an empty string and proceeded to overwrite.
-    //
-    // Read directly and map NotFound → empty string instead of `exists()` +
-    // `read_to_string`: the two-step form is a TOCTOU race (another process
-    // could remove the rc file between the stat and the open), and a single
-    // read is one syscall instead of two.
-    let content = match fs::read_to_string(config_path) {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e).context(T("shell_config_read_failed")),
+    let content = if config_path.exists() {
+        fs::read_to_string(config_path).context(T("shell_config_read_failed"))?
+    } else {
+        String::new()
     };
 
     let nvm_dir_str = nvm_dir.display().to_string();
@@ -954,27 +892,21 @@ pub fn remove_from_shell_config() -> Result<()> {
     };
 
     let config_path = Path::new(&shell_config);
+    // Nothing to clean if the rc file isn't there. But if it IS there,
+    // backup must succeed before we overwrite — same rationale as
+    // update_shell_config.
+    if !config_path.exists() {
+        return Ok(());
+    }
+    backup_file(config_path).context(T("shell_config_backup_failed"))?;
 
     let nvm_dir_str = get_nvm_dir().display().to_string();
 
-    // Read directly and map NotFound → "nothing to clean" instead of
-    // `exists()` + `read_to_string`: the two-step form is a TOCTOU race
-    // (another process could remove the rc file between the stat and the
-    // read), and a single read is one syscall instead of two.
-    //
     // The previous `if let Ok(...) = read_to_string` silently returned
     // Ok(()) on read failure, masking permission/IO errors as "nothing
     // to remove" — the user's config would remain polluted with stale
     // NVM lines and they'd never know. Surface the read error instead.
-    let content = match fs::read_to_string(config_path) {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e).context(T("shell_config_read_failed")),
-    };
-    // Backup MUST succeed before we overwrite, same rationale as
-    // update_shell_config. At this point the file is known to exist (read
-    // succeeded), so backup_file will actually copy it.
-    backup_file(config_path).context(T("shell_config_backup_failed"))?;
+    let content = fs::read_to_string(config_path).context(T("shell_config_read_failed"))?;
     let stripped = strip_nvm_lines(&content, &nvm_dir_str);
     atomic_write(config_path, &stripped)?;
     println!("{}", crate::i18n::T("shell_config_removed").green());

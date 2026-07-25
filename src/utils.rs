@@ -231,35 +231,18 @@ pub fn is_version_dir_name(name: &str) -> bool {
 pub fn get_installed_versions() -> Vec<String> {
     let nvm_dir = get_nvm_dir();
     let mut versions: Vec<String> = Vec::new();
-    // Distinguish NotFound (legitimate on a fresh install — no versions
-    // downloaded yet) from real read_dir failures (permission denied, I/O
-    // error). The previous `if let Ok(rd)` folded both into an empty list,
-    // so an unreadable nvm_dir silently looked like "no versions installed"
-    // and the user got confusing "version not installed" errors downstream
-    // instead of a clear permission warning. Mirrors `list_all_aliases`.
-    let rd = match fs::read_dir(&nvm_dir) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return versions,
-        Err(e) => {
-            eprintln!(
-                "{} Failed to list installed versions in {}: {}",
-                "⚠".yellow().bold(),
-                nvm_dir.display(),
-                e
-            );
-            return versions;
-        }
-    };
-    for entry in rd.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if let Some(name) = path.file_name() {
-                let name = name.to_string_lossy().to_string();
-                // Accept "vX.Y.Z" (digit must follow the `v`), "iojs-vX.Y.Z",
-                // "io.js-vX.Y.Z". Rejects "current", "versions" (nvm-sh's
-                // nested dir), "v8-flags" and any other non-version `v*`.
-                if name != "current" && is_version_dir_name(&name) {
-                    versions.push(name);
+    if let Ok(rd) = fs::read_dir(&nvm_dir) {
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(name) = path.file_name() {
+                    let name = name.to_string_lossy().to_string();
+                    // Accept "vX.Y.Z" (digit must follow the `v`), "iojs-vX.Y.Z",
+                    // "io.js-vX.Y.Z". Rejects "current", "versions" (nvm-sh's
+                    // nested dir), "v8-flags" and any other non-version `v*`.
+                    if name != "current" && is_version_dir_name(&name) {
+                        versions.push(name);
+                    }
                 }
             }
         }
@@ -401,16 +384,11 @@ pub fn file_backup_path(path: &Path) -> std::path::PathBuf {
 }
 
 pub fn backup_file(path: &Path) -> Result<(), std::io::Error> {
-    // Copy directly and map NotFound → Ok(()) instead of `exists()` + `copy`.
-    // The two-step form is a TOCTOU race: a concurrent process could remove
-    // the file between the stat and the open, turning a "nothing to back up"
-    // no-op into a confusing "No such file or directory" error. The single
-    // read is also one syscall instead of two.
-    match fs::copy(path, file_backup_path(path)) {
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e),
+    if path.exists() {
+        let backup = file_backup_path(path);
+        fs::copy(path, backup)?;
     }
+    Ok(())
 }
 
 /// Locate the system Node.js binary on PATH. Uses `which` on Unix and
@@ -483,19 +461,7 @@ impl Drop for NvmLock {
             // `use` inside `acquire_nvm_lock` for the acquire path; for the
             // drop path we reference it fully-qualified to avoid a stale
             // module-level import.
-            //
-            // Surface unlock failures as a warning instead of `let _ =` — Drop
-            // can't propagate errors, but a kernel/AV-lock failure here would
-            // otherwise leave the OS lock held with `NVM_LOCK_HELD` reset to
-            // false, a confusing state for diagnosis.
-            if let Err(e) = fs4::fs_std::FileExt::unlock(&file) {
-                eprintln!(
-                    "{} {}: {}",
-                    "⚠".yellow().bold(),
-                    crate::i18n::T("lock_release_failed"),
-                    e
-                );
-            }
+            let _ = fs4::fs_std::FileExt::unlock(&file);
             NVM_LOCK_HELD.store(false, std::sync::atomic::Ordering::Release);
         }
         // Re-entrant guard (None): nothing to release; the outer guard still
@@ -528,14 +494,7 @@ pub fn acquire_nvm_lock(nvm_dir: &Path) -> Result<NvmLock> {
         return Ok(NvmLock(None));
     }
 
-    // `ensure_nvm_dir` may fail (permissions, disk full, parent removed
-    // mid-run). The flag was already flipped to `true` above, so we MUST
-    // roll it back on failure — otherwise every subsequent `acquire_nvm_lock`
-    // in this process takes the re-entrant branch and returns a no-op guard,
-    // silently bypassing the OS lock and breaking mutual exclusion.
-    crate::system::ensure_nvm_dir().inspect_err(|_| {
-        NVM_LOCK_HELD.store(false, std::sync::atomic::Ordering::Release);
-    })?;
+    crate::system::ensure_nvm_dir()?;
     let lock_path = nvm_dir.join(".nvm.lock");
     let file = fs::OpenOptions::new()
         .create(true)

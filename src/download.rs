@@ -156,7 +156,7 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
     // non-2xx branch below and bails, leaving the user stuck with a `.part`
     // they can never resume past. Delete the stale `.part` and retry once
     // from byte 0 without the Range header.
-    if start_offset > 0 && response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+    if start_offset > 0 && response.status().as_u16() == 416 {
         let _ = fs::remove_file(&part_path);
         start_offset = 0;
         response = client.get(url).send().context(T("download_failed"))?;
@@ -169,8 +169,7 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
         );
     }
 
-    let supports_resume =
-        start_offset > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+    let supports_resume = start_offset > 0 && response.status().as_u16() == 206;
     let total_size: u64 = if supports_resume {
         // Content-Range header looks like "bytes 100-999/1000".
         response
@@ -262,17 +261,11 @@ pub fn is_cached(filename: &str) -> bool {
 /// List all cached files (name, size_bytes).
 pub fn list_cached_files() -> Result<Vec<(String, u64)>> {
     let cache_dir = get_cache_dir();
-    // Read directly and map NotFound → empty instead of `exists()` +
-    // `read_dir`: the two-step form is a TOCTOU race (another process could
-    // remove the cache dir between the stat and the open), and a single
-    // read_dir is one syscall instead of two.
-    let rd = match fs::read_dir(&cache_dir) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e.into()),
-    };
+    if !cache_dir.exists() {
+        return Ok(Vec::new());
+    }
     let mut files: Vec<(String, u64)> = Vec::new();
-    for entry in rd {
+    for entry in fs::read_dir(&cache_dir)? {
         let entry = entry?;
         // Use symlink_metadata (not entry.metadata()) so a dangling symlink
         // in the cache dir doesn't propagate an error and abort the whole
@@ -298,41 +291,18 @@ pub fn list_cached_files() -> Result<Vec<(String, u64)>> {
 /// Clear all cached files, returns total bytes cleared.
 pub fn clear_cache() -> Result<u64> {
     let cache_dir = get_cache_dir();
-    // Read directly and map NotFound → 0 instead of `exists()` + `read_dir`
-    // (same race-free pattern as `list_cached_files`).
-    let rd = match fs::read_dir(&cache_dir) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(e) => return Err(e.into()),
-    };
+    if !cache_dir.exists() {
+        return Ok(0);
+    }
     let mut cleared: u64 = 0;
-    for entry in rd {
-        let entry = match entry {
-            Ok(e) => e,
-            // Another process removed the entry between read_dir and the
-            // implicit stat — skip it instead of aborting the whole clear
-            // (the user would lose all progress made on earlier entries).
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(e.into()),
-        };
+    for entry in fs::read_dir(&cache_dir)? {
+        let entry = entry?;
         // Use symlink_metadata so a symlink planted in the cache dir can't
         // trick us into deleting (or following) its target.
-        let metadata = match entry.path().symlink_metadata() {
-            Ok(m) => m,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(e.into()),
-        };
+        let metadata = entry.path().symlink_metadata()?;
         if metadata.is_file() {
             cleared += metadata.len();
-            // Best-effort remove: a concurrent process may have already
-            // deleted the file between our metadata stat and the remove.
-            // NotFound here is fine, just skip; other errors still propagate.
-            if let Err(e) = fs::remove_file(entry.path()) {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    continue;
-                }
-                return Err(e.into());
-            }
+            fs::remove_file(entry.path())?;
         }
     }
     Ok(cleared)
