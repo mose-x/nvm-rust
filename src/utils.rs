@@ -613,12 +613,19 @@ pub fn acquire_nvm_lock(nvm_dir: &Path) -> Result<NvmLock> {
         return Ok(NvmLock(None));
     }
 
-    // `ensure_nvm_dir` may fail (permissions, disk full, parent removed
-    // mid-run). The flag was already flipped to `true` above, so we MUST
-    // roll it back on failure — otherwise every subsequent `acquire_nvm_lock`
-    // in this process takes the re-entrant branch and returns a no-op guard,
+    // Ensure the EXACT dir we were passed exists -- not a re-derived
+    // `get_nvm_dir()` path. If `NVM_DIR` changed between the caller's
+    // capture and here (e.g. a parallel test doing `set_var("NVM_DIR", ..)`),
+    // `ensure_nvm_dir()` would create a *different* dir and the
+    // `open(nvm_dir.join(".nvm.lock"))` below would hit ENOENT. Using the
+    // parameter closes that race and is more correct: we lock the dir the
+    // caller asked us to lock.
+    //
+    // The flag was already flipped to `true` above, so on failure we MUST
+    // roll it back — otherwise every subsequent `acquire_nvm_lock` in this
+    // process takes the re-entrant branch and returns a no-op guard,
     // silently bypassing the OS lock and breaking mutual exclusion.
-    crate::system::ensure_nvm_dir().inspect_err(|_| {
+    fs::create_dir_all(nvm_dir).inspect_err(|_| {
         NVM_LOCK_HELD.store(false, std::sync::atomic::Ordering::Release);
     })?;
     let lock_path = nvm_dir.join(".nvm.lock");
