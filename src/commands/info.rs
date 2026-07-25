@@ -288,8 +288,15 @@ pub fn current_version() -> Result<()> {
 pub fn deactivate() -> Result<()> {
     let nvm_dir = get_nvm_dir();
     let current_file = nvm_dir.join("current");
-    if current_file.exists() {
-        fs::remove_file(&current_file)?;
+    // Remove directly and treat NotFound as success instead of `exists()` +
+    // `remove_file`: the two-step form is a TOCTOU race (a concurrent
+    // `nvm use`/`uninstall` could remove `current` between the stat and the
+    // unlink, surfacing as a confusing error), and deactivation is a no-op
+    // when nothing is active anyway.
+    if let Err(e) = fs::remove_file(&current_file) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(e.into());
+        }
     }
     println!("{} {}", "✓".green().bold(), T("deactivated").green());
     Ok(())
