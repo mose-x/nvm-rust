@@ -314,12 +314,22 @@ pub fn resolve_alias(name: &str) -> Result<String> {
     // `nvm use current`, `nvm exec current ...`, etc.
     if name == "current" {
         let current_file = get_nvm_dir().join("current");
-        if current_file.exists() {
-            if let Ok(content) = fs::read_to_string(&current_file) {
+        // Read directly and map NotFound → "no current version set" instead
+        // of `exists()` + `read_to_string`. The two-step form is a TOCTOU
+        // race (file could be removed between stat and open) and the
+        // previous `if let Ok(content)` silently swallowed real read errors
+        // (permission denied, I/O) as "no current version set", hiding the
+        // actual cause from the user.
+        match fs::read_to_string(&current_file) {
+            Ok(content) => {
                 let v = content.trim();
                 if !v.is_empty() {
                     return Ok(v.to_string());
                 }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                eprintln!("{} {}: {}", "⚠".yellow().bold(), current_file.display(), e);
             }
         }
         anyhow::bail!("{}", T("no_current_version_set"));
