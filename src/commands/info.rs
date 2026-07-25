@@ -177,6 +177,15 @@ pub fn use_version_silent(
     let current_file = nvm_dir.join("current");
     atomic_write(&current_file, &resolved).context(T("cannot_write_current"))?;
 
+    // The lock guards the version-dir existence check, the optional install,
+    // and the `current` file write — all the nvm-state mutations. Everything
+    // below (config save, shell rc rewrite, success messages) touches files
+    // outside nvm's own state or uses its own atomic_write, so holding the
+    // lock through it only serializes concurrent `nvm use`/`nvm install`
+    // callers during the slow shell-rc rewrite (backup + read + filter +
+    // write). Drop the guard explicitly to release contention early.
+    drop(_nvm_lock);
+
     // Load config once for both the cd-hook flag and the --save default.
     let mut config = load_config()?;
     let cd_hook = if use_on_cd {
