@@ -613,12 +613,19 @@ pub fn acquire_nvm_lock(nvm_dir: &Path) -> Result<NvmLock> {
         return Ok(NvmLock(None));
     }
 
-    // `ensure_nvm_dir` may fail (permissions, disk full, parent removed
-    // mid-run). The flag was already flipped to `true` above, so we MUST
-    // roll it back on failure — otherwise every subsequent `acquire_nvm_lock`
-    // in this process takes the re-entrant branch and returns a no-op guard,
+    // Ensure the EXACT dir we were passed exists -- not a re-derived
+    // `get_nvm_dir()` path. If `NVM_DIR` changed between the caller's
+    // capture and here (e.g. a parallel test doing `set_var("NVM_DIR", ..)`),
+    // `ensure_nvm_dir()` would create a *different* dir and the
+    // `open(nvm_dir.join(".nvm.lock"))` below would hit ENOENT. Using the
+    // parameter closes that race and is more correct: we lock the dir the
+    // caller asked us to lock.
+    //
+    // The flag was already flipped to `true` above, so on failure we MUST
+    // roll it back — otherwise every subsequent `acquire_nvm_lock` in this
+    // process takes the re-entrant branch and returns a no-op guard,
     // silently bypassing the OS lock and breaking mutual exclusion.
-    crate::system::ensure_nvm_dir().inspect_err(|_| {
+    fs::create_dir_all(nvm_dir).inspect_err(|_| {
         NVM_LOCK_HELD.store(false, std::sync::atomic::Ordering::Release);
     })?;
     let lock_path = nvm_dir.join(".nvm.lock");
@@ -670,16 +677,20 @@ mod tests {
     use super::*;
 
     // Both lock tests mutate the process-global `NVM_LOCK_HELD` flag and
-    // acquire the OS lock on the real nvm dir. Running them in parallel
-    // (cargo test's default) would let one test's acquire race with the
-    // other's drop, producing flaky flag assertions and self-deadlock on
-    // `flock(LOCK_EX)`. This mutex serializes them without pulling in the
-    // `serial_test` crate.
-    static LOCK_TESTS_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // acquire the OS lock on the real nvm dir (resolved via `get_nvm_dir`).
+    // Running them in parallel (cargo test's default) would let one test's
+    // acquire race with the other's drop, producing flaky flag assertions
+    // and self-deadlock on `flock(LOCK_EX)`. They also READ NVM_DIR via
+    // `get_nvm_dir()`, so a parallel test in another module doing
+    // `set_var("NVM_DIR", ..)` could point them at a temp dir that gets
+    // restored mid-acquire. The process-global `ENV_TESTS_MUTEX` closes both
+    // gaps: it serializes the lock tests against each other AND against
+    // every other NVM_DIR-touching test across the crate.
+    use crate::system::ENV_TESTS_MUTEX;
 
     #[test]
     fn acquire_nvm_lock_is_reentrant_in_same_process() {
-        let _guard = LOCK_TESTS_MUTEX.lock().expect("LOCK_TESTS_MUTEX poisoned");
+        let _guard = ENV_TESTS_MUTEX.lock().expect("ENV_TESTS_MUTEX poisoned");
         // Two nested acquires in the SAME process must not deadlock: the
         // inner one returns a no-op guard (re-entrant) because the outer
         // already holds the OS lock. This is the `nvm use --install` →
@@ -697,7 +708,7 @@ mod tests {
 
     #[test]
     fn acquire_nvm_lock_can_be_reacquired_after_drop() {
-        let _guard = LOCK_TESTS_MUTEX.lock().expect("LOCK_TESTS_MUTEX poisoned");
+        let _guard = ENV_TESTS_MUTEX.lock().expect("ENV_TESTS_MUTEX poisoned");
         // Regression for the drop-order bug: previously `drop` released the
         // OS lock FIRST and only then cleared `NVM_LOCK_HELD`. If anything
         // went wrong between those two steps (panic, reentrant re-acquire

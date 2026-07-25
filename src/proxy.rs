@@ -544,6 +544,11 @@ pub struct ProxyStatus {
 mod tests {
     use super::*;
 
+    // All tests in this module that set NVM_DIR acquire the process-global
+    // `ENV_TESTS_MUTEX` so they cannot race with NVM_DIR-mutating tests in
+    // download.rs / config.rs / utils.rs running in parallel.
+    use crate::system::ENV_TESTS_MUTEX;
+
     #[test]
     fn test_is_proxy_enabled_uses_cache_after_set() {
         // `set_proxy_enabled` writes the config file AND updates the in-process
@@ -561,6 +566,7 @@ mod tests {
         // clobbered. The previous `std::env::remove_var("NVM_DIR")` at the
         // end unconditionally deleted the var even if it was set before.
         let _env_guard = EnvGuard::new();
+        let _lock = ENV_TESTS_MUTEX.lock().expect("ENV_TESTS_MUTEX poisoned");
         let tmp = tempfile::tempdir().expect("tempdir");
         std::env::set_var("NVM_DIR", tmp.path());
         std::fs::create_dir_all(tmp.path()).expect("create nvm dir");
@@ -617,6 +623,7 @@ mod tests {
     #[test]
     fn direct_config_edit_is_invisible_until_cache_reset() {
         let _env_guard = EnvGuard::new();
+        let _lock = ENV_TESTS_MUTEX.lock().expect("ENV_TESTS_MUTEX poisoned");
         let tmp = tempfile::tempdir().expect("tempdir");
         std::env::set_var("NVM_DIR", tmp.path());
         std::fs::create_dir_all(tmp.path()).expect("create nvm dir");
