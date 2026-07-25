@@ -187,20 +187,37 @@ pub fn list_all_aliases() -> Result<()> {
     // version directory. The previous loop called fs::read_dir once per LTS
     // alias (11 directory scans) and re-parsed every entry each time, even
     // though the listing is identical across iterations.
-    let installed_majors: Vec<(String, u32)> = fs::read_dir(&nvm_dir)
-        .map(|rd| {
-            rd.flatten()
-                .filter_map(|entry| {
-                    let s = entry.file_name().to_str()?.to_string();
-                    if crate::utils::is_version_dir_name(&s) {
-                        crate::utils::parse_major(&s).map(|m| (s, m))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    //
+    // `NotFound` is legitimate on a fresh install (no versions downloaded
+    // yet) and is treated as an empty list silently. Any other read_dir
+    // failure (permission denied, I/O error, ...) was previously folded
+    // into an empty list by `.unwrap_or_default()`, which made the alias
+    // listing look empty without any hint that something was wrong.
+    let installed_majors: Vec<(String, u32)> = match fs::read_dir(&nvm_dir) {
+        Ok(rd) => rd
+            .flatten()
+            .filter_map(|entry| {
+                let s = entry.file_name().to_str()?.to_string();
+                if crate::utils::is_version_dir_name(&s) {
+                    crate::utils::parse_major(&s).map(|m| (s, m))
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => {
+            // Surface the real cause but keep the command usable: custom
+            // aliases (from the alias file) can still be listed below.
+            eprintln!(
+                "{} Failed to list installed versions in {}: {}",
+                "⚠".yellow().bold(),
+                nvm_dir.display(),
+                e
+            );
+            Vec::new()
+        }
+    };
 
     for (name, prefix) in named_lts_aliases() {
         // Strict match: the version's major must equal the alias's target
