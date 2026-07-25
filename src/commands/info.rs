@@ -177,16 +177,13 @@ pub fn use_version_silent(
     let current_file = nvm_dir.join("current");
     atomic_write(&current_file, &resolved).context(T("cannot_write_current"))?;
 
-    // The lock guards the version-dir existence check, the optional install,
-    // and the `current` file write — all the nvm-state mutations. Everything
-    // below (config save, shell rc rewrite, success messages) touches files
-    // outside nvm's own state or uses its own atomic_write, so holding the
-    // lock through it only serializes concurrent `nvm use`/`nvm install`
-    // callers during the slow shell-rc rewrite (backup + read + filter +
-    // write). Drop the guard explicitly to release contention early.
-    drop(_nvm_lock);
-
     // Load config once for both the cd-hook flag and the --save default.
+    // This load-modify-save MUST stay inside the nvm lock: two concurrent
+    // `nvm use --save` calls both loading config, modifying different
+    // fields, and saving would otherwise produce a lost update (the second
+    // save overwrites the first, silently dropping one caller's change).
+    // `atomic_write` only guarantees a single write is atomic, not the
+    // whole read-modify-write transaction.
     let mut config = load_config()?;
     let cd_hook = if use_on_cd {
         config.use_on_cd = Some(true);
@@ -202,6 +199,16 @@ pub fn use_version_silent(
         }
         save_config(&config)?;
     }
+
+    // The lock guards the version-dir existence check, the optional install,
+    // the `current` file write, AND the config read-modify-write above — all
+    // the nvm-state mutations. Everything below (shell rc rewrite, success
+    // messages) touches files outside nvm's own state or uses its own
+    // atomic_write, so holding the lock through it only serializes
+    // concurrent `nvm use`/`nvm install` callers during the slow shell-rc
+    // rewrite (backup + read + filter + write). Drop the guard explicitly
+    // to release contention early — AFTER config save, BEFORE shell rc.
+    drop(_nvm_lock);
 
     // Skip rewriting the shell rc on cd-hook-triggered runs (silent=true):
     // the hook is already installed from the first `nvm use --use-on-cd`,
