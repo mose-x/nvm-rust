@@ -21,15 +21,49 @@ pub fn generate_completions(shell: Option<&str>) -> anyhow::Result<()> {
     }
 }
 
-fn bash_completions() -> anyhow::Result<()> {
+/// Shared body of the four `*_completions` functions: ensure the completions
+/// dir exists, write the script, and print the "written + how to install"
+/// banner. Only the script content, the file name, the i18n keys, and the
+/// shell-specific install instructions vary — extracting this removes 4× the
+/// identical `create_dir_all` / `fs::write` / banner boilerplate (and the
+/// TOCTOU comment that was duplicated four times).
+///
+/// `install_lines` receives the final `completion_file` path and returns the
+/// indented instruction line(s) to print after the "add to your rc" message.
+/// Most shells emit a single `source`/`.` line; zsh emits two (`fpath=...`
+/// plus `autoload`). The caller owns the formatting so the helper stays
+/// agnostic to each shell's sourcing convention.
+fn write_completion(
+    filename: &str,
+    script: &str,
+    written_key: &str,
+    add_to_rc_key: &str,
+    install_lines: impl Fn(&std::path::Path) -> Vec<String>,
+) -> anyhow::Result<()> {
     let nvm_dir = get_nvm_dir();
     let completions_dir = nvm_dir.join("completions");
+    // Direct `create_dir_all` (idempotent) instead of `if !exists() { ... }`:
+    // the two-step form is a TOCTOU — another process could remove the dir
+    // between the stat and the mkdir. Matches `system::ensure_nvm_dir`.
+    fs::create_dir_all(&completions_dir)?;
 
-    if !completions_dir.exists() {
-        fs::create_dir_all(&completions_dir)?;
+    let completion_file = completions_dir.join(filename);
+    fs::write(&completion_file, script)?;
+    println!(
+        "{} {} {}",
+        "✓".green().bold(),
+        T(written_key).green(),
+        completion_file.display()
+    );
+    println!();
+    println!("{}", T(add_to_rc_key));
+    for line in install_lines(&completion_file) {
+        println!("  {line}");
     }
+    Ok(())
+}
 
-    let completion_file = completions_dir.join("nvm.bash");
+fn bash_completions() -> anyhow::Result<()> {
     let script = r#"# nvm bash completion
 _nvm_completion() {
     local cur prev words cword
@@ -77,29 +111,16 @@ _nvm_completion() {
     esac
 } && complete -F _nvm_completion nvm
 "#;
-
-    fs::write(&completion_file, script)?;
-    println!(
-        "{} {} {}",
-        "✓".green().bold(),
-        T("completions_written_bash").green(),
-        completion_file.display()
-    );
-    println!();
-    println!("{}", T("add_to_bashrc"));
-    println!("  source {}", completion_file.display());
-    Ok(())
+    write_completion(
+        "nvm.bash",
+        script,
+        "completions_written_bash",
+        "add_to_bashrc",
+        |f| vec![format!("source {}", f.display())],
+    )
 }
 
 fn zsh_completions() -> anyhow::Result<()> {
-    let nvm_dir = get_nvm_dir();
-    let completions_dir = nvm_dir.join("completions");
-
-    if !completions_dir.exists() {
-        fs::create_dir_all(&completions_dir)?;
-    }
-
-    let completion_file = completions_dir.join("_nvm");
     let script = r#"#compdef nvm
 
 _nvm_commands() {
@@ -248,30 +269,21 @@ _nvm() {
 
 _nvm "$@"
 "#;
-
-    fs::write(&completion_file, script)?;
-    println!(
-        "{} {} {}",
-        "✓".green().bold(),
-        T("completions_written_zsh").green(),
-        completion_file.display()
-    );
-    println!();
-    println!("{}", T("add_to_zshrc"));
-    println!("  fpath=( {} $fpath )", completion_file.display());
-    println!("  autoload -Uz _nvm");
-    Ok(())
+    write_completion(
+        "_nvm",
+        script,
+        "completions_written_zsh",
+        "add_to_zshrc",
+        |f| {
+            vec![
+                format!("fpath=( {} $fpath )", f.display()),
+                "autoload -Uz _nvm".to_string(),
+            ]
+        },
+    )
 }
 
 fn fish_completions() -> anyhow::Result<()> {
-    let nvm_dir = get_nvm_dir();
-    let completions_dir = nvm_dir.join("completions");
-
-    if !completions_dir.exists() {
-        fs::create_dir_all(&completions_dir)?;
-    }
-
-    let completion_file = completions_dir.join("nvm.fish");
     let script = r#"# nvm fish completion
 
 complete -c nvm -n '__fish_use_subcommand' -a 'install' -d 'Install a Node.js version'
@@ -355,29 +367,16 @@ complete -c nvm -n '__fish_seen_subcommand_from cache' -a 'clear' -d 'Clear cach
 complete -c nvm -n '__fish_seen_subcommand_from migrate' -a 'nvm' -d 'From nvm-sh'
 complete -c nvm -n '__fish_seen_subcommand_from migrate' -a 'nvm-windows' -d 'From nvm-windows'
 "#;
-
-    fs::write(&completion_file, script)?;
-    println!(
-        "{} {} {}",
-        "✓".green().bold(),
-        T("completions_written_fish").green(),
-        completion_file.display()
-    );
-    println!();
-    println!("{}", T("add_to_fish_config"));
-    println!("  source {}", completion_file.display());
-    Ok(())
+    write_completion(
+        "nvm.fish",
+        script,
+        "completions_written_fish",
+        "add_to_fish_config",
+        |f| vec![format!("source {}", f.display())],
+    )
 }
 
 fn powershell_completions() -> anyhow::Result<()> {
-    let nvm_dir = get_nvm_dir();
-    let completions_dir = nvm_dir.join("completions");
-
-    if !completions_dir.exists() {
-        fs::create_dir_all(&completions_dir)?;
-    }
-
-    let completion_file = completions_dir.join("nvm.ps1");
     let script = r#"# nvm PowerShell completion
 
 $commands = @(
@@ -457,16 +456,11 @@ Register-ArgumentCompleter -CommandName nvm -Native -ScriptBlock {
     }
 }
 "#;
-
-    fs::write(&completion_file, script)?;
-    println!(
-        "{} {} {}",
-        "✓".green().bold(),
-        T("completions_written_powershell").green(),
-        completion_file.display()
-    );
-    println!();
-    println!("{}", T("add_to_powershell_profile"));
-    println!("  . {}", completion_file.display());
-    Ok(())
+    write_completion(
+        "nvm.ps1",
+        script,
+        "completions_written_powershell",
+        "add_to_powershell_profile",
+        |f| vec![format!(". {}", f.display())],
+    )
 }

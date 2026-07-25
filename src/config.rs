@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::i18n::{format_t, T};
+use crate::i18n::{format_t, t_en, T};
 use crate::system::{get_nvm_dir, get_tags, ALIAS_FILE, CONFIG_FILE, URI};
 use crate::utils::{atomic_write, backup_file};
 
@@ -84,13 +84,18 @@ pub fn load_config() -> Result<Config> {
     // Returning default on a corrupt file would cause the next
     // save_config to overwrite it with an empty config, permanently
     // losing the user's mirror/aliases/language.
+    //
+    // Use `t_en` (not `T`) for the hint: `T()` → `get_language()` →
+    // `load_config()`, so formatting this bail message with `T()` would
+    // recurse infinitely on a corrupt config and abort with a stack
+    // overflow. `t_en` resolves the English string directly.
     match serde_json::from_str::<Config>(&content) {
         Ok(c) => Ok(c),
         Err(e) => anyhow::bail!(
             "{}: {} ({})",
             config_file.display(),
             e,
-            T("config_corrupt_hint")
+            t_en("config_corrupt_hint")
         ),
     }
 }
@@ -122,7 +127,7 @@ pub fn load_aliases() -> Result<Aliases> {
             "{}: {} ({})",
             alias_file.display(),
             e,
-            T("config_corrupt_hint")
+            t_en("config_corrupt_hint")
         ),
     }
 }
@@ -138,12 +143,21 @@ pub fn set_alias(name: &str, version: Option<&str>) -> Result<()> {
     if name.is_empty() {
         anyhow::bail!("{}", T("alias_name_empty"));
     }
+    // Hold the nvm lock across the load→modify→save so two concurrent
+    // `nvm alias` calls don't lose updates: both would otherwise load the
+    // same alias.json, each insert into its in-memory copy, and the second
+    // save would silently overwrite the first (lost update). `atomic_write`
+    // only guarantees a single write is atomic, not the whole transaction.
+    // Re-entrant: an outer caller already holding the lock gets a no-op
+    // guard instead of self-deadlocking.
+    let nvm_dir = get_nvm_dir();
+    let _nvm_lock = crate::utils::acquire_nvm_lock(&nvm_dir)?;
     let mut aliases = load_aliases()?;
 
     match version {
         Some(v) => {
             let resolved = resolve_alias(v)?;
-            let version_dir = get_nvm_dir().join(&resolved);
+            let version_dir = nvm_dir.join(&resolved);
             if !version_dir.exists() {
                 anyhow::bail!(
                     "{}",
@@ -180,6 +194,11 @@ pub fn set_alias(name: &str, version: Option<&str>) -> Result<()> {
 }
 
 pub fn remove_alias(name: &str) -> Result<()> {
+    // Same read-modify-write transaction as `set_alias`: hold the nvm lock
+    // across load→remove→save to prevent a concurrent `set_alias`/
+    // `remove_alias` from overwriting this removal (or vice versa).
+    let nvm_dir = get_nvm_dir();
+    let _nvm_lock = crate::utils::acquire_nvm_lock(&nvm_dir)?;
     let mut aliases = load_aliases()?;
 
     if aliases.aliases.remove(name).is_some() {
@@ -284,6 +303,32 @@ pub fn list_all_aliases() -> Result<()> {
     Ok(())
 }
 
+/// Validate a resolved alias/version string before returning it from
+/// `resolve_alias`. This is the defense-in-depth gate for values sourced
+/// from on-disk JSON (`aliases.json`, `config.json`) or the `current` file:
+/// `set_alias` validates on write, but a user hand-editing the JSON (or an
+/// attacker with write access to `~/.nvm`) could inject path-traversal
+/// payloads like `v1.0.0/../../etc/passwd` that would later escape
+/// `nvm_dir` via `nvm_dir.join(&version)`. Reject such payloads here.
+///
+/// `lts/*`, `lts/-N` and `lts/<codename>` are alias forms that legitimately
+/// contain a slash; they will be re-resolved recursively by the caller and
+/// hit the terminal fallback's `validate_version_name`. For those we only
+/// reject traversal markers (`..`, NUL, control chars). Every other value
+/// goes through the full `validate_version_name` (which forbids `/`, `\`,
+/// `..`, control chars, spaces) — accepting `v20.0.0`, `iojs-v3.3.1`,
+/// `system:v20.0.0`, and alias-of-alias names like `lts` / `default`.
+fn validated(v: &str) -> Result<String> {
+    if v.starts_with("lts/") {
+        if v.contains("..") || v.contains('\0') || v.chars().any(|c| c.is_control()) {
+            anyhow::bail!("{}", format_t("invalid_version_name", &[v.to_string()]));
+        }
+        return Ok(v.to_string());
+    }
+    crate::utils::validate_version_name(v)?;
+    Ok(v.to_string())
+}
+
 pub fn resolve_alias(name: &str) -> Result<String> {
     // Reject empty / whitespace-only input early. Without this, `nvm use ""`
     // would fall through to `resolve_version`, which prepends "v" to the
@@ -299,12 +344,12 @@ pub fn resolve_alias(name: &str) -> Result<String> {
     if name == "default" {
         if let Ok(aliases) = load_aliases() {
             if let Some(v) = aliases.aliases.get(name) {
-                return Ok(v.clone());
+                return validated(v);
             }
         }
         let config = load_config()?;
         if let Some(v) = config.default_version {
-            return Ok(v);
+            return validated(&v);
         }
         anyhow::bail!("{}", T("no_default_version"));
     }
@@ -324,7 +369,7 @@ pub fn resolve_alias(name: &str) -> Result<String> {
             Ok(content) => {
                 let v = content.trim();
                 if !v.is_empty() {
-                    return Ok(v.to_string());
+                    return validated(v);
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -348,7 +393,7 @@ pub fn resolve_alias(name: &str) -> Result<String> {
             if let Ok(v) = Command::new(&node_path).arg("--version").output() {
                 let v = String::from_utf8_lossy(&v.stdout).trim().to_string();
                 if !v.is_empty() {
-                    return Ok(format!("system:{}", v));
+                    return validated(&format!("system:{}", v));
                 }
             }
         }
@@ -407,7 +452,7 @@ pub fn resolve_alias(name: &str) -> Result<String> {
 
     let aliases = load_aliases()?;
     if let Some(v) = aliases.aliases.get(name) {
-        return Ok(v.clone());
+        return validated(v);
     }
 
     // Bare major / major.minor shorthand (e.g. "22", "22.5", "v22.5"):
@@ -937,9 +982,15 @@ pub fn update_shell_config(version: &str, use_on_cd: bool) -> Result<()> {
     // On Windows the PowerShell profile directory (`Documents\PowerShell\`)
     // may not exist yet on a fresh install; atomic_write's temp file lives in
     // the parent dir, so create it first or the write fails with ENOENT.
+    //
+    // Propagate the create_dir_all error instead of `.ok()`-ing it: a
+    // permission denial or read-only filesystem here would otherwise surface
+    // as a confusing "cannot update shell config" from the atomic_write
+    // below, hiding the real cause (the parent dir could not be created).
     if let Some(parent) = config_path.parent() {
         if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).ok();
+            fs::create_dir_all(parent)
+                .with_context(|| format!("{}: {}", T("cannot_create_dir"), parent.display()))?;
         }
     }
     atomic_write(config_path, &new_config).context(T("cannot_update_shell_config"))?;
@@ -1312,5 +1363,118 @@ mod tests {
     fn test_resolve_alias_passes_through_iojs_dot_version() {
         // The "io.js-" spelling must also skip the v-prepend.
         assert_eq!(resolve_alias("io.js-v3.3.1").unwrap(), "io.js-v3.3.1");
+    }
+
+    #[test]
+    fn validated_accepts_legitimate_values() {
+        // Every form that can legitimately come from aliases.json /
+        // config.json / the current file must pass the defense-in-depth
+        // gate. If any of these started being rejected, `nvm use default` /
+        // `nvm use current` / alias chains would break.
+        assert_eq!(validated("v20.11.0").unwrap(), "v20.11.0");
+        assert_eq!(validated("20.11.0").unwrap(), "20.11.0");
+        assert_eq!(validated("iojs-v3.3.1").unwrap(), "iojs-v3.3.1");
+        assert_eq!(validated("io.js-v2.5.0").unwrap(), "io.js-v2.5.0");
+        assert_eq!(validated("system:v20.0.0").unwrap(), "system:v20.0.0");
+        // Aliases can point at other aliases (alias-of-alias chains).
+        assert_eq!(validated("lts").unwrap(), "lts");
+        assert_eq!(validated("lts/*").unwrap(), "lts/*");
+        assert_eq!(validated("lts/-1").unwrap(), "lts/-1");
+        assert_eq!(validated("lts/iron").unwrap(), "lts/iron");
+        assert_eq!(validated("default").unwrap(), "default");
+        // Bare major / major.minor shorthand.
+        assert_eq!(validated("22").unwrap(), "22");
+        assert_eq!(validated("v22.5").unwrap(), "v22.5");
+    }
+
+    #[test]
+    fn validated_rejects_path_traversal_from_disk() {
+        // Regression for the defense-in-depth gap: previously the `default`,
+        // `current`, and user-alias branches of `resolve_alias` returned
+        // values read straight from on-disk JSON / the current file WITHOUT
+        // calling `validate_version_name`. A user hand-editing
+        // `~/.nvm/alias/default` to `v1.0.0/../../etc/passwd` would have
+        // escaped nvm_dir via `nvm_dir.join(&version)` on the next
+        // `nvm use default`. `validated` must reject every traversal shape.
+        assert!(validated("v1.0.0/../../etc").is_err());
+        assert!(validated("v1.0.0\\..\\etc").is_err());
+        assert!(validated("..").is_err());
+        assert!(validated("v1..2").is_err());
+        assert!(validated("v1\0x").is_err());
+        assert!(validated("v1.0.0 ../etc").is_err());
+        assert!(validated("").is_err());
+        // A `system:` prefix with traversal in the version part must also be
+        // rejected — `system:v1/../../x` would escape just as easily.
+        assert!(validated("system:v1/../../etc").is_err());
+        // An `lts/` prefix hiding traversal must be rejected too — the
+        // lts/ fast-path only allows the alias forms (lts/*, lts/-N,
+        // lts/<codename>), not `lts/../../etc`.
+        assert!(validated("lts/../../etc").is_err());
+        assert!(validated("lts/\0x").is_err());
+    }
+
+    // Serialize env-var mutations: `update_shell_config` reads HOME (via
+    // detect_shell_config) and NVM_DIR (via get_nvm_dir) from the process
+    // environment, and `std::env::set_var` is not thread-safe. Without this
+    // mutex a parallel test could observe a half-set environment or restore
+    // HOME before this test finished reading it.
+    static SHELL_CFG_TESTS_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn update_shell_config_surfaces_create_dir_all_failure() {
+        let _guard = SHELL_CFG_TESTS_MUTEX
+            .lock()
+            .expect("SHELL_CFG_TESTS_MUTEX poisoned");
+
+        // Set up a HOME whose `.bashrc` parent cannot be created: place a
+        // regular file where the parent directory would go. `create_dir_all`
+        // then fails with NotADirectory (ENOTDIR), which must propagate
+        // instead of being swallowed by the old `.ok()`.
+        let tmp = tempfile::TempDir::new().expect("tempdir for HOME blocker");
+        let blocker = tmp.path().join("blocker_file");
+        std::fs::write(&blocker, b"not a directory").expect("write blocker file");
+
+        let nvm_tmp = tempfile::TempDir::new().expect("tempdir for NVM_DIR");
+
+        let old_home = std::env::var_os("HOME");
+        let old_nvm_dir = std::env::var_os("NVM_DIR");
+        std::env::set_var("HOME", &blocker);
+        std::env::set_var("NVM_DIR", nvm_tmp.path());
+
+        // Restore env even if assertions fail — leaking HOME=<blocker> would
+        // break every subsequent test that touches the shell config.
+        struct EnvGuard {
+            old_home: Option<std::ffi::OsString>,
+            old_nvm_dir: Option<std::ffi::OsString>,
+        }
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.old_home {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
+                match &self.old_nvm_dir {
+                    Some(v) => std::env::set_var("NVM_DIR", v),
+                    None => std::env::remove_var("NVM_DIR"),
+                }
+            }
+        }
+        let _guard_env = EnvGuard {
+            old_home,
+            old_nvm_dir,
+        };
+
+        let result = update_shell_config("v20.0.0", false);
+
+        let err = result
+            .expect_err("update_shell_config should fail when the parent dir cannot be created");
+        let msg = format!("{err:#}");
+        // The error must mention directory creation (the real cause) rather
+        // than the downstream "cannot update shell config" that the old
+        // `.ok()` path would have produced instead.
+        assert!(
+            msg.to_lowercase().contains("directory") || msg.to_lowercase().contains("create"),
+            "expected create_dir_all error context, got: {msg}"
+        );
     }
 }

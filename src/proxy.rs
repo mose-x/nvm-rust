@@ -507,6 +507,20 @@ pub fn set_proxy_enabled(enabled: bool) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+/// Clear the in-process `PROXY_ENABLED_CACHE` so the next `is_proxy_enabled()`
+/// re-reads `config.json` from disk. Production code never needs this — the
+/// cache is correct for the process lifetime because every mutation goes
+/// through `set_proxy_enabled`, which updates the cache. Tests that mutate the
+/// config file directly (bypassing `set_proxy_enabled`) must call this to
+/// observe the change; without it, a stale cached value from an earlier test
+/// would leak through and mask regressions.
+pub(crate) fn reset_proxy_enabled_cache_for_tests() {
+    if let Ok(mut guard) = PROXY_ENABLED_CACHE.lock() {
+        *guard = None;
+    }
+}
+
 /// Get proxy status info for display.
 pub fn proxy_status() -> ProxyStatus {
     let nvm_proxy = is_proxy_enabled();
@@ -542,16 +556,17 @@ mod tests {
         // to the real `~/.nvm.rust/` and relied on the parent existing, which
         // failed on macOS CI runners where HOME is a fresh, empty dir.
         //
-        // NOTE: PROXY_ENABLED_CACHE is process-global and not reset here, so we
-        // must write through `set_proxy_enabled` (which updates the cache)
-        // rather than `save_config` alone. The cache also means this test can
-        // affect other tests in the same binary that call `is_proxy_enabled`
-        // without first calling `set_proxy_enabled` — that is unavoidable
-        // without a `reset_cache` helper, and current other tests do not
-        // depend on `is_proxy_enabled`'s value.
+        // EnvGuard: save AND restore the original NVM_DIR so a test run that
+        // inherits a non-empty NVM_DIR (CI, user shell) doesn't have its env
+        // clobbered. The previous `std::env::remove_var("NVM_DIR")` at the
+        // end unconditionally deleted the var even if it was set before.
+        let _env_guard = EnvGuard::new();
         let tmp = tempfile::tempdir().expect("tempdir");
         std::env::set_var("NVM_DIR", tmp.path());
         std::fs::create_dir_all(tmp.path()).expect("create nvm dir");
+        // Reset the process-global cache so `before` reads the temp config,
+        // not a value cached by an earlier test in the same binary.
+        reset_proxy_enabled_cache_for_tests();
 
         let before = is_proxy_enabled();
         let new_val = !before;
@@ -560,8 +575,70 @@ mod tests {
         // Restore so other tests in the same binary aren't affected.
         assert!(set_proxy_enabled(before).is_ok());
         assert_eq!(is_proxy_enabled(), before);
+        // `EnvGuard`'s Drop restores NVM_DIR; we also reset the cache so the
+        // next test that touches `is_proxy_enabled` re-reads from its own
+        // (possibly different) NVM_DIR.
+        reset_proxy_enabled_cache_for_tests();
+    }
 
-        std::env::remove_var("NVM_DIR");
+    /// RAII guard that saves `NVM_DIR` on construction and restores it (or
+    /// removes it if it was unset) on drop. Without this, a test that calls
+    /// `std::env::set_var("NVM_DIR", ...)` leaks the temp path into every
+    /// subsequent test in the same binary, breaking `get_nvm_dir()`-based
+    /// assertions. Mirrors the `EnvGuard` pattern in `config.rs` and
+    /// `download.rs` tests.
+    struct EnvGuard {
+        saved_nvm_dir: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn new() -> Self {
+            Self {
+                saved_nvm_dir: std::env::var_os("NVM_DIR"),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.saved_nvm_dir {
+                Some(v) => std::env::set_var("NVM_DIR", v),
+                None => std::env::remove_var("NVM_DIR"),
+            }
+        }
+    }
+
+    // P3-13: documents the cache-invalidation contract. `PROXY_ENABLED_CACHE`
+    // is only updated by `set_proxy_enabled`; a direct `save_config` (e.g. by
+    // an external process editing config.json, or a test bypassing the API)
+    // is NOT observed until the cache is reset. This test pins that behaviour
+    // so a future refactor that adds filesystem-watching or TTL eviction
+    // doesn't silently change the contract.
+    #[test]
+    fn direct_config_edit_is_invisible_until_cache_reset() {
+        let _env_guard = EnvGuard::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("NVM_DIR", tmp.path());
+        std::fs::create_dir_all(tmp.path()).expect("create nvm dir");
+        reset_proxy_enabled_cache_for_tests();
+
+        // Seed the cache with the on-disk value (false).
+        assert!(!is_proxy_enabled());
+
+        // Bypass `set_proxy_enabled`: write config.json directly.
+        std::fs::write(tmp.path().join("config.json"), r#"{"proxy":true}"#).expect("write config");
+
+        // Cache still holds the stale value — direct edits are NOT observed.
+        assert!(
+            !is_proxy_enabled(),
+            "cache must hide direct config edits until explicitly reset"
+        );
+
+        // After reset, the next read reflects the new on-disk value.
+        reset_proxy_enabled_cache_for_tests();
+        assert!(is_proxy_enabled());
+
+        reset_proxy_enabled_cache_for_tests();
     }
 
     #[test]

@@ -71,6 +71,19 @@ fn resolve_migration_source(source: &str) -> Option<PathBuf> {
 /// installed". Copying makes the import self-contained, matching nvm-sh's
 /// own `nvm install` semantics where the version lives entirely under
 /// `NVM_DIR`.
+///
+/// # Precondition: caller holds `acquire_nvm_lock(&nvm_dir)`
+///
+/// The `dest.exists()` short-circuit followed by `copy_dir_recursive` is a
+/// classic check-then-act TOCTOU window. Without the process-wide nvm lock
+/// held by the only caller (`cmd_migrate`), two concurrent migrates — or a
+/// migrate racing an `install`/`uninstall` of the same version — would both
+/// pass the existence check and then clobber each other's writes, leaving a
+/// half-copied version directory that breaks `nvm use`. The lock is acquired
+/// in `cmd_migrate` BEFORE the version enumeration loop, so every
+/// `import_version` call within a single migrate run is serialized against
+/// all other nvm state mutations. Do not call this function from a context
+/// that does not already hold the lock.
 fn import_version(src: &Path, dest: &Path) -> Result<bool> {
     if dest.exists() {
         return Ok(false);
@@ -308,32 +321,51 @@ pub fn cmd_migrate(source: &str) -> Result<()> {
     if imported + skipped > 0 {
         if let Some(root) = nvm_sh_root {
             if let Some(default_ver) = detect_nvm_sh_default(&root) {
-                let dest = nvm_dir.join(&default_ver);
-                if dest.exists() {
-                    let mut config = load_config()?;
-                    config.default_version = Some(default_ver.clone());
-                    save_config(&config)?;
-                    // Also overwrite `aliases.aliases["default"]` if it exists:
-                    // `resolve_alias("default")` checks user-defined aliases
-                    // FIRST and only falls back to `config.default_version`,
-                    // so writing config alone is not enough — a pre-existing
-                    // `default` alias (e.g. from an earlier `nvm alias default
-                    // lts`) would shadow the migrated value and `nvm use
-                    // default` would resolve to the old alias instead.
-                    if let Ok(mut aliases) = crate::config::load_aliases() {
-                        if aliases.aliases.contains_key("default") {
-                            aliases
-                                .aliases
-                                .insert("default".to_string(), default_ver.clone());
-                            crate::config::save_aliases(&aliases)?;
-                        }
-                    }
-                    println!();
-                    println!(
-                        "  {} {}",
-                        "✓".green().bold(),
-                        format_t("migrate_default_set", &[default_ver]).green()
+                // Defense-in-depth: `detect_nvm_sh_default` reads
+                // `~/.nvm/alias/default` from the source nvm-sh install.
+                // A hand-edited or malicious default file could contain a
+                // path-traversal payload like `v../../etc/passwd`. We are
+                // about to `nvm_dir.join(&default_ver)` and write it into
+                // `config.default_version`, so validate FIRST. Only concrete
+                // version forms (`v20.11.0`, `iojs-v3.3.1`) can pass the
+                // subsequent `dest.exists()` check anyway — alias forms
+                // like `lts/*` would never match an installed version dir —
+                // so rejecting traversal here cannot break the happy path.
+                if crate::utils::validate_version_name(&default_ver).is_err() {
+                    eprintln!(
+                        "{} {}: {}",
+                        "⚠".yellow().bold(),
+                        crate::i18n::T("invalid_version_name"),
+                        default_ver
                     );
+                } else {
+                    let dest = nvm_dir.join(&default_ver);
+                    if dest.exists() {
+                        let mut config = load_config()?;
+                        config.default_version = Some(default_ver.clone());
+                        save_config(&config)?;
+                        // Also overwrite `aliases.aliases["default"]` if it exists:
+                        // `resolve_alias("default")` checks user-defined aliases
+                        // FIRST and only falls back to `config.default_version`,
+                        // so writing config alone is not enough — a pre-existing
+                        // `default` alias (e.g. from an earlier `nvm alias default
+                        // lts`) would shadow the migrated value and `nvm use
+                        // default` would resolve to the old alias instead.
+                        if let Ok(mut aliases) = crate::config::load_aliases() {
+                            if aliases.aliases.contains_key("default") {
+                                aliases
+                                    .aliases
+                                    .insert("default".to_string(), default_ver.clone());
+                                crate::config::save_aliases(&aliases)?;
+                            }
+                        }
+                        println!();
+                        println!(
+                            "  {} {}",
+                            "✓".green().bold(),
+                            format_t("migrate_default_set", &[default_ver]).green()
+                        );
+                    }
                 }
             }
         }
@@ -440,6 +472,43 @@ fn detect_nvm_sh_default(nvm_sh_root: &Path) -> Option<String> {
     // silently wrong.
     if trimmed == "lts/*" || trimmed.starts_with("lts/") {
         candidates.retain(|v| crate::utils::is_lts_version(v));
+
+        // `lts/-N` → Nth-previous LTS *line* relative to the newest LTS line
+        // present in the source install (e.g. lts/-1 = the LTS line before
+        // the newest). Without this, lts/-1 fell through to "latest of all
+        // LTS versions" (i.e. the newest LTS line), silently wrong —
+        // nvm-sh's lts/-1 means the LTS line BEFORE the newest. This
+        // mirrors `config::resolve_lts_relative` but operates on the
+        // SOURCE nvm-sh install's versions dir instead of nvm-rust's.
+        if let Some(offset_str) = trimmed.strip_prefix("lts/-") {
+            if let Ok(offset) = offset_str.parse::<usize>() {
+                if offset > 0 {
+                    // Unique LTS majors present in the source install, ascending.
+                    let mut majors: Vec<u32> = candidates
+                        .iter()
+                        .filter_map(|v| crate::utils::parse_major(v))
+                        .collect();
+                    majors.sort_unstable();
+                    majors.dedup();
+                    // offset=1 → second-newest (index len-2), offset=2 → len-3.
+                    match majors
+                        .len()
+                        .checked_sub(1 + offset)
+                        .and_then(|i| majors.get(i))
+                    {
+                        Some(&major) => {
+                            let prefix = format!("v{}.", major);
+                            candidates.retain(|v| v.starts_with(&prefix));
+                        }
+                        None => return None, // offset out of range: no such LTS line
+                    }
+                }
+                // offset == 0 (lts/-0) is nonsensical; fall through to lts/*
+                // behavior (return latest LTS).
+            }
+            // Non-numeric suffix (e.g. "lts/-foo") falls through to lts/*
+            // behavior too — matching the lenient handling elsewhere.
+        }
     }
     // For a bare major like "20", restrict to matching "v20.*". For generic
     // aliases ("node", "stable") we take the latest of everything.
@@ -455,4 +524,322 @@ fn detect_nvm_sh_default(nvm_sh_root: &Path) -> Option<String> {
     // `v20.20.2` ('5' > '2') and pick the older version as "latest".
     candidates.sort_by(|a, b| crate::utils::compare_semver(a, b));
     candidates.last().cloned()
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a fake nvm-sh root with `<root>/.nvm/alias/default` containing
+    /// `contents`, and (optionally) a `versions/node/` dir populated with the
+    /// given version dir names. Returns the root path.
+    fn fake_nvm_sh_root(default_contents: &str, versions: &[&str]) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let alias_dir = tmp.path().join(".nvm").join("alias");
+        fs::create_dir_all(&alias_dir).expect("create alias dir");
+        fs::write(alias_dir.join("default"), default_contents).expect("write default");
+        if !versions.is_empty() {
+            let versions_root = tmp.path().join(".nvm").join("versions").join("node");
+            fs::create_dir_all(&versions_root).expect("create versions root");
+            for v in versions {
+                fs::create_dir_all(versions_root.join(v)).expect("create version dir");
+            }
+        }
+        tmp
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_passes_through_v_prefixed_version() {
+        // Happy path: a fully-qualified `vX.Y.Z` default file is returned
+        // verbatim (the common case for nvm-sh users who set a specific
+        // version as default).
+        let root = fake_nvm_sh_root("v20.11.0", &[]);
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            Some("v20.11.0".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_passes_through_iojs_version() {
+        // All four io.js spellings should be accepted by the shared
+        // `is_iojs_version` detector used in the v-prefix branch.
+        for s in ["iojs-v3.3.1", "iojs-3.3.1", "io.js-v3.3.1", "io.js-3.3.1"] {
+            let root = fake_nvm_sh_root(s, &[]);
+            assert_eq!(
+                detect_nvm_sh_default(root.path()),
+                Some(s.to_string()),
+                "io.js spelling {s:?} should pass through"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_adds_v_prefix_to_bare_full_version() {
+        // "20.11.0" (no leading v) gets a `v` prepended.
+        let root = fake_nvm_sh_root("20.11.0", &[]);
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            Some("v20.11.0".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_returns_none_for_missing_file() {
+        // No default file → None (not an error). This is the expected case
+        // when nvm-sh is installed but no default alias was ever set.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(tmp.path().join(".nvm").join("alias")).expect("create alias dir");
+        assert_eq!(detect_nvm_sh_default(tmp.path()), None);
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_returns_none_for_empty_file() {
+        // An empty/whitespace default file is treated as "no default".
+        let root = fake_nvm_sh_root("   \n  ", &[]);
+        assert_eq!(detect_nvm_sh_default(root.path()), None);
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_lts_star_returns_newest_lts() {
+        // `lts/*` must resolve to the newest LTS version present in the
+        // source install. Here v22.11.0 > v22.5.1 > v20.17.0 > v18.20.0,
+        // so the answer is v22.11.0.
+        let root = fake_nvm_sh_root(
+            "lts/*",
+            &["v22.5.1", "v22.11.0", "v20.10.0", "v20.17.0", "v18.20.0"],
+        );
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            Some("v22.11.0".to_string()),
+            "lts/* must pick the newest LTS version"
+        );
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_lts_minus_one_returns_previous_lts_line() {
+        // Regression for the lts/-N bug: previously `lts/-1` fell through to
+        // "latest of all LTS" (i.e. v22.11.0, the newest LTS line), silently
+        // wrong — nvm-sh's `lts/-1` means the LTS line BEFORE the newest.
+        // With v22/v20/v18 LTS lines installed, lts/-1 must pick the newest
+        // version on the v20 line (v20.17.0), NOT v22.11.0.
+        let root = fake_nvm_sh_root(
+            "lts/-1",
+            &["v22.5.1", "v22.11.0", "v20.10.0", "v20.17.0", "v18.20.0"],
+        );
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            Some("v20.17.0".to_string()),
+            "lts/-1 must pick the newest version on the previous LTS line"
+        );
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_lts_minus_two_returns_two_lines_back() {
+        // lts/-2 → two LTS lines back from the newest. With v22/v20/v18
+        // installed, that's the v18 line → v18.20.0.
+        let root = fake_nvm_sh_root(
+            "lts/-2",
+            &["v22.5.1", "v22.11.0", "v20.10.0", "v20.17.0", "v18.20.0"],
+        );
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            Some("v18.20.0".to_string()),
+            "lts/-2 must pick the newest version on the 2nd-previous LTS line"
+        );
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_lts_offset_out_of_range_returns_none() {
+        // lts/-999 → no LTS line that far back. Must return None (not fall
+        // through to "latest LTS" as the old code did).
+        let root = fake_nvm_sh_root("lts/-999", &["v22.11.0", "v20.17.0", "v18.20.0"]);
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            None,
+            "out-of-range lts/-N must return None, not latest LTS"
+        );
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_lts_minus_zero_falls_back_to_latest() {
+        // lts/-0 is nonsensical; we treat it like lts/* (latest LTS) rather
+        // than erroring, matching the lenient handling in
+        // `config::resolve_lts_relative` for offset == 0.
+        let root = fake_nvm_sh_root("lts/-0", &["v22.11.0", "v20.17.0"]);
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            Some("v22.11.0".to_string()),
+            "lts/-0 should behave like lts/*"
+        );
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_passes_through_traversal_payload_unvalidated() {
+        // SECURITY CONTRACT TEST:
+        //
+        // `detect_nvm_sh_default` is a pure parser — it does NOT validate the
+        // contents of the default file. A hand-edited or malicious file
+        // containing `v../../etc/passwd` is returned verbatim because it
+        // starts with `v`. This is intentional: the validation gate lives
+        // in `cmd_migrate` (the only caller), which calls
+        // `validate_version_name` before `nvm_dir.join(&default_ver)` and
+        // before writing to config.default_version.
+        //
+        // This test locks the contract: if someone moves validation INTO
+        // `detect_nvm_sh_default` they must update this test; if someone
+        // REMOVES validation from `cmd_migrate`, this test still passes but
+        // the safety gap reopens — the `validate_version_name` test below
+        // is the second layer of the contract.
+        let root = fake_nvm_sh_root("v../../etc/passwd", &[]);
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            Some("v../../etc/passwd".to_string()),
+            "detect_nvm_sh_default must return the raw value; cmd_migrate validates"
+        );
+        // And the validator MUST reject this payload — this is the gate
+        // cmd_migrate relies on. If validate_version_name ever started
+        // accepting `..` or `/`, cmd_migrate's defense would be defeated.
+        assert!(
+            crate::utils::validate_version_name("v../../etc/passwd").is_err(),
+            "validate_version_name must reject path-traversal payloads"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Alias-form parsing: bare major, bare major.minor, "node"/"stable",
+    // and `lts/<codename>`. These exercise the resolution branches at the
+    // bottom of `detect_nvm_sh_default` that read the SOURCE nvm-sh
+    // install's `versions/node/` directory to resolve a non-version
+    // default alias.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn detect_nvm_sh_default_bare_major_resolves_to_latest_patch() {
+        // "20" (bare major) must resolve to the highest v20.x.y installed
+        // in the source nvm-sh tree. Semantic sort is essential here: a
+        // lexicographic sort would put v20.10.0 > v20.9.0 ('1' > '9' is
+        // false, so the order would be wrong) — `compare_semver` exists
+        // precisely to avoid that. With v20.17.0 > v20.10.0, the answer
+        // is v20.17.0.
+        let root = fake_nvm_sh_root("20", &["v20.10.0", "v20.17.0", "v22.5.1", "v18.20.0"]);
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            Some("v20.17.0".to_string()),
+            "bare major \"20\" must resolve to the newest v20.x.y installed"
+        );
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_bare_major_ignores_other_majors() {
+        // Even though v22.11.0 is newer overall than v20.17.0, a "20"
+        // alias must NOT pick a v22.* version. The bare-major branch
+        // retains only `vN.*` candidates before sorting.
+        let root = fake_nvm_sh_root("18", &["v20.17.0", "v22.11.0", "v18.20.0", "v18.19.0"]);
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            Some("v18.20.0".to_string()),
+            "bare major \"18\" must restrict to v18.* even when newer majors exist"
+        );
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_bare_major_with_no_match_returns_none() {
+        // "99" with no v99.* installed → empty candidate list → None.
+        // This is the expected "no such version" outcome; the caller
+        // (cmd_migrate) treats None as "no default to migrate" and skips
+        // silently, matching nvm-sh's own behaviour for a stale alias.
+        let root = fake_nvm_sh_root("99", &["v20.17.0", "v22.11.0"]);
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            None,
+            "bare major with no matching install must return None, not fall back to latest"
+        );
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_node_alias_returns_latest_of_everything() {
+        // "node" is a generic alias for "latest Current" in nvm-sh. It is
+        // NOT a numeric string, so the bare-major branch is skipped and
+        // we fall through to "latest of all candidates" (sorted
+        // semantically). With v22.11.0 > v20.17.0 > v18.20.0, the answer
+        // is v22.11.0 — including non-LTS versions would also resolve
+        // here, but LTS versions are sufficient to exercise the path.
+        let root = fake_nvm_sh_root("node", &["v20.17.0", "v22.11.0", "v18.20.0"]);
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            Some("v22.11.0".to_string()),
+            "\"node\" alias must resolve to the newest version installed"
+        );
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_stable_alias_behaves_like_node() {
+        // "stable" is a legacy alias for "latest Current" in nvm-sh (predating
+        // the "node"/"lts/*" split). It must resolve identically to "node":
+        // no numeric prefix, so the bare-major branch is skipped and we
+        // return the newest of all installed versions.
+        let root = fake_nvm_sh_root("stable", &["v20.17.0", "v22.11.0", "v18.20.0"]);
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            Some("v22.11.0".to_string()),
+            "\"stable\" alias must resolve to the newest version installed"
+        );
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_lts_codename_resolves_to_latest_lts() {
+        // `lts/<codename>` (here `lts/iron`, iron = v20) enters the
+        // `starts_with("lts/")` branch and retains only LTS versions —
+        // which on the test set is {v22.11.0, v20.17.0, v18.20.0}.
+        //
+        // KNOWN LIMITATION (locked in by this test): the codename itself
+        // is currently NOT honoured — the function returns the newest LTS
+        // across ALL LTS lines, not the newest version on the v20 (iron)
+        // line specifically. If a future fix adds codename filtering,
+        // this test must be updated to expect v20.17.0. Until then, the
+        // behaviour is at least consistent with `lts/*` and not a
+        // regression vs. the pre-fix "latest of everything" path.
+        let root = fake_nvm_sh_root("lts/iron", &["v22.11.0", "v20.17.0", "v18.20.0"]);
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            Some("v22.11.0".to_string()),
+            "lts/<codename> currently resolves to newest LTS (codename not honoured — see comment)"
+        );
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_lts_non_numeric_offset_falls_back_to_latest() {
+        // `lts/-foo` (non-numeric offset) must not panic or return None;
+        // it falls through the `lts/-N` parse failure and behaves like
+        // `lts/*` (newest LTS). This mirrors the lenient handling in
+        // `config::resolve_lts_relative` for unparseable offsets.
+        let root = fake_nvm_sh_root("lts/-foo", &["v22.11.0", "v20.17.0", "v18.20.0"]);
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            Some("v22.11.0".to_string()),
+            "lts/-<non-numeric> must fall back to lts/* behaviour, not error"
+        );
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_bare_major_skips_iojs_versions() {
+        // A bare major like "3" must NOT match io.js installs (iojs-v3.3.1).
+        // The bare-major branch retains only candidates starting with
+        // `vN.` — io.js versions start with `iojs-` / `io.js-`, so they
+        // are filtered out. With no real v3.* install present, the
+        // result is None. This locks the contract that bare-major
+        // resolution is Node.js-only; io.js defaults must be spelled
+        // out fully (`iojs-v3.3.1`) to be carried over.
+        let root = fake_nvm_sh_root("3", &["iojs-v3.3.1", "iojs-v3.0.0", "v20.17.0"]);
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            None,
+            "bare major must not resolve to io.js versions"
+        );
+    }
 }

@@ -17,8 +17,8 @@ use crate::system::{
     exe_path, fetch_shasums, get_nvm_dir, os_suffix, prepend_to_path, verify_checksum,
     verify_gpg_signature, version_bin_dir, GpgStatus, IOJS_URI, NPM_REGISTRY,
 };
-use crate::utils::{atomic_write, iojs_version_number};
-use indicatif::{ProgressBar, ProgressStyle};
+use crate::utils::{atomic_write, bytes_progress_style, iojs_version_number};
+use indicatif::ProgressBar;
 
 /// Final io.js release (2015-05-21). io.js merged back into Node.js with
 /// v4.0.0, so `nvm install iojs` (no explicit version) resolves to this.
@@ -411,47 +411,67 @@ fn install_binary(
     // not be deleted — guard is only armed when `owns_extract_file`.
     let extract_guard = owns_extract_file.then(|| SourceGuard::file(extract_path.clone()));
 
-    if !target.is_iojs {
-        print!("  {} ", T("checksum_label").dimmed());
-        if offline {
-            println!("{}", T("checksum_offline").dimmed());
-        } else {
-            // Fetch SHASUMS256.txt ONCE and reuse the bytes for both the
-            // checksum check and the GPG signature check. Previously each
-            // check downloaded its own copy, so a single install issued two
-            // GETs for the same small file. Sharing bytes also guarantees
-            // both checks run against the identical document (a mirror
-            // reformatting the file between the two requests could otherwise
-            // cause a checksum-pass / signature-fail mismatch).
-            let sums_bytes = match fetch_shasums(base_url, &target.target_version) {
-                Ok(b) => b,
-                Err(e) => {
-                    println!("{}", T("checksum_failed").red().bold());
-                    anyhow::bail!("{}", e);
-                }
-            };
+    // Integrity verification: the SHA-256 checksum check runs for BOTH
+    // Node.js and io.js — a MITM tampering with either tarball must be
+    // caught. GPG signature verification runs for Node.js ONLY: io.js
+    // releases (EOL 2015) were signed by a separate key set not present in
+    // NODEJS_RELEASE_KEY_IDS, and iojs.org does not reliably serve
+    // SHASUMS256.txt.sig, so forcing it would abort every io.js install.
+    // The SHA-256 checksum still protects io.js against a tampered or
+    // corrupt tarball.
+    //
+    // Previously this whole block was gated on `!target.is_iojs`, so io.js
+    // installs skipped checksum verification entirely — a security
+    // regression vs nvm-sh, which verifies io.js SHASUMS256.txt too.
+    //
+    // io.js archives are downloaded from IOJS_URI (the mirror config only
+    // mirrors nodejs.org/dist), so SHASUMS256.txt must be fetched from the
+    // same host the archive came from — otherwise we'd 404 against the
+    // Node.js mirror and wrongly bail.
+    let sums_base_url = if target.is_iojs { IOJS_URI } else { base_url };
 
-            // Hard security boundary: verify_checksum now returns Err for
-            // any failure (network error, 404, archive not listed, hash
-            // mismatch). A previous version returned Ok(false) and the
-            // caller merely printed "skipped" — which let a MITM drop the
-            // SHASUMS256.txt request and ship a tampered tarball. Use
-            // --offline to bypass when the mirror is unreachable.
-            match verify_checksum(&extract_path, &target.archive_name, &sums_bytes) {
-                Ok(()) => println!("{}", T("checksum_verified").green().bold()),
-                Err(e) => {
-                    println!("{}", T("checksum_failed").red().bold());
-                    anyhow::bail!("{}", e);
-                }
+    print!("  {} ", T("checksum_label").dimmed());
+    if offline {
+        println!("{}", T("checksum_offline").dimmed());
+    } else {
+        // Fetch SHASUMS256.txt ONCE and reuse the bytes for both the
+        // checksum check and the GPG signature check. Previously each
+        // check downloaded its own copy, so a single install issued two
+        // GETs for the same small file. Sharing bytes also guarantees
+        // both checks run against the identical document (a mirror
+        // reformatting the file between the two requests could otherwise
+        // cause a checksum-pass / signature-fail mismatch).
+        let sums_bytes = match fetch_shasums(sums_base_url, &target.target_version) {
+            Ok(b) => b,
+            Err(e) => {
+                println!("{}", T("checksum_failed").red().bold());
+                anyhow::bail!("{}", e);
             }
+        };
 
-            // GPG signature verification of SHASUMS256.txt — extra trust layer
-            // on top of the SHA-256 checksum. Skips only when gpg is missing,
-            // --no-gpg-verify is passed, or --offline is in effect. A *failed*
-            // signature (gpg ran and rejected it) or an unreachable .sig
-            // (network error, 404) aborts, since either could indicate
-            // tampering or an active MITM stripping the signature. The sums
-            // body is reused from the fetch above (no second download).
+        // Hard security boundary: verify_checksum now returns Err for
+        // any failure (network error, 404, archive not listed, hash
+        // mismatch). A previous version returned Ok(false) and the
+        // caller merely printed "skipped" — which let a MITM drop the
+        // SHASUMS256.txt request and ship a tampered tarball. Use
+        // --offline to bypass when the mirror is unreachable.
+        match verify_checksum(&extract_path, &target.archive_name, &sums_bytes) {
+            Ok(()) => println!("{}", T("checksum_verified").green().bold()),
+            Err(e) => {
+                println!("{}", T("checksum_failed").red().bold());
+                anyhow::bail!("{}", e);
+            }
+        }
+
+        // GPG signature verification of SHASUMS256.txt — extra trust layer
+        // on top of the SHA-256 checksum. Node.js only (see the comment
+        // above the checksum label for why io.js is excluded). Skips only
+        // when gpg is missing, --no-gpg-verify is passed, or --offline is
+        // in effect. A *failed* signature (gpg ran and rejected it) or an
+        // unreachable .sig (network error, 404) aborts, since either could
+        // indicate tampering or an active MITM stripping the signature.
+        // The sums body is reused from the fetch above (no second download).
+        if !target.is_iojs {
             print!("  {} ", T("gpg_label").dimmed());
             match verify_gpg_signature(
                 base_url,
@@ -911,6 +931,17 @@ fn download_prebuilt_npm(version_dir: &Path, version: &str) -> Result<()> {
     let npm_tarball = format!("npm-v{}.tgz", ver_num);
     let fallback_url = format!("{}/npm/-/npm-{}.tgz", NPM_REGISTRY, ver_num);
     let npm_tar_path = get_nvm_dir().join(&npm_tarball);
+    // RAII guard: removes `npm_tar_path` on drop, covering EVERY exit path
+    // (download `io::copy` failure, truncation, integrity mismatch, tar
+    // extraction failure, symlink failure, AND the normal success path).
+    // Previously only the truncation/integrity branches and the final
+    // success line cleaned up; an `io::copy` `?` left a half-written
+    // `npm-v*.tgz` that the next run's `exists()` cache-hit check treated as
+    // complete, silently skipping re-download and then failing at extraction
+    // with a confusing "unexpected EOF". `disarm()` is called only after the
+    // tarball has been successfully extracted AND wired up, so a failure
+    // between staging and disarm still triggers cleanup.
+    let mut tar_guard = crate::utils::FileGuard::new(&npm_tar_path);
 
     if !npm_tar_path.exists() {
         println!("  {} {}", "›".dimmed(), T("downloading_npm"));
@@ -961,12 +992,7 @@ fn download_prebuilt_npm(version_dir: &Path, version: &str) -> Result<()> {
         }
         let total = response.content_length().unwrap_or(0);
         let pb = ProgressBar::new(total);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
-                .unwrap()
-                .progress_chars("#>-"),
-        );
+        pb.set_style(bytes_progress_style());
         let mut src = pb.wrap_read(response);
         let mut dest = std::fs::File::create(&npm_tar_path)?;
         let bytes_copied =
@@ -978,7 +1004,6 @@ fn download_prebuilt_npm(version_dir: &Path, version: &str) -> Result<()> {
         // Without this check, `tar xzf` below would fail with a confusing
         // "unexpected EOF" instead of a clear "truncated" message.
         if total > 0 && bytes_copied < total {
-            std::fs::remove_file(&npm_tar_path).ok();
             anyhow::bail!("{}", T("npm_download_truncated"));
         }
         // When the server omits Content-Length (chunked-only responses, some
@@ -999,7 +1024,6 @@ fn download_prebuilt_npm(version_dir: &Path, version: &str) -> Result<()> {
         // the legitimate URL — TLS alone doesn't protect against that.
         if let Some(integrity) = expected_integrity {
             if verify_npm_integrity(&npm_tar_path, &integrity).is_err() {
-                std::fs::remove_file(&npm_tar_path).ok();
                 anyhow::bail!("{}", T("npm_integrity_failed"));
             }
         }
@@ -1048,6 +1072,11 @@ fn download_prebuilt_npm(version_dir: &Path, version: &str) -> Result<()> {
     // Best-effort cleanup of the downloaded tarball; a failure here doesn't
     // invalidate the install, so don't surface it as an error.
     let _ = std::fs::remove_file(&npm_tar_path);
+    // The tarball has been extracted and npm wired up — disarm the guard so
+    // its `Drop` doesn't issue a redundant `remove_file` on an already-removed
+    // path. Any `?` early-return above leaves the guard armed, so a partial
+    // download / extraction failure still cleans up.
+    tar_guard.disarm();
     Ok(())
 }
 

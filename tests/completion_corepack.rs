@@ -155,3 +155,166 @@ fn corepack_enable_no_version_no_current_bails() {
         "corepack enable (no current) should fail"
     );
 }
+
+// --- `nvm corepack` with `system:` current (P1-8) ------------------------
+//
+// When `nvm use system` writes `system:v20.0.0` to the `current` file, the
+// corepack subcommands used to bail with `not_installed` because they joined
+// `nvm_dir/system:v20.0.0` and found no `node` binary there. These tests
+// pin the fixed behaviour: status reports the system install, while
+// enable/disable refuse to mutate system-wide state.
+//
+// We write `system:v20.0.0` to `current` directly (bypassing resolve_alias)
+// so the tests do not depend on a real system Node.js being on PATH — the
+// fix under test is the `system:` prefix handling in corepack.rs, not the
+// alias resolution.
+
+/// Helper: create an isolated NVM_DIR with `current` set to `system:v20.0.0`.
+fn isolated_with_system_current() -> (std::process::Output, tempfile::TempDir) {
+    let (dir, nvm_dir) = common::isolated_nvm_dir();
+    let current_file = dir.path().join("current");
+    std::fs::write(&current_file, "system:v20.0.0").expect("write current file");
+    let out = std::process::Command::new(common::nvm_bin())
+        .args(["corepack", "status"])
+        .env("NVM_DIR", &nvm_dir)
+        .output()
+        .expect("run nvm corepack status");
+    (out, dir)
+}
+
+#[test]
+fn corepack_status_no_arg_with_system_current_succeeds() {
+    let (out, _dir) = isolated_with_system_current();
+    assert!(
+        out.status.success(),
+        "corepack status (current=system:) should succeed, got: {}",
+        combined_output(&out)
+    );
+    // The system status output mentions either the system corepack version
+    // or the 'no version selected' fallback — both are acceptable. What is
+    // NOT acceptable is the old `not_installed` bail.
+    let s = combined_output(&out);
+    assert!(
+        !s.to_lowercase().contains("not installed"),
+        "should not bail with 'not installed' for system current, got: {s}"
+    );
+    // Should mention corepack somewhere in the output.
+    assert!(
+        s.to_lowercase().contains("corepack"),
+        "expected 'corepack' in output, got: {s}"
+    );
+}
+
+#[test]
+fn corepack_enable_no_arg_with_system_current_bails_with_clear_message() {
+    let (dir, nvm_dir) = common::isolated_nvm_dir();
+    let current_file = dir.path().join("current");
+    std::fs::write(&current_file, "system:v20.0.0").expect("write current file");
+    let out = std::process::Command::new(common::nvm_bin())
+        .args(["corepack", "enable"])
+        .env("NVM_DIR", &nvm_dir)
+        .output()
+        .expect("run nvm corepack enable");
+    assert!(
+        !out.status.success(),
+        "corepack enable (current=system:) should refuse, got: {}",
+        combined_output(&out)
+    );
+    let s = combined_output(&out);
+    // The clear error message must mention 'system' and read as a refusal
+    // (cannot / 无法), not the old generic 'not installed'.
+    assert!(
+        s.to_lowercase().contains("system"),
+        "expected 'system' in refusal message, got: {s}"
+    );
+    assert!(
+        !s.to_lowercase().contains("not installed"),
+        "should not surface the old 'not installed' error for system current, got: {s}"
+    );
+}
+
+#[test]
+fn corepack_disable_no_arg_with_system_current_bails_with_clear_message() {
+    let (dir, nvm_dir) = common::isolated_nvm_dir();
+    let current_file = dir.path().join("current");
+    std::fs::write(&current_file, "system:v20.0.0").expect("write current file");
+    let out = std::process::Command::new(common::nvm_bin())
+        .args(["corepack", "disable"])
+        .env("NVM_DIR", &nvm_dir)
+        .output()
+        .expect("run nvm corepack disable");
+    assert!(
+        !out.status.success(),
+        "corepack disable (current=system:) should refuse, got: {}",
+        combined_output(&out)
+    );
+    let s = combined_output(&out);
+    assert!(
+        s.to_lowercase().contains("system"),
+        "expected 'system' in refusal message, got: {s}"
+    );
+    assert!(
+        !s.to_lowercase().contains("not installed"),
+        "should not surface the old 'not installed' error for system current, got: {s}"
+    );
+}
+
+/// `nvm corepack status system` (explicit arg) should also work when a
+/// system Node.js is detectable on PATH. This test is skipped when `which
+/// node` finds nothing (e.g. minimal CI without Node) because resolve_alias
+/// would then bail with `system_node_not_found` before reaching the fix.
+#[test]
+fn corepack_status_system_arg_succeeds_when_node_on_path() {
+    let node_on_path = std::process::Command::new(if cfg!(windows) { "where" } else { "which" })
+        .arg("node")
+        .output()
+        .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+        .unwrap_or(false);
+    if !node_on_path {
+        eprintln!("skipping: no system node on PATH");
+        return;
+    }
+
+    let (out, _dir) = run_isolated(&["corepack", "status", "system"]);
+    assert!(
+        out.status.success(),
+        "corepack status system should succeed when node is on PATH, got: {}",
+        combined_output(&out)
+    );
+    let s = combined_output(&out);
+    assert!(
+        !s.to_lowercase().contains("not installed"),
+        "should not bail with 'not installed' for explicit system arg, got: {s}"
+    );
+}
+
+/// `nvm corepack enable system` must refuse (we don't mutate system state).
+/// Also skipped when no system node is on PATH, for the same reason as above.
+#[test]
+fn corepack_enable_system_arg_refuses_when_node_on_path() {
+    let node_on_path = std::process::Command::new(if cfg!(windows) { "where" } else { "which" })
+        .arg("node")
+        .output()
+        .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+        .unwrap_or(false);
+    if !node_on_path {
+        eprintln!("skipping: no system node on PATH");
+        return;
+    }
+
+    let (out, _dir) = run_isolated(&["corepack", "enable", "system"]);
+    assert!(
+        !out.status.success(),
+        "corepack enable system should refuse even when node is on PATH, got: {}",
+        combined_output(&out)
+    );
+    let s = combined_output(&out);
+    assert!(
+        s.to_lowercase().contains("system"),
+        "expected 'system' in refusal message, got: {s}"
+    );
+    assert!(
+        !s.to_lowercase().contains("not installed"),
+        "should not surface the old 'not installed' error for explicit system arg, got: {s}"
+    );
+}

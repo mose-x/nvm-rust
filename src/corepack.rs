@@ -13,12 +13,68 @@ use crate::system::{exe_path, get_nvm_dir, prepend_to_path, version_bin_dir};
 /// at the two call sites, which had to be kept in sync by hand.
 const COREPACK_SHIMS: &[&str] = &["pnpm", "pnpx", "yarn", "yarnpkg"];
 
+/// Print corepack status for a system-installed Node.js.
+///
+/// `resolved` is the canonical `system:vX.Y.Z` form returned by
+/// `resolve_alias("system")`. There is no version-scoped `bin/` dir to probe
+/// (system Node lives outside `NVM_DIR`), so we just report the active system
+/// node version and probe for a system-wide `corepack` binary.
+///
+/// Shared by `corepack_status(Some("system"))`, `corepack_status(None)` when
+/// `current` is `system:…`, and previously inlined as the fall-through block
+/// of the `None` arm — extracting it ensures all three entry points print the
+/// same output for the same state instead of diverging by accident.
+fn corepack_system_status(resolved: &str) -> anyhow::Result<()> {
+    let system_ver = resolved.trim_start_matches("system:");
+    if !system_ver.is_empty() {
+        println!(
+            "{} {} {} ({})",
+            "ℹ".cyan().bold(),
+            T("system_node").cyan(),
+            "node".white().bold(),
+            system_ver.dimmed()
+        );
+    }
+    // Probe the system-wide `corepack` binary. `Command::new("corepack")`
+    // succeeds if the spawn worked, but the child may still exit non-zero
+    // (broken install, permission error) — guard both cases so we don't
+    // print "System corepack: <empty>" for a broken install. The previous
+    // form only checked the spawn and printed whatever was on stdout,
+    // including an empty string on non-zero exit.
+    match Command::new("corepack").arg("--version").output() {
+        Ok(o) if o.status.success() => {
+            let version_str = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            println!(
+                "{} {} {}",
+                "ℹ".cyan().bold(),
+                T("system_corepack").cyan(),
+                version_str.white().bold()
+            );
+        }
+        _ => {
+            println!("{} {}", "ℹ".cyan().bold(), T("corepack_no_version").cyan());
+        }
+    }
+    Ok(())
+}
+
 pub fn corepack_status(version: Option<&str>) -> anyhow::Result<()> {
     let nvm_dir = get_nvm_dir();
 
     match version {
         Some(ver) => {
             let resolved = crate::config::resolve_alias(ver)?;
+
+            // `nvm corepack status system` (or an alias resolving to system):
+            // there is no version-scoped bin dir to probe, so fall through to
+            // the system-wide corepack check. Without this branch the code
+            // below would join `nvm_dir/system:v20.0.0`, find no `node`
+            // binary there, and bail with `not_installed` — masking the fact
+            // that the user explicitly asked about the system install.
+            if resolved.starts_with("system:") {
+                return corepack_system_status(&resolved);
+            }
+
             let version_bin = version_bin_dir(&nvm_dir.join(&resolved));
             let node_path = exe_path(&version_bin, "node");
 
@@ -103,23 +159,17 @@ pub fn corepack_status(version: Option<&str>) -> anyhow::Result<()> {
             let current_file = nvm_dir.join("current");
             if current_file.exists() {
                 let current = fs::read_to_string(&current_file)?.trim().to_string();
-                if !current.starts_with("system:") {
-                    return corepack_status(Some(&current));
+                if current.starts_with("system:") {
+                    // Current is the system Node.js — probe system-wide
+                    // corepack instead of looking for a version-scoped bin.
+                    return corepack_system_status(&current);
                 }
+                return corepack_status(Some(&current));
             }
 
-            // Check if corepack is available system-wide
-            if let Ok(output) = Command::new("corepack").arg("--version").output() {
-                let version_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                println!(
-                    "{} {} {}",
-                    "ℹ".cyan().bold(),
-                    T("system_corepack").cyan(),
-                    version_str.white().bold()
-                );
-            } else {
-                println!("{} {}", "ℹ".cyan().bold(), T("corepack_no_version").cyan());
-            }
+            // No current version set: still report whether corepack is
+            // available system-wide so the user knows what they have.
+            corepack_system_status("system:")?;
         }
     }
 
@@ -147,8 +197,13 @@ struct CorepackTarget {
 
 /// Resolve `version` (or fall back to the `current` symlink) and compute the
 /// corepack target paths. Bails with `not_installed` if the resolved version's
-/// `node` binary is missing, and with `no_version_no_current` if no version
-/// was given and `current` is unset.
+/// `node` binary is missing, with `no_version_no_current` if no version was
+/// given and `current` is unset, and with `corepack_system_not_supported` if
+/// the resolved version is the system Node.js — `corepack enable`/`disable`
+/// write shims into a version-scoped bin dir that does not exist for system
+/// installs, and running them with the default system-wide target would leak
+/// shims outside nvm's management (they would persist after `nvm deactivate`
+/// and survive an uninstall).
 fn resolve_corepack_target(
     nvm_dir: &std::path::Path,
     version: Option<&str>,
@@ -164,6 +219,16 @@ fn resolve_corepack_target(
             }
         }
     };
+
+    if resolved.starts_with("system:") {
+        anyhow::bail!(
+            "{}",
+            format_t(
+                "corepack_system_not_supported",
+                std::slice::from_ref(&resolved)
+            )
+        );
+    }
 
     let version_bin = version_bin_dir(&nvm_dir.join(&resolved));
     let node_path = exe_path(&version_bin, "node");
