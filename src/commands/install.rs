@@ -411,47 +411,67 @@ fn install_binary(
     // not be deleted — guard is only armed when `owns_extract_file`.
     let extract_guard = owns_extract_file.then(|| SourceGuard::file(extract_path.clone()));
 
-    if !target.is_iojs {
-        print!("  {} ", T("checksum_label").dimmed());
-        if offline {
-            println!("{}", T("checksum_offline").dimmed());
-        } else {
-            // Fetch SHASUMS256.txt ONCE and reuse the bytes for both the
-            // checksum check and the GPG signature check. Previously each
-            // check downloaded its own copy, so a single install issued two
-            // GETs for the same small file. Sharing bytes also guarantees
-            // both checks run against the identical document (a mirror
-            // reformatting the file between the two requests could otherwise
-            // cause a checksum-pass / signature-fail mismatch).
-            let sums_bytes = match fetch_shasums(base_url, &target.target_version) {
-                Ok(b) => b,
-                Err(e) => {
-                    println!("{}", T("checksum_failed").red().bold());
-                    anyhow::bail!("{}", e);
-                }
-            };
+    // Integrity verification: the SHA-256 checksum check runs for BOTH
+    // Node.js and io.js — a MITM tampering with either tarball must be
+    // caught. GPG signature verification runs for Node.js ONLY: io.js
+    // releases (EOL 2015) were signed by a separate key set not present in
+    // NODEJS_RELEASE_KEY_IDS, and iojs.org does not reliably serve
+    // SHASUMS256.txt.sig, so forcing it would abort every io.js install.
+    // The SHA-256 checksum still protects io.js against a tampered or
+    // corrupt tarball.
+    //
+    // Previously this whole block was gated on `!target.is_iojs`, so io.js
+    // installs skipped checksum verification entirely — a security
+    // regression vs nvm-sh, which verifies io.js SHASUMS256.txt too.
+    //
+    // io.js archives are downloaded from IOJS_URI (the mirror config only
+    // mirrors nodejs.org/dist), so SHASUMS256.txt must be fetched from the
+    // same host the archive came from — otherwise we'd 404 against the
+    // Node.js mirror and wrongly bail.
+    let sums_base_url = if target.is_iojs { IOJS_URI } else { base_url };
 
-            // Hard security boundary: verify_checksum now returns Err for
-            // any failure (network error, 404, archive not listed, hash
-            // mismatch). A previous version returned Ok(false) and the
-            // caller merely printed "skipped" — which let a MITM drop the
-            // SHASUMS256.txt request and ship a tampered tarball. Use
-            // --offline to bypass when the mirror is unreachable.
-            match verify_checksum(&extract_path, &target.archive_name, &sums_bytes) {
-                Ok(()) => println!("{}", T("checksum_verified").green().bold()),
-                Err(e) => {
-                    println!("{}", T("checksum_failed").red().bold());
-                    anyhow::bail!("{}", e);
-                }
+    print!("  {} ", T("checksum_label").dimmed());
+    if offline {
+        println!("{}", T("checksum_offline").dimmed());
+    } else {
+        // Fetch SHASUMS256.txt ONCE and reuse the bytes for both the
+        // checksum check and the GPG signature check. Previously each
+        // check downloaded its own copy, so a single install issued two
+        // GETs for the same small file. Sharing bytes also guarantees
+        // both checks run against the identical document (a mirror
+        // reformatting the file between the two requests could otherwise
+        // cause a checksum-pass / signature-fail mismatch).
+        let sums_bytes = match fetch_shasums(sums_base_url, &target.target_version) {
+            Ok(b) => b,
+            Err(e) => {
+                println!("{}", T("checksum_failed").red().bold());
+                anyhow::bail!("{}", e);
             }
+        };
 
-            // GPG signature verification of SHASUMS256.txt — extra trust layer
-            // on top of the SHA-256 checksum. Skips only when gpg is missing,
-            // --no-gpg-verify is passed, or --offline is in effect. A *failed*
-            // signature (gpg ran and rejected it) or an unreachable .sig
-            // (network error, 404) aborts, since either could indicate
-            // tampering or an active MITM stripping the signature. The sums
-            // body is reused from the fetch above (no second download).
+        // Hard security boundary: verify_checksum now returns Err for
+        // any failure (network error, 404, archive not listed, hash
+        // mismatch). A previous version returned Ok(false) and the
+        // caller merely printed "skipped" — which let a MITM drop the
+        // SHASUMS256.txt request and ship a tampered tarball. Use
+        // --offline to bypass when the mirror is unreachable.
+        match verify_checksum(&extract_path, &target.archive_name, &sums_bytes) {
+            Ok(()) => println!("{}", T("checksum_verified").green().bold()),
+            Err(e) => {
+                println!("{}", T("checksum_failed").red().bold());
+                anyhow::bail!("{}", e);
+            }
+        }
+
+        // GPG signature verification of SHASUMS256.txt — extra trust layer
+        // on top of the SHA-256 checksum. Node.js only (see the comment
+        // above the checksum label for why io.js is excluded). Skips only
+        // when gpg is missing, --no-gpg-verify is passed, or --offline is
+        // in effect. A *failed* signature (gpg ran and rejected it) or an
+        // unreachable .sig (network error, 404) aborts, since either could
+        // indicate tampering or an active MITM stripping the signature.
+        // The sums body is reused from the fetch above (no second download).
+        if !target.is_iojs {
             print!("  {} ", T("gpg_label").dimmed());
             match verify_gpg_signature(
                 base_url,
