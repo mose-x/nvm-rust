@@ -156,26 +156,29 @@ pub fn lts_codename_to_major_with_remote(base_url: &str) -> BTreeMap<String, u32
 
 pub fn is_lts_version(version: &str) -> bool {
     let v = version.trim_start_matches('v');
-    let parts: Vec<&str> = v.split('.').collect();
-    if parts.len() < 3 {
+    // Count dots without allocating a Vec: LTS check needs the major and
+    // requires a full vX.Y.Z (>= 2 dots). `split('.').next()` gives the
+    // major without collecting the rest.
+    if v.matches('.').count() < 2 {
         return false;
     }
-    if let Ok(major) = parts[0].parse::<u32>() {
-        // A version is LTS only if its major has a registered LTS codename.
-        // The old "even major >= 4" heuristic was wrong: it marked v26.x.x
-        // (and any future even Current line) as LTS before that line actually
-        // enters LTS, producing a bogus "✓ LTS" badge with codename "-" in
-        // `nvm ls-remote` / `nvm ls`.
-        let codename_map = lts_codename_to_major();
-        return codename_map.values().any(|&m| m == major);
+    if let Some(first) = v.split('.').next() {
+        if let Ok(major) = first.parse::<u32>() {
+            // A version is LTS only if its major has a registered LTS codename.
+            // The old "even major >= 4" heuristic was wrong: it marked v26.x.x
+            // (and any future even Current line) as LTS before that line actually
+            // enters LTS, producing a bogus "✓ LTS" badge with codename "-" in
+            // `nvm ls-remote` / `nvm ls`.
+            let codename_map = lts_codename_to_major();
+            return codename_map.values().any(|&m| m == major);
+        }
     }
     false
 }
 
 pub fn parse_major(version: &str) -> Option<u32> {
     let v = version.trim_start_matches('v');
-    let parts: Vec<&str> = v.split('.').collect();
-    parts.first().and_then(|p| p.parse::<u32>().ok())
+    v.split('.').next()?.parse::<u32>().ok()
 }
 
 /// Validate that `input` is a bare-major or major.minor shorthand —

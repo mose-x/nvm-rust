@@ -759,4 +759,50 @@ mod tests {
             "non-UTF-8 sums should be rejected as such: {err}"
         );
     }
+
+    // --- verify_gpg_signature (skip-path branches) -----------------------
+    //
+    // `verify_gpg_signature` is the security gate that protects `nvm install`
+    // from a tampered SHASUMS256.txt. The function has several short-circuit
+    // branches that must return the documented `GpgStatus` without touching
+    // the network or invoking gpg; the three branches below are pure logic
+    // and can be tested with zero external dependencies. The
+    // network-dependent paths (download .sig, invoke gpg, import keys) are
+    // not covered here because they require either a live mirror or a gpg
+    // keyring, neither of which is safe to assume in CI.
+
+    #[test]
+    fn test_verify_gpg_signature_disabled_short_circuit() {
+        // --no-gpg-verify must skip without inspecting any other input.
+        let status = verify_gpg_signature("https://nodejs.org/dist/", "v20.0.0", b"", true, false)
+            .expect("disabled path never errors");
+        assert_eq!(status, GpgStatus::SkippedDisabled);
+    }
+
+    #[test]
+    fn test_verify_gpg_signature_offline_short_circuit() {
+        // --offline must skip without inspecting any other input. The
+        // `no_gpg_verify=false` arg ensures the disabled branch is NOT the
+        // one that short-circuits.
+        let status = verify_gpg_signature("https://nodejs.org/dist/", "v20.0.0", b"", false, true)
+            .expect("offline path never errors");
+        assert_eq!(status, GpgStatus::SkippedOffline);
+    }
+
+    #[test]
+    fn test_verify_gpg_signature_no_gpg_binary_short_circuit() {
+        // When gpg is not on PATH, the function must return SkippedNoGpg
+        // rather than Err — callers rely on this to continue with
+        // checksum-only verification. gpg IS installed in most dev/CI
+        // environments, so this test only asserts the documented behaviour
+        // when gpg is actually absent; otherwise it's a no-op.
+        if gpg_available() {
+            // gpg is installed here; SkippedNoGpg can't be exercised
+            // without mocking PATH. Skip rather than assert a false negative.
+            return;
+        }
+        let status = verify_gpg_signature("https://nodejs.org/dist/", "v20.0.0", b"", false, false)
+            .expect("no-gpg path never errors");
+        assert_eq!(status, GpgStatus::SkippedNoGpg);
+    }
 }
