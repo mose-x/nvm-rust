@@ -40,6 +40,18 @@ pub fn extract_iojs_archive(archive_path: &Path, dest_dir: &Path, version: &str)
 /// Unix or hardcoded `win-x64` on Windows.
 fn extract_inner(archive_path: &Path, dest_dir: &Path, label: &str) -> Result<()> {
     fs::create_dir_all(dest_dir).context(T("cannot_create_dir"))?;
+    // RAII guard: if extraction fails midway, dest_dir will contain partial
+    // files. Without cleanup, the next `nvm install <same version>` sees a
+    // non-empty version_dir and bails "already installed", leaving the user
+    // stuck on a corrupted directory (the soft-lock bug). The guard removes
+    // dest_dir on every error path; disarmed on success.
+    //
+    // CONTRACT: caller must ensure dest_dir does not exist or is empty
+    // (install.rs enforces this for the binary install path). The guard
+    // removes the whole dir on failure, so a pre-existing non-empty dest
+    // would be lost — that is the caller's contract violation, not a bug
+    // here.
+    let mut guard = DirGuard::new(dest_dir.to_path_buf());
 
     #[cfg(target_os = "windows")]
     {
@@ -82,7 +94,33 @@ fn extract_inner(archive_path: &Path, dest_dir: &Path, label: &str) -> Result<()
         }
     }
 
+    guard.disarm();
     Ok(())
+}
+
+/// RAII guard that removes a directory when dropped, unless disarmed.
+/// Used by `extract_inner` to clean up a partially-populated dest_dir on
+/// extraction failure, preventing the "already installed" soft-lock.
+struct DirGuard {
+    path: std::path::PathBuf,
+    armed: bool,
+}
+
+impl DirGuard {
+    fn new(path: std::path::PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for DirGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
 }
 
 /// Build the top-level directory name a Node.js/io.js tarball expands to on
@@ -177,5 +215,56 @@ mod tests {
             assert!(!name.ends_with("-arm64-x64"));
             assert!(!name.ends_with("-x64-x64"));
         }
+    }
+
+    #[test]
+    fn extract_archive_cleans_dest_dir_on_failure() {
+        // Regression for the soft-lock bug: if extraction fails midway,
+        // dest_dir must be removed so the next `nvm install <same version>`
+        // does not bail "already installed" on a corrupted partial dir.
+        // Here we feed a non-existent archive so `File::open` (Unix) or
+        // `decompress_file` (Windows) fails immediately after create_dir_all.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dest = tmp.path().join("dest");
+        let bogus_archive = tmp.path().join("does-not-exist.tar.xz");
+
+        let result = extract_archive(&bogus_archive, &dest, "v99.99.99");
+        assert!(result.is_err(), "extract should fail on missing archive");
+        assert!(
+            !dest.exists(),
+            "dest_dir must be cleaned up on extract failure to prevent soft-lock"
+        );
+    }
+
+    #[test]
+    fn dir_guard_removes_dir_when_armed() {
+        // DirGuard armed (default) → Drop removes the directory.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("guarded");
+        std::fs::create_dir_all(&dir).expect("create dir");
+        std::fs::write(dir.join("partial.txt"), b"x").expect("write partial");
+
+        {
+            let _guard = DirGuard::new(dir.clone());
+        } // guard dropped here
+
+        assert!(!dir.exists(), "armed DirGuard should remove dir on drop");
+    }
+
+    #[test]
+    fn dir_guard_keeps_dir_when_disarmed() {
+        // DirGuard disarmed → Drop is a no-op, dir survives.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("kept");
+        std::fs::create_dir_all(&dir).expect("create dir");
+        std::fs::write(dir.join("good.txt"), b"y").expect("write good");
+
+        {
+            let mut guard = DirGuard::new(dir.clone());
+            guard.disarm();
+        } // guard dropped here, but disarmed
+
+        assert!(dir.exists(), "disarmed DirGuard should keep dir");
+        assert!(dir.join("good.txt").exists(), "dir contents should survive");
     }
 }
