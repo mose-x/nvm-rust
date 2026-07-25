@@ -297,13 +297,32 @@ pub fn clear_cache() -> Result<u64> {
     }
     let mut cleared: u64 = 0;
     for entry in fs::read_dir(&cache_dir)? {
-        let entry = entry?;
+        let entry = match entry {
+            Ok(e) => e,
+            // Another process removed the entry between read_dir and the
+            // implicit stat — skip it instead of aborting the whole clear
+            // (the user would lose all progress made on earlier entries).
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+        };
         // Use symlink_metadata so a symlink planted in the cache dir can't
         // trick us into deleting (or following) its target.
-        let metadata = entry.path().symlink_metadata()?;
+        let metadata = match entry.path().symlink_metadata() {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+        };
         if metadata.is_file() {
             cleared += metadata.len();
-            fs::remove_file(entry.path())?;
+            // Best-effort remove: a concurrent process may have already
+            // deleted the file between our metadata stat and the remove.
+            // NotFound here is fine, just skip; other errors still propagate.
+            if let Err(e) = fs::remove_file(entry.path()) {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    continue;
+                }
+                return Err(e.into());
+            }
         }
     }
     Ok(cleared)
