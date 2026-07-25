@@ -126,8 +126,33 @@ pub fn corepack_status(version: Option<&str>) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn corepack_enable(version: Option<&str>) -> anyhow::Result<()> {
-    let nvm_dir = get_nvm_dir();
+/// Resolved target for a corepack enable/disable operation.
+///
+/// Built by `resolve_corepack_target` and consumed by both `corepack_enable`
+/// and `corepack_disable` so the version-resolution + node-presence-check +
+/// bin/corepack_path/path_env computation lives in exactly one place. The
+/// previous enable/disable pair each duplicated this ~25-line block; keeping
+/// them in sync by hand was fragile (an enable-only fix to `path_env` would
+/// silently miss disable, and vice versa).
+struct CorepackTarget {
+    resolved: String,
+    version_bin: std::path::PathBuf,
+    corepack_path: std::path::PathBuf,
+    /// PATH with this version's bin dir prepended. `corepack` is a JS file run
+    /// via `#!/usr/bin/env node`, so without the version's `bin/` on PATH the
+    /// spawn silently fails with exit 127 ("node: No such file or directory")
+    /// and the command falls through to its fallback path.
+    path_env: String,
+}
+
+/// Resolve `version` (or fall back to the `current` symlink) and compute the
+/// corepack target paths. Bails with `not_installed` if the resolved version's
+/// `node` binary is missing, and with `no_version_no_current` if no version
+/// was given and `current` is unset.
+fn resolve_corepack_target(
+    nvm_dir: &std::path::Path,
+    version: Option<&str>,
+) -> anyhow::Result<CorepackTarget> {
     let resolved = match version {
         Some(ver) => crate::config::resolve_alias(ver)?,
         None => {
@@ -148,19 +173,30 @@ pub fn corepack_enable(version: Option<&str>) -> anyhow::Result<()> {
             format_t("not_installed", std::slice::from_ref(&resolved))
         );
     }
+    let corepack_path = exe_path(&version_bin, "corepack");
+    let path_env = prepend_to_path(&version_bin);
+    Ok(CorepackTarget {
+        resolved,
+        version_bin,
+        corepack_path,
+        path_env,
+    })
+}
+
+pub fn corepack_enable(version: Option<&str>) -> anyhow::Result<()> {
+    let nvm_dir = get_nvm_dir();
+    let CorepackTarget {
+        resolved,
+        version_bin,
+        corepack_path,
+        path_env,
+    } = resolve_corepack_target(&nvm_dir, version)?;
 
     // `corepack enable` writes pnpm/yarn/... shims. By default it targets a
     // system-wide bin directory, which is wrong for an nvm-managed install —
     // the shims must live inside this version's bin dir so they disappear when
     // the version is uninstalled. Scope the install directory explicitly.
-    let corepack_path = exe_path(&version_bin, "corepack");
     let bin_arg = version_bin.display().to_string();
-    // The corepack binary is a JS file run via `#!/usr/bin/env node`. Without
-    // the version's `bin/` on PATH, `env node` won't find node and the spawn
-    // fails with "node: No such file or directory" — silently, because
-    // `.output()` swallows the lookup error. Same applies to the npm fallback
-    // below.
-    let path_env = prepend_to_path(&version_bin);
 
     let mut success = false;
     if corepack_path.exists() {
@@ -276,36 +312,16 @@ pub fn corepack_enable(version: Option<&str>) -> anyhow::Result<()> {
 
 pub fn corepack_disable(version: Option<&str>) -> anyhow::Result<()> {
     let nvm_dir = get_nvm_dir();
-    let resolved = match version {
-        Some(ver) => crate::config::resolve_alias(ver)?,
-        None => {
-            let current_file = nvm_dir.join("current");
-            if current_file.exists() {
-                fs::read_to_string(&current_file)?.trim().to_string()
-            } else {
-                anyhow::bail!("{}", T("no_version_no_current"));
-            }
-        }
-    };
-
-    let node_path = exe_path(&version_bin_dir(&nvm_dir.join(&resolved)), "node");
-    if !node_path.exists() {
-        anyhow::bail!(
-            "{}",
-            format_t("not_installed", std::slice::from_ref(&resolved))
-        );
-    }
+    let CorepackTarget {
+        resolved,
+        version_bin,
+        corepack_path,
+        path_env,
+    } = resolve_corepack_target(&nvm_dir, version)?;
 
     // First try the official `corepack disable` with an install-directory scoped
     // to this version's bin dir, so we only remove the shim entries created for
     // this version (and never touch a system-wide install).
-    let version_bin = version_bin_dir(&nvm_dir.join(&resolved));
-    let corepack_path = exe_path(&version_bin, "corepack");
-    // `corepack disable` runs corepack (a JS file), which needs `node` on
-    // PATH. Without this, the spawn silently fails with exit code 127 and we
-    // fall through to the manual shim-removal fallback (which still works,
-    // but loses corepack's own bookkeeping).
-    let path_env = prepend_to_path(&version_bin);
 
     let output = Command::new(&corepack_path)
         .args([
