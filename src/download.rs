@@ -323,6 +323,21 @@ pub fn clear_cache() -> Result<u64> {
             Err(e) => return Err(e.into()),
         };
         if metadata.is_file() {
+            // Don't delete in-flight `.part` files: a concurrent
+            // `nvm install` may be actively writing to one. Deleting it
+            // out from under the running download causes the next write to
+            // fail with a confusing "No such file" error.
+            // `list_cached_files` already hides `.part` from the listing;
+            // `clear_cache` must match that behavior so the user's "clear
+            // the cache" intent (completed downloads) doesn't nuke a
+            // partial download still in progress.
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.ends_with(PART_SUFFIX))
+            {
+                continue;
+            }
             cleared += metadata.len();
             // Best-effort remove: a concurrent process may have already
             // deleted the file between our metadata stat and the remove.
@@ -385,5 +400,58 @@ mod tests {
             f.write_all(b"hello").expect("write");
         }
         assert_eq!(fs::read(&path).unwrap(), b"hello");
+    }
+
+    // Serializes tests that mutate the process-global NVM_DIR env var and
+    // operate on the real cache dir. Without this, parallel cargo test runs
+    // would race on NVM_DIR and stomp each other's cache directories.
+    static CACHE_TESTS_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn clear_cache_skips_inflight_part_files() {
+        // Regression for the concurrent-download bug: clear_cache previously
+        // deleted EVERY file in the cache dir, including in-flight `.part`
+        // files that a concurrent `nvm install` might be actively writing
+        // to. The next write to the deleted .part would fail with a
+        // confusing "No such file" error. list_cached_files already hid
+        // .part from listings; clear_cache must match that behavior.
+        let _guard = CACHE_TESTS_MUTEX
+            .lock()
+            .expect("CACHE_TESTS_MUTEX poisoned");
+        // Save and override NVM_DIR so get_cache_dir() points at our tempdir.
+        let saved_nvm_dir = std::env::var_os("NVM_DIR");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("NVM_DIR", tmp.path());
+        let cache_dir = get_cache_dir();
+        fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        // A completed (cached) download: 11 bytes. Should be deleted.
+        fs::write(cache_dir.join("node-v99.9.9.tar.xz"), b"hello world").expect("write cached");
+        // An in-flight partial download: 7 bytes. Must be preserved.
+        fs::write(cache_dir.join("node-v99.9.9.tar.xz.part"), b"partial").expect("write part");
+
+        let cleared = clear_cache().expect("clear_cache should succeed");
+
+        // The completed file is gone, the .part survives.
+        assert!(
+            !cache_dir.join("node-v99.9.9.tar.xz").exists(),
+            "completed cache file should be deleted"
+        );
+        assert!(
+            cache_dir.join("node-v99.9.9.tar.xz.part").exists(),
+            "in-flight .part file must NOT be deleted (concurrent download protection)"
+        );
+        // Cleared byte count reflects only the completed file (11 bytes),
+        // NOT the .part (7 bytes) — the user asked to clear completed cache.
+        assert_eq!(
+            cleared, 11,
+            "cleared bytes should count only completed files, not .part"
+        );
+
+        // Restore NVM_DIR so we don't poison other tests.
+        match saved_nvm_dir {
+            Some(v) => std::env::set_var("NVM_DIR", v),
+            None => std::env::remove_var("NVM_DIR"),
+        }
     }
 }
