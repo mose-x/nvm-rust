@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use super::{IOJS_VERSION_RE, NODE_VERSION_RE};
 use crate::i18n::{format_t, T};
@@ -99,39 +99,49 @@ pub(crate) fn get_latest_lts_version(base_url: &str) -> Result<String> {
     // including non-LTS odd ones, and the "highest even" heuristic breaks
     // when a newer non-LTS even major ships before the LTS line bumps).
     //
-    // Any failure — network error, non-200, malformed JSON, no LTS entry —
-    // maps to the same "cannot determine LTS" bail, matching the previous
-    // fall-through behaviour but without 5 levels of nested `if let`.
-    match latest_lts_from_index(base_url) {
+    // Network/parse failures bubble up as Err (so the user sees the real
+    // cause); a successfully-fetched index with no LTS entry falls through
+    // to the bail below.
+    match latest_lts_from_index(base_url)? {
         Some(v) => Ok(v),
         None => anyhow::bail!("{}", T("cannot_determine_lts")),
     }
 }
 
 /// Walk `index.json` (newest-first) and return the first release tagged with
-/// an LTS codename. Returns `None` on any network/parse failure or when no
-/// LTS release is present — the caller decides how to surface that.
-fn latest_lts_from_index(base_url: &str) -> Option<String> {
+/// an LTS codename.
+///
+/// Returns `Ok(None)` when the index was fetched and parsed successfully but
+/// contained no LTS release (a legitimate "no LTS right now" state).
+/// Returns `Err` on network/HTTP/parse failure so the caller can surface
+/// the real cause instead of a misleading "cannot determine LTS".
+fn latest_lts_from_index(base_url: &str) -> Result<Option<String>> {
     let index_url = format!("{}index.json", base_url);
     let client = crate::proxy::build_http_client();
-    let resp = client.get(&index_url).send().ok()?;
+    let resp = client
+        .get(&index_url)
+        .send()
+        .with_context(|| format!("fetch index.json failed: {}", index_url))?;
     if !resp.status().is_success() {
-        return None;
+        anyhow::bail!("index.json returned HTTP {}", resp.status());
     }
-    let text = resp.text().ok()?;
-    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let arr = json.as_array()?;
+    let text = resp.text().context("read index.json body failed")?;
+    let json: serde_json::Value =
+        serde_json::from_str(&text).context("parse index.json as JSON failed")?;
+    let arr = json
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("index.json root is not an array"))?;
     for entry in arr {
         // Each entry: { "version": "v24.18.0", "lts": "Krypton", ... }
         // Non-LTS releases have `"lts": false`.
         let is_lts = entry.get("lts").and_then(|v| v.as_str()).is_some();
         if is_lts {
             if let Some(ver) = entry.get("version").and_then(|v| v.as_str()) {
-                return Some(ver.to_string());
+                return Ok(Some(ver.to_string()));
             }
         }
     }
-    None
+    Ok(None)
 }
 
 pub(crate) fn get_latest_version(base_url: &str) -> Result<String> {
