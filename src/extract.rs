@@ -19,6 +19,26 @@ use xz2::read::XzDecoder;
 use crate::system::os_suffix;
 
 pub fn extract_archive(archive_path: &Path, dest_dir: &Path, version: &str) -> Result<()> {
+    // `node-vX.Y.Z` for both Windows (node-vX.Y.Z-win-x64) and Unix
+    // (node-vX.Y.Z-<platform>-<arch>) extracted dir names.
+    extract_inner(archive_path, dest_dir, &format!("node-{}", version))
+}
+
+/// Extract an io.js tarball. io.js archives use "iojs-vX.Y.Z-platform-arch" prefix.
+pub fn extract_iojs_archive(archive_path: &Path, dest_dir: &Path, version: &str) -> Result<()> {
+    let ver_num = crate::utils::strip_iojs_prefix(version)
+        .unwrap_or(version)
+        .trim_start_matches('v');
+    // `iojs-vX.Y.Z` for both Windows (iojs-vX.Y.Z-win-x64) and Unix
+    // (iojs-vX.Y.Z-<platform>-<arch>) extracted dir names.
+    extract_inner(archive_path, dest_dir, &format!("iojs-v{}", ver_num))
+}
+
+/// Shared extraction core for both Node.js and io.js tarballs. `label` is the
+/// version-prefixed head of the extracted dir name (`node-v20.0.0` or
+/// `iojs-v3.3.1`); the platform/arch tail is derived from `os_suffix()` on
+/// Unix or hardcoded `win-x64` on Windows.
+fn extract_inner(archive_path: &Path, dest_dir: &Path, label: &str) -> Result<()> {
     println!("{}", T("extracting"));
 
     fs::create_dir_all(dest_dir).context(T("cannot_create_dir"))?;
@@ -35,7 +55,7 @@ pub fn extract_archive(archive_path: &Path, dest_dir: &Path, version: &str) -> R
             )
         })?;
 
-        let extracted = dest_dir.join(format!("node-{}-win-x64", version));
+        let extracted = dest_dir.join(format!("{}-win-x64", label));
         if extracted.exists() {
             flatten_dir(&extracted, dest_dir)?;
         }
@@ -51,64 +71,14 @@ pub fn extract_archive(archive_path: &Path, dest_dir: &Path, version: &str) -> R
             .context(T("extraction_failed_short"))?;
 
         // The tarball expands to a single top-level dir named
-        // `node-vX.Y.Z-<platform>-<arch>` (e.g. `node-v20.0.0-darwin-arm64`).
+        // `<label>-<platform>-<arch>` (e.g. `node-v20.0.0-darwin-arm64`).
         // Derive that name from `os_suffix()` via `extracted_dir_name` so it
         // always matches the real dir. The previous inline code appended a
         // literal `-x64`, which on ARM64 produced
         // `node-v20.0.0-darwin-arm64-x64` (a path that never exists), so
         // `flatten_dir` was skipped and the version dir stayed nested one
         // level deep — breaking `nvm use/which/run`.
-        let extracted = dest_dir.join(extracted_dir_name(&format!("node-{}", version)));
-        if extracted.exists() {
-            flatten_dir(&extracted, dest_dir)?;
-        }
-    }
-
-    Ok(())
-}
-
-/// Extract an io.js tarball. io.js archives use "iojs-vX.Y.Z-platform-arch" prefix.
-pub fn extract_iojs_archive(archive_path: &Path, dest_dir: &Path, version: &str) -> Result<()> {
-    println!("{}", T("extracting"));
-
-    fs::create_dir_all(dest_dir).context(T("cannot_create_dir"))?;
-
-    let ver_num = crate::utils::strip_iojs_prefix(version)
-        .unwrap_or(version)
-        .trim_start_matches('v');
-
-    #[cfg(target_os = "windows")]
-    {
-        // Pure-Rust 7z decompression — reads via path, no external 7z.exe.
-        // Don't `File::open` here: on Windows an AV-locked tarball would
-        // fail the open even though decompress_file would have worked.
-        sevenz_rust::decompress_file(archive_path, dest_dir).map_err(|e| {
-            anyhow::anyhow!(
-                "{}",
-                crate::i18n::format_t("extraction_failed", &[e.to_string()])
-            )
-        })?;
-
-        let extracted = dest_dir.join(format!("iojs-v{}-win-x64", ver_num));
-        if extracted.exists() {
-            flatten_dir(&extracted, dest_dir)?;
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let file = File::open(archive_path).context(T("cannot_open_archive"))?;
-        let decoder = XzDecoder::new(file);
-        let mut archive = Archive::new(decoder);
-        archive
-            .unpack(dest_dir)
-            .context(T("extraction_failed_short"))?;
-
-        // Mirror the node-archive fix: io.js tarballs expand to
-        // `iojs-vX.Y.Z-<platform>-<arch>`, so derive the dir name from
-        // `os_suffix()` via `extracted_dir_name` instead of appending a
-        // literal `-x64` (which broke ARM64 hosts the same way as above).
-        let extracted = dest_dir.join(extracted_dir_name(&format!("iojs-v{}", ver_num)));
+        let extracted = dest_dir.join(extracted_dir_name(label));
         if extracted.exists() {
             flatten_dir(&extracted, dest_dir)?;
         }
