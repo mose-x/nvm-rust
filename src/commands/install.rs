@@ -20,6 +20,10 @@ use crate::system::{
 use crate::utils::{atomic_write, iojs_version_number};
 use indicatif::{ProgressBar, ProgressStyle};
 
+/// Final io.js release (2015-05-21). io.js merged back into Node.js with
+/// v4.0.0, so `nvm install iojs` (no explicit version) resolves to this.
+const IOJS_FINAL_VERSION: &str = "3.3.1";
+
 /// Resolved target for an install operation. Built by `build_install_target`
 /// and consumed by the source/binary/post-install phases so `install` itself
 /// stays a thin orchestrator.
@@ -91,7 +95,7 @@ fn build_install_target(
             .ok_or_else(|| anyhow::anyhow!("io.js install requested but no version provided"))?;
         let lv = ver.to_lowercase();
         let ver_input = if lv == "iojs" || lv == "io.js" {
-            "3.3.1".to_string()
+            IOJS_FINAL_VERSION.to_string()
         } else {
             lv
         };
