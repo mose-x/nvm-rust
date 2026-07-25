@@ -24,10 +24,10 @@ pub fn generate_completions(shell: Option<&str>) -> anyhow::Result<()> {
 fn bash_completions() -> anyhow::Result<()> {
     let nvm_dir = get_nvm_dir();
     let completions_dir = nvm_dir.join("completions");
-
-    if !completions_dir.exists() {
-        fs::create_dir_all(&completions_dir)?;
-    }
+    // Direct `create_dir_all` (idempotent) instead of `if !exists() { ... }`:
+    // the two-step form is a TOCTOU — another process could remove the dir
+    // between the stat and the mkdir. Matches `system::ensure_nvm_dir`.
+    fs::create_dir_all(&completions_dir)?;
 
     let completion_file = completions_dir.join("nvm.bash");
     let script = r#"# nvm bash completion
@@ -94,10 +94,8 @@ _nvm_completion() {
 fn zsh_completions() -> anyhow::Result<()> {
     let nvm_dir = get_nvm_dir();
     let completions_dir = nvm_dir.join("completions");
-
-    if !completions_dir.exists() {
-        fs::create_dir_all(&completions_dir)?;
-    }
+    // Direct `create_dir_all` (idempotent); see bash_completions for rationale.
+    fs::create_dir_all(&completions_dir)?;
 
     let completion_file = completions_dir.join("_nvm");
     let script = r#"#compdef nvm
@@ -266,10 +264,8 @@ _nvm "$@"
 fn fish_completions() -> anyhow::Result<()> {
     let nvm_dir = get_nvm_dir();
     let completions_dir = nvm_dir.join("completions");
-
-    if !completions_dir.exists() {
-        fs::create_dir_all(&completions_dir)?;
-    }
+    // Direct `create_dir_all` (idempotent); see bash_completions for rationale.
+    fs::create_dir_all(&completions_dir)?;
 
     let completion_file = completions_dir.join("nvm.fish");
     let script = r#"# nvm fish completion
@@ -372,10 +368,8 @@ complete -c nvm -n '__fish_seen_subcommand_from migrate' -a 'nvm-windows' -d 'Fr
 fn powershell_completions() -> anyhow::Result<()> {
     let nvm_dir = get_nvm_dir();
     let completions_dir = nvm_dir.join("completions");
-
-    if !completions_dir.exists() {
-        fs::create_dir_all(&completions_dir)?;
-    }
+    // Direct `create_dir_all` (idempotent); see bash_completions for rationale.
+    fs::create_dir_all(&completions_dir)?;
 
     let completion_file = completions_dir.join("nvm.ps1");
     let script = r#"# nvm PowerShell completion
