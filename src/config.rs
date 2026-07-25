@@ -284,6 +284,32 @@ pub fn list_all_aliases() -> Result<()> {
     Ok(())
 }
 
+/// Validate a resolved alias/version string before returning it from
+/// `resolve_alias`. This is the defense-in-depth gate for values sourced
+/// from on-disk JSON (`aliases.json`, `config.json`) or the `current` file:
+/// `set_alias` validates on write, but a user hand-editing the JSON (or an
+/// attacker with write access to `~/.nvm`) could inject path-traversal
+/// payloads like `v1.0.0/../../etc/passwd` that would later escape
+/// `nvm_dir` via `nvm_dir.join(&version)`. Reject such payloads here.
+///
+/// `lts/*`, `lts/-N` and `lts/<codename>` are alias forms that legitimately
+/// contain a slash; they will be re-resolved recursively by the caller and
+/// hit the terminal fallback's `validate_version_name`. For those we only
+/// reject traversal markers (`..`, NUL, control chars). Every other value
+/// goes through the full `validate_version_name` (which forbids `/`, `\`,
+/// `..`, control chars, spaces) — accepting `v20.0.0`, `iojs-v3.3.1`,
+/// `system:v20.0.0`, and alias-of-alias names like `lts` / `default`.
+fn validated(v: &str) -> Result<String> {
+    if v.starts_with("lts/") {
+        if v.contains("..") || v.contains('\0') || v.chars().any(|c| c.is_control()) {
+            anyhow::bail!("{}", format_t("invalid_version_name", &[v.to_string()]));
+        }
+        return Ok(v.to_string());
+    }
+    crate::utils::validate_version_name(v)?;
+    Ok(v.to_string())
+}
+
 pub fn resolve_alias(name: &str) -> Result<String> {
     // Reject empty / whitespace-only input early. Without this, `nvm use ""`
     // would fall through to `resolve_version`, which prepends "v" to the
@@ -299,12 +325,12 @@ pub fn resolve_alias(name: &str) -> Result<String> {
     if name == "default" {
         if let Ok(aliases) = load_aliases() {
             if let Some(v) = aliases.aliases.get(name) {
-                return Ok(v.clone());
+                return validated(v);
             }
         }
         let config = load_config()?;
         if let Some(v) = config.default_version {
-            return Ok(v);
+            return validated(&v);
         }
         anyhow::bail!("{}", T("no_default_version"));
     }
@@ -324,7 +350,7 @@ pub fn resolve_alias(name: &str) -> Result<String> {
             Ok(content) => {
                 let v = content.trim();
                 if !v.is_empty() {
-                    return Ok(v.to_string());
+                    return validated(v);
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -348,7 +374,7 @@ pub fn resolve_alias(name: &str) -> Result<String> {
             if let Ok(v) = Command::new(&node_path).arg("--version").output() {
                 let v = String::from_utf8_lossy(&v.stdout).trim().to_string();
                 if !v.is_empty() {
-                    return Ok(format!("system:{}", v));
+                    return validated(&format!("system:{}", v));
                 }
             }
         }
@@ -407,7 +433,7 @@ pub fn resolve_alias(name: &str) -> Result<String> {
 
     let aliases = load_aliases()?;
     if let Some(v) = aliases.aliases.get(name) {
-        return Ok(v.clone());
+        return validated(v);
     }
 
     // Bare major / major.minor shorthand (e.g. "22", "22.5", "v22.5"):
@@ -1312,5 +1338,53 @@ mod tests {
     fn test_resolve_alias_passes_through_iojs_dot_version() {
         // The "io.js-" spelling must also skip the v-prepend.
         assert_eq!(resolve_alias("io.js-v3.3.1").unwrap(), "io.js-v3.3.1");
+    }
+
+    #[test]
+    fn validated_accepts_legitimate_values() {
+        // Every form that can legitimately come from aliases.json /
+        // config.json / the current file must pass the defense-in-depth
+        // gate. If any of these started being rejected, `nvm use default` /
+        // `nvm use current` / alias chains would break.
+        assert_eq!(validated("v20.11.0").unwrap(), "v20.11.0");
+        assert_eq!(validated("20.11.0").unwrap(), "20.11.0");
+        assert_eq!(validated("iojs-v3.3.1").unwrap(), "iojs-v3.3.1");
+        assert_eq!(validated("io.js-v2.5.0").unwrap(), "io.js-v2.5.0");
+        assert_eq!(validated("system:v20.0.0").unwrap(), "system:v20.0.0");
+        // Aliases can point at other aliases (alias-of-alias chains).
+        assert_eq!(validated("lts").unwrap(), "lts");
+        assert_eq!(validated("lts/*").unwrap(), "lts/*");
+        assert_eq!(validated("lts/-1").unwrap(), "lts/-1");
+        assert_eq!(validated("lts/iron").unwrap(), "lts/iron");
+        assert_eq!(validated("default").unwrap(), "default");
+        // Bare major / major.minor shorthand.
+        assert_eq!(validated("22").unwrap(), "22");
+        assert_eq!(validated("v22.5").unwrap(), "v22.5");
+    }
+
+    #[test]
+    fn validated_rejects_path_traversal_from_disk() {
+        // Regression for the defense-in-depth gap: previously the `default`,
+        // `current`, and user-alias branches of `resolve_alias` returned
+        // values read straight from on-disk JSON / the current file WITHOUT
+        // calling `validate_version_name`. A user hand-editing
+        // `~/.nvm/alias/default` to `v1.0.0/../../etc/passwd` would have
+        // escaped nvm_dir via `nvm_dir.join(&version)` on the next
+        // `nvm use default`. `validated` must reject every traversal shape.
+        assert!(validated("v1.0.0/../../etc").is_err());
+        assert!(validated("v1.0.0\\..\\etc").is_err());
+        assert!(validated("..").is_err());
+        assert!(validated("v1..2").is_err());
+        assert!(validated("v1\0x").is_err());
+        assert!(validated("v1.0.0 ../etc").is_err());
+        assert!(validated("").is_err());
+        // A `system:` prefix with traversal in the version part must also be
+        // rejected — `system:v1/../../x` would escape just as easily.
+        assert!(validated("system:v1/../../etc").is_err());
+        // An `lts/` prefix hiding traversal must be rejected too — the
+        // lts/ fast-path only allows the alias forms (lts/*, lts/-N,
+        // lts/<codename>), not `lts/../../etc`.
+        assert!(validated("lts/../../etc").is_err());
+        assert!(validated("lts/\0x").is_err());
     }
 }
