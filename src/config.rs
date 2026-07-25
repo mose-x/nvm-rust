@@ -937,21 +937,27 @@ pub fn remove_from_shell_config() -> Result<()> {
     };
 
     let config_path = Path::new(&shell_config);
-    // Nothing to clean if the rc file isn't there. But if it IS there,
-    // backup must succeed before we overwrite — same rationale as
-    // update_shell_config.
-    if !config_path.exists() {
-        return Ok(());
-    }
-    backup_file(config_path).context(T("shell_config_backup_failed"))?;
 
     let nvm_dir_str = get_nvm_dir().display().to_string();
 
+    // Read directly and map NotFound → "nothing to clean" instead of
+    // `exists()` + `read_to_string`: the two-step form is a TOCTOU race
+    // (another process could remove the rc file between the stat and the
+    // read), and a single read is one syscall instead of two.
+    //
     // The previous `if let Ok(...) = read_to_string` silently returned
     // Ok(()) on read failure, masking permission/IO errors as "nothing
     // to remove" — the user's config would remain polluted with stale
     // NVM lines and they'd never know. Surface the read error instead.
-    let content = fs::read_to_string(config_path).context(T("shell_config_read_failed"))?;
+    let content = match fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).context(T("shell_config_read_failed")),
+    };
+    // Backup MUST succeed before we overwrite, same rationale as
+    // update_shell_config. At this point the file is known to exist (read
+    // succeeded), so backup_file will actually copy it.
+    backup_file(config_path).context(T("shell_config_backup_failed"))?;
     let stripped = strip_nvm_lines(&content, &nvm_dir_str);
     atomic_write(config_path, &stripped)?;
     println!("{}", crate::i18n::T("shell_config_removed").green());
