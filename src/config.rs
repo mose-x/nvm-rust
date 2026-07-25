@@ -138,12 +138,21 @@ pub fn set_alias(name: &str, version: Option<&str>) -> Result<()> {
     if name.is_empty() {
         anyhow::bail!("{}", T("alias_name_empty"));
     }
+    // Hold the nvm lock across the load→modify→save so two concurrent
+    // `nvm alias` calls don't lose updates: both would otherwise load the
+    // same alias.json, each insert into its in-memory copy, and the second
+    // save would silently overwrite the first (lost update). `atomic_write`
+    // only guarantees a single write is atomic, not the whole transaction.
+    // Re-entrant: an outer caller already holding the lock gets a no-op
+    // guard instead of self-deadlocking.
+    let nvm_dir = get_nvm_dir();
+    let _nvm_lock = crate::utils::acquire_nvm_lock(&nvm_dir)?;
     let mut aliases = load_aliases()?;
 
     match version {
         Some(v) => {
             let resolved = resolve_alias(v)?;
-            let version_dir = get_nvm_dir().join(&resolved);
+            let version_dir = nvm_dir.join(&resolved);
             if !version_dir.exists() {
                 anyhow::bail!(
                     "{}",
@@ -180,6 +189,11 @@ pub fn set_alias(name: &str, version: Option<&str>) -> Result<()> {
 }
 
 pub fn remove_alias(name: &str) -> Result<()> {
+    // Same read-modify-write transaction as `set_alias`: hold the nvm lock
+    // across load→remove→save to prevent a concurrent `set_alias`/
+    // `remove_alias` from overwriting this removal (or vice versa).
+    let nvm_dir = get_nvm_dir();
+    let _nvm_lock = crate::utils::acquire_nvm_lock(&nvm_dir)?;
     let mut aliases = load_aliases()?;
 
     if aliases.aliases.remove(name).is_some() {

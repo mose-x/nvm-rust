@@ -82,6 +82,63 @@ fn alias_set_then_unalias_roundtrip() {
     );
 }
 
+#[test]
+fn alias_set_concurrent_no_lost_update() {
+    // Regression for the read-modify-write race in set_alias (P1-11):
+    // without the nvm lock, N concurrent `nvm alias <name> v20.0.0` calls
+    // would each load the same alias.json, insert their own alias, and save
+    // — the second save overwriting the first, the third overwriting the
+    // second, etc. The final alias.json would contain only the last writer's
+    // alias, silently dropping all the others (lost update).
+    //
+    // With the lock, the operations serialize: each load sees the previous
+    // save, so all N aliases end up in alias.json.
+    //
+    // We use enough parallel processes that a lost update is near-certain
+    // without the fix (each process's load-modify-save window overlaps with
+    // the others' if they all start at the same time).
+    let (dir, nvm_dir) = common::isolated_nvm_dir();
+    create_fake_version(dir.path(), "v20.0.0", false);
+
+    let n = 10;
+    let mut handles = Vec::with_capacity(n);
+    for i in 0..n {
+        let nvm_dir = nvm_dir.clone();
+        let alias_name = format!("concurrent_{i:02}");
+        handles.push(std::thread::spawn(move || {
+            let out = std::process::Command::new(common::nvm_bin())
+                .args(["alias", &alias_name, "v20.0.0"])
+                .env("NVM_DIR", &nvm_dir)
+                .output()
+                .expect("run nvm alias");
+            (alias_name, out)
+        }));
+    }
+
+    let mut failures = Vec::new();
+    for h in handles {
+        let (name, out) = h.join().expect("thread panicked");
+        if !out.status.success() {
+            failures.push(format!(
+                "alias {name} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "some alias sets failed: {failures:?}");
+
+    // Read alias.json and verify every alias is present.
+    let alias_file = dir.path().join("alias.json");
+    let content = std::fs::read_to_string(&alias_file).expect("read alias.json");
+    for i in 0..n {
+        let name = format!("concurrent_{i:02}");
+        assert!(
+            content.contains(&format!("\"{name}\"")),
+            "alias '{name}' is missing from alias.json — lost update detected\n{content}"
+        );
+    }
+}
+
 // --- `nvm mirror` ---------------------------------------------------------
 
 #[test]
