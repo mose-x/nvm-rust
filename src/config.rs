@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::i18n::{format_t, T};
+use crate::i18n::{format_t, t_en, T};
 use crate::system::{get_nvm_dir, get_tags, ALIAS_FILE, CONFIG_FILE, URI};
 use crate::utils::{atomic_write, backup_file};
 
@@ -84,13 +84,18 @@ pub fn load_config() -> Result<Config> {
     // Returning default on a corrupt file would cause the next
     // save_config to overwrite it with an empty config, permanently
     // losing the user's mirror/aliases/language.
+    //
+    // Use `t_en` (not `T`) for the hint: `T()` → `get_language()` →
+    // `load_config()`, so formatting this bail message with `T()` would
+    // recurse infinitely on a corrupt config and abort with a stack
+    // overflow. `t_en` resolves the English string directly.
     match serde_json::from_str::<Config>(&content) {
         Ok(c) => Ok(c),
         Err(e) => anyhow::bail!(
             "{}: {} ({})",
             config_file.display(),
             e,
-            T("config_corrupt_hint")
+            t_en("config_corrupt_hint")
         ),
     }
 }
@@ -122,7 +127,7 @@ pub fn load_aliases() -> Result<Aliases> {
             "{}: {} ({})",
             alias_file.display(),
             e,
-            T("config_corrupt_hint")
+            t_en("config_corrupt_hint")
         ),
     }
 }

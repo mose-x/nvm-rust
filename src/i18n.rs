@@ -109,6 +109,33 @@ fn lang_cache() -> &'static std::sync::Mutex<Option<Lang>> {
     LANG_CACHE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
+/// Whether the "config corrupt" warning has already been printed in this
+/// process.
+///
+/// `get_language()` is called from every `T()` / `format_t()` site — hundreds
+/// of times per command. When `config.json` is malformed, every call would
+/// previously re-print the warning, flooding the terminal (e.g. `nvm ls-remote`
+/// prints it once per LTS line). We deliberately do NOT cache the fallback
+/// `Lang` (a retry after the user fixes the config should re-read), so the
+/// warning path is hit on every call — hence this once-per-process gate.
+///
+/// `AtomicBool` (not `Mutex<bool>`) because we only need a single atomic
+/// swap; no critical section spans multiple fields. `swap` returns the
+/// previous value, so the first caller (previously `false`) prints and
+/// every later caller (previously `true`) is silenced.
+static CONFIG_CORRUPTION_WARNED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Reset the once-per-process corruption-warning gate. Test-only: the gate
+/// is process-global, so without a reset every test after the first that
+/// trips a corrupt config would silently skip the warning path and stop
+/// exercising it. Integration tests don't need this (each spawns a fresh
+/// binary), but in-process unit tests do.
+#[cfg(test)]
+pub(crate) fn reset_corruption_warning_for_tests() {
+    CONFIG_CORRUPTION_WARNED.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
 pub fn get_language() -> Lang {
     if let Ok(guard) = lang_cache().lock() {
         if let Some(cached) = *guard {
@@ -129,11 +156,20 @@ pub fn get_language() -> Lang {
         Err(e) => {
             // Hardcoded English (not T()) to avoid re-entering get_language()
             // → T() → get_language() recursion when config is corrupt.
-            eprintln!(
-                "{} Failed to read language from config ({})",
-                "⚠".yellow().bold(),
-                e
-            );
+            //
+            // Once-per-process gate: `get_language()` runs on every `T()`
+            // call (we deliberately skip the cache on this path so a retry
+            // after the user fixes the config re-reads), so without this
+            // gate a single corrupt `config.json` would emit the warning
+            // hundreds of times per command. `swap` returns the previous
+            // value — only the first caller sees `false` and prints.
+            if !CONFIG_CORRUPTION_WARNED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                eprintln!(
+                    "{} Failed to read language from config ({})",
+                    "⚠".yellow().bold(),
+                    e
+                );
+            }
             // Do NOT cache: a retry after the user fixes the config should
             // re-read rather than keep serving the English fallback.
             return Lang::default();
@@ -170,6 +206,23 @@ pub fn available_lang_codes() -> &'static [&'static str] {
 pub fn T(key: &str) -> std::borrow::Cow<'static, str> {
     let lang = get_language();
     t(key, lang)
+}
+
+/// Resolve a key in English directly, bypassing `get_language()`.
+///
+/// This is the recursion-safe variant of `T()`. `T()` → `get_language()` →
+/// `load_config()`, so any `T()` call inside `load_config()` (or any other
+/// function that `get_language()` transitively depends on) creates a cycle:
+/// corrupt `config.json` → `load_config` bails while formatting its message
+/// with `T("config_corrupt_hint")` → `get_language()` → `load_config()` →
+/// bail → `T()` → ... → stack overflow.
+///
+/// Code on the `get_language()` dependency path (`load_config`, `load_aliases`,
+/// and anything they call to build error messages) MUST use `t_en` instead of
+/// `T`. Everyone else should keep using `T` so the user gets their chosen
+/// language.
+pub(crate) fn t_en(key: &str) -> std::borrow::Cow<'static, str> {
+    t(key, Lang::EN)
 }
 
 /// Format a translation with parameter substitution.
@@ -469,5 +522,30 @@ mod tests {
             substitute_params("{0} {not-a-placeholder}", &args),
             "x {not-a-placeholder}"
         );
+    }
+
+    /// The corruption-warning gate must fire exactly once per "lifetime":
+    /// the first `swap(true)` returns `false` (caller prints), every later
+    /// `swap(true)` returns `true` (caller silenced). `get_language()` relies
+    /// on this contract to avoid re-printing the warning on every `T()` call
+    /// when `config.json` is malformed.
+    ///
+    /// This is a unit test for the gate primitive itself; the end-to-end
+    /// "warning appears exactly once across many T() calls" behavior is
+    /// covered by the `corrupt_config_warns_once_across_t_calls` integration
+    /// test in `tests/language.rs`.
+    #[test]
+    fn corruption_warning_gate_fires_once() {
+        use std::sync::atomic::Ordering::SeqCst;
+        reset_corruption_warning_for_tests();
+        // First caller: flag was false → swap returns false → "should print".
+        assert!(!CONFIG_CORRUPTION_WARNED.swap(true, SeqCst));
+        // Every subsequent caller: flag is true → swap returns true → silent.
+        assert!(CONFIG_CORRUPTION_WARNED.swap(true, SeqCst));
+        assert!(CONFIG_CORRUPTION_WARNED.swap(true, SeqCst));
+        // Reset restores the "first call" semantics.
+        reset_corruption_warning_for_tests();
+        assert!(!CONFIG_CORRUPTION_WARNED.swap(true, SeqCst));
+        // Leave the flag set so we don't perturb later tests in this process.
     }
 }

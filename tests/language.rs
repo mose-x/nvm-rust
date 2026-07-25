@@ -4,7 +4,8 @@
 //! leaks into the user's real config or other tests.
 
 mod common;
-use common::{run_isolated, stdout};
+use common::{isolated_nvm_dir, nvm_bin, run_isolated, stderr, stdout};
+use std::process::Command;
 
 #[test]
 fn language_status_succeeds() {
@@ -52,5 +53,45 @@ fn language_invalid_value_exits_nonzero() {
     assert!(
         !out.status.success(),
         "language klingon should exit non-zero"
+    );
+}
+
+/// Regression for the once-per-process corruption-warning gate (P1-13).
+///
+/// Before the fix, `get_language()` printed "Failed to read language from
+/// config" on EVERY `T()` call when `config.json` was malformed. `nvm help`
+/// renders dozens of translated strings, so a single corrupt config would
+/// flood stderr with the same warning line dozens of times. After the fix,
+/// the warning is gated by an `AtomicBool` and appears exactly once.
+///
+/// We target `nvm help` because `print_help` is pure `T()` output — it never
+/// calls `load_config()` itself, so the command does not bail on the corrupt
+/// config and actually reaches the many `T()` calls that exercise the gate.
+/// A command like `nvm ls` would hit `load_config()` directly, bail with
+/// `config_corrupt_hint`, and never reach the spam path.
+#[test]
+fn corrupt_config_warns_once_across_t_calls() {
+    let (dir, nvm_dir) = isolated_nvm_dir();
+    // Write a malformed config.json: present on disk but invalid JSON, so
+    // `load_config()` returns Err and `get_language()` hits the warning path.
+    std::fs::write(dir.path().join("config.json"), "{ not valid json").unwrap();
+
+    let out = Command::new(nvm_bin())
+        .arg("help")
+        .env("NVM_DIR", &nvm_dir)
+        .output()
+        .expect("run nvm help");
+
+    // `nvm help` should still succeed (help rendering doesn't need config).
+    assert!(
+        out.status.success(),
+        "nvm help should exit 0 even with corrupt config"
+    );
+
+    let err = stderr(&out);
+    let count = err.matches("Failed to read language from config").count();
+    assert_eq!(
+        count, 1,
+        "corruption warning should appear exactly once, got {count}:\n{err}"
     );
 }
