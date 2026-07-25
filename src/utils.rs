@@ -384,11 +384,16 @@ pub fn file_backup_path(path: &Path) -> std::path::PathBuf {
 }
 
 pub fn backup_file(path: &Path) -> Result<(), std::io::Error> {
-    if path.exists() {
-        let backup = file_backup_path(path);
-        fs::copy(path, backup)?;
+    // Copy directly and map NotFound → Ok(()) instead of `exists()` + `copy`.
+    // The two-step form is a TOCTOU race: a concurrent process could remove
+    // the file between the stat and the open, turning a "nothing to back up"
+    // no-op into a confusing "No such file or directory" error. The single
+    // read is also one syscall instead of two.
+    match fs::copy(path, file_backup_path(path)) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
     }
-    Ok(())
 }
 
 /// Locate the system Node.js binary on PATH. Uses `which` on Unix and
