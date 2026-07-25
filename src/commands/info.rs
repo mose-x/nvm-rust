@@ -504,33 +504,33 @@ fn find_nvmrc_recursive(silent: bool) -> Result<Option<String>> {
 
     loop {
         let nvmrc = dir.join(".nvmrc");
-        if nvmrc.exists() {
-            if let Some(version) = read_first_version_line(&nvmrc) {
-                if !silent {
-                    println!(
-                        "{} {} {}",
-                        "ℹ".cyan().bold(),
-                        T("found_nvmrc").cyan(),
-                        dir.display().to_string().dimmed()
-                    );
-                }
-                return Ok(Some(version));
+        // `read_first_version_line` already maps NotFound -> None, so a
+        // pre-check with `.exists()` would be a redundant stat call and a
+        // TOCTOU window (file could be created/removed between the check
+        // and the read). Just try the read directly.
+        if let Some(version) = read_first_version_line(&nvmrc) {
+            if !silent {
+                println!(
+                    "{} {} {}",
+                    "ℹ".cyan().bold(),
+                    T("found_nvmrc").cyan(),
+                    dir.display().to_string().dimmed()
+                );
             }
+            return Ok(Some(version));
         }
 
         let node_version = dir.join(".node-version");
-        if node_version.exists() {
-            if let Some(version) = read_first_version_line(&node_version) {
-                if !silent {
-                    println!(
-                        "{} {} {}",
-                        "ℹ".cyan().bold(),
-                        T("found_node_version").cyan(),
-                        dir.display().to_string().dimmed()
-                    );
-                }
-                return Ok(Some(version));
+        if let Some(version) = read_first_version_line(&node_version) {
+            if !silent {
+                println!(
+                    "{} {} {}",
+                    "ℹ".cyan().bold(),
+                    T("found_node_version").cyan(),
+                    dir.display().to_string().dimmed()
+                );
             }
+            return Ok(Some(version));
         }
 
         // Move to parent directory. `Path::parent()` returns `None` for the
