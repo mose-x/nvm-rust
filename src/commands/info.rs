@@ -1582,4 +1582,118 @@ mod tests {
             Some("io.js-3.3.1".to_string())
         );
     }
+
+    // --- find_package_json_node_version ------------------------------------
+    //
+    // Walks up from CWD looking for a package.json with an `engines.node`
+    // field. The function reads `std::env::current_dir()`, so the tests
+    // chdir into a tempdir and MUST be serialised — parallel chdir would
+    // race against each other. A module-local Mutex serialises only these
+    // tests; everything else still runs in parallel.
+
+    /// Hold the CWD lock for the duration of a chdir-based test and restore
+    /// the original working directory on Drop. The Mutex guard inside is
+    /// what serialises the tests; storing it in the struct keeps it alive
+    /// until `CwdGuard` itself is dropped.
+    struct CwdGuard {
+        original: std::path::PathBuf,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl CwdGuard {
+        fn enter(dir: &std::path::Path) -> Self {
+            let lock = CWD_MUTEX.lock().expect("CWD_MUTEX poisoned");
+            let original = std::env::current_dir().expect("current_dir");
+            std::env::set_current_dir(dir).expect("set_current_dir");
+            CwdGuard {
+                original,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
+    }
+
+    static CWD_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn find_package_json_returns_none_when_no_package_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _cwd = CwdGuard::enter(dir.path());
+        let result = find_package_json_node_version(true).expect("no error");
+        assert_eq!(result, None, "no package.json anywhere → None");
+    }
+
+    #[test]
+    fn find_package_json_returns_none_when_engines_node_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name": "x", "version": "1.0.0"}"#,
+        )
+        .expect("write");
+        let _cwd = CwdGuard::enter(dir.path());
+        let result = find_package_json_node_version(true).expect("no error");
+        assert_eq!(result, None, "no engines.node → None");
+    }
+
+    #[test]
+    fn find_package_json_finds_engines_node_in_cwd() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"engines": {"node": ">=20.0.0"}}"#,
+        )
+        .expect("write");
+        let _cwd = CwdGuard::enter(dir.path());
+        let result = find_package_json_node_version(true).expect("no error");
+        // The raw range is surfaced verbatim when no installed version matches;
+        // we only assert that *something* was found (the range resolution
+        // itself is exercised by the pick_version_for_range tests above).
+        assert!(result.is_some(), "engines.node present → Some");
+    }
+
+    #[test]
+    fn find_package_json_walks_up_to_parent() {
+        // Subdir has no package.json; parent does with engines.node.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"engines": {"node": "22.x"}}"#,
+        )
+        .expect("write");
+        let nested = dir.path().join("packages").join("a");
+        std::fs::create_dir_all(&nested).expect("mkdir");
+        let _cwd = CwdGuard::enter(&nested);
+        let result = find_package_json_node_version(true).expect("no error");
+        assert!(
+            result.is_some(),
+            "should find parent package.json by walking up"
+        );
+    }
+
+    #[test]
+    fn find_package_json_skips_malformed_json_and_continues_up() {
+        // A broken package.json at this level must not crash detection —
+        // the search should continue to the parent.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let nested = dir.path().join("sub");
+        std::fs::create_dir_all(&nested).expect("mkdir");
+        std::fs::write(nested.join("package.json"), "not valid json {{{").expect("write");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"engines": {"node": "20.0.0"}}"#,
+        )
+        .expect("write");
+        let _cwd = CwdGuard::enter(&nested);
+        let result = find_package_json_node_version(true).expect("no error");
+        assert!(
+            result.is_some(),
+            "malformed child json should fall through to parent"
+        );
+    }
 }
