@@ -785,7 +785,12 @@ fn pick_version_for_range(range: &str, installed: &[String]) -> Option<String> {
             .collect();
         if !matching.is_empty() {
             matching.sort_by(|a, b| crate::utils::compare_semver(a, b));
-            candidates.push(matching.pop().unwrap());
+            // `pop()` is safe because `!matching.is_empty()`, but use `if let`
+            // to make the invariant explicit and avoid a panic-prone `unwrap()`
+            // that would fire if a future refactor breaks the guard above.
+            if let Some(latest) = matching.pop() {
+                candidates.push(latest);
+            }
         }
     }
     candidates
