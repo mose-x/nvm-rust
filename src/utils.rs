@@ -296,14 +296,14 @@ pub fn validate_version_name(version: &str) -> Result<()> {
 /// The temp file is created in the same directory as the target (required for
 /// rename to be atomic — cross-device rename is not). On failure the temp
 /// file is removed by `NamedTempFile`'s Drop.
-pub fn atomic_write(path: &Path, contents: &str) -> Result<(), std::io::Error> {
+pub fn atomic_write(path: &Path, contents: &str) -> Result<()> {
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     std::io::Write::write_all(&mut tmp, contents.as_bytes())?;
-    tmp.persist(path).map_err(|e| e.error)?;
+    tmp.persist(path).map_err(|e| anyhow::anyhow!(e.error))?;
     Ok(())
 }
 
