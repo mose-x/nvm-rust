@@ -60,3 +60,70 @@ jobs:
 
       - name: Tests
         run: cargo test --all
+
+  # commit-lint: enforce commit message + identity rules on every PR commit.
+  # Reuses the code-hooks repo's hooks as the single source of truth:
+  #   - `commit-msg` hook: subject/conventional/ASCII/length/forbidden-token rules
+  #   - `pre-push` hook's `required_email`: author+committer email check
+  # Squash merges generated on GitHub bypass local hooks; this is the CI backstop
+  # that caught the non-compliant squash in PR #3 (CJK subject + >200 chars).
+  commit-lint:
+    name: commit-lint
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history needed to scan the PR commit range
+
+      - name: Configure SSH deploy key for code-hooks
+        env:
+          CODE_HOOKS_DEPLOY_KEY: ${{ secrets.CODE_HOOKS_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$CODE_HOOKS_DEPLOY_KEY" > ~/.ssh/code_hooks_deploy_key
+          chmod 600 ~/.ssh/code_hooks_deploy_key
+          # Pin GitHub's well-known ed25519 host key (avoids ssh-keyscan MITM).
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" >> ~/.ssh/known_hosts
+          cat >> ~/.ssh/config <<'EOF'
+          Host github.com
+            HostName github.com
+            User git
+            IdentityFile ~/.ssh/code_hooks_deploy_key
+            IdentitiesOnly yes
+          EOF
+
+      - name: Clone code-hooks (private, via deploy key)
+        run: git clone --depth 1 git@github.com:mose-x/code-hooks.git /tmp/code-hooks
+
+      - name: Lint commit messages + identities in PR range
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Read required_email from code-hooks/pre-push (single source of truth).
+          required_email=$(grep -E '^required_email=' /tmp/code-hooks/pre-push \
+            | head -1 | sed -E 's/^required_email="([^"]*)".*/\1/')
+          echo "Required email: $required_email"
+          echo "Scanning commits ${BASE:0:7}..${HEAD:0:7}"
+          fail=0
+          for sha in $(git rev-list --reverse "$BASE..$HEAD"); do
+            subj=$(git log -1 --format='%s' "$sha")
+            echo "::group::$sha $subj"
+            # 1. commit-msg rules (subject len, conventional, ASCII, <=200, forbidden tokens)
+            git log -1 --format='%B' "$sha" > /tmp/commit-msg.txt
+            if ! /tmp/code-hooks/commit-msg /tmp/commit-msg.txt; then
+              fail=1
+            fi
+            # 2. author + committer email (mirrors code-hooks/pre-push identity check)
+            ae=$(git log -1 --format='%ae' "$sha")
+            ce=$(git log -1 --format='%ce' "$sha")
+            if [ "$ae" != "$required_email" ] || [ "$ce" != "$required_email" ]; then
+              echo "commit-lint: reject" >&2
+              echo "  $sha: author=$ae committer=$ce (expected $required_email)" >&2
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $fail
