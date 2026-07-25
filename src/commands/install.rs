@@ -212,8 +212,18 @@ fn install_from_source(
         (cached_path, false)
     };
 
+    // RAII guard so the temp source copy is removed on every exit path
+    // (including `?` early-returns from tar/configure/make failures), not
+    // just the success path. A `let _ = fs::remove_file` at the end of the
+    // function was skipped whenever an error bailed out, leaving the ~80MB
+    // temp file behind on every failed source install.
+    let src_guard = owns_src.then(|| SourceGuard::file(src_path.clone()));
+
     let build_dir = nvm_dir.join(format!("node-v{}.build", target.target_version));
     fs::create_dir_all(&build_dir)?;
+    // Same RAII pattern for the build dir: `remove_dir_all` at the end was
+    // skipped on every `?` failure, leaving the extracted source tree behind.
+    let build_guard = SourceGuard::dir(build_dir.clone());
 
     println!("  {} {}", "›".dimmed(), T("source_extract"));
     let status = Command::new("tar")
@@ -231,10 +241,10 @@ fn install_from_source(
             status.code().unwrap_or(-1)
         );
     }
-    // Only clean up our own temp copy; the online path used the shared cache.
-    if owns_src {
-        fs::remove_file(&src_path).ok();
-    }
+    // Source extracted into build_dir; the temp tarball copy is no longer
+    // needed. Drop the guard early so it doesn't outlive its usefulness
+    // (and so a later failure doesn't re-delete an already-removed file).
+    drop(src_guard);
 
     println!(
         "  {} {}",
@@ -274,7 +284,11 @@ fn install_from_source(
         anyhow::bail!("{} ({})", T("make_install_failed"), mi.code().unwrap_or(-1));
     }
 
-    fs::remove_dir_all(&build_dir).ok();
+    // Install succeeded — clean up the build tree, matching the previous
+    // `remove_dir_all(&build_dir).ok()` at the end of the happy path. The
+    // guard's Drop would do this anyway, but doing it explicitly + disarming
+    // avoids a redundant stat in Drop and makes the intent obvious.
+    drop(build_guard);
 
     let npm_path = version_dir.join("bin").join("npm");
     if !npm_path.exists() {
@@ -292,6 +306,47 @@ fn install_from_source(
             .bold()
     );
     Ok(())
+}
+
+/// RAII guard that removes a file or directory when dropped, unless disarmed.
+/// Used by `install_from_source` / `install_binary` to clean up temp artifacts
+/// on every exit path (success or `?` early-return), replacing the previous
+/// "clean up only at the end of the happy path" pattern that leaked tens of
+/// MB on every failed install.
+struct SourceGuard {
+    path: std::path::PathBuf,
+    is_dir: bool,
+    armed: bool,
+}
+
+impl SourceGuard {
+    fn file(path: std::path::PathBuf) -> Self {
+        Self {
+            path,
+            is_dir: false,
+            armed: true,
+        }
+    }
+    fn dir(path: std::path::PathBuf) -> Self {
+        Self {
+            path,
+            is_dir: true,
+            armed: true,
+        }
+    }
+}
+
+impl Drop for SourceGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let _ = if self.is_dir {
+            fs::remove_dir_all(&self.path)
+        } else {
+            fs::remove_file(&self.path)
+        };
+    }
 }
 
 /// Download and extract a prebuilt binary tarball. Performs SHA-256 checksum
