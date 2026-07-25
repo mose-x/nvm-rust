@@ -177,6 +177,15 @@ pub fn use_version_silent(
     let current_file = nvm_dir.join("current");
     atomic_write(&current_file, &resolved).context(T("cannot_write_current"))?;
 
+    // The lock guards the version-dir existence check, the optional install,
+    // and the `current` file write — all the nvm-state mutations. Everything
+    // below (config save, shell rc rewrite, success messages) touches files
+    // outside nvm's own state or uses its own atomic_write, so holding the
+    // lock through it only serializes concurrent `nvm use`/`nvm install`
+    // callers during the slow shell-rc rewrite (backup + read + filter +
+    // write). Drop the guard explicitly to release contention early.
+    drop(_nvm_lock);
+
     // Load config once for both the cd-hook flag and the --save default.
     let mut config = load_config()?;
     let cd_hook = if use_on_cd {
@@ -279,8 +288,15 @@ pub fn current_version() -> Result<()> {
 pub fn deactivate() -> Result<()> {
     let nvm_dir = get_nvm_dir();
     let current_file = nvm_dir.join("current");
-    if current_file.exists() {
-        fs::remove_file(&current_file)?;
+    // Remove directly and treat NotFound as success instead of `exists()` +
+    // `remove_file`: the two-step form is a TOCTOU race (a concurrent
+    // `nvm use`/`uninstall` could remove `current` between the stat and the
+    // unlink, surfacing as a confusing error), and deactivation is a no-op
+    // when nothing is active anyway.
+    if let Err(e) = fs::remove_file(&current_file) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(e.into());
+        }
     }
     println!("{} {}", "✓".green().bold(), T("deactivated").green());
     Ok(())
@@ -1564,6 +1580,120 @@ mod tests {
         assert_eq!(
             pick_version_for_range(">=3.0.0", &installed),
             Some("io.js-3.3.1".to_string())
+        );
+    }
+
+    // --- find_package_json_node_version ------------------------------------
+    //
+    // Walks up from CWD looking for a package.json with an `engines.node`
+    // field. The function reads `std::env::current_dir()`, so the tests
+    // chdir into a tempdir and MUST be serialised — parallel chdir would
+    // race against each other. A module-local Mutex serialises only these
+    // tests; everything else still runs in parallel.
+
+    /// Hold the CWD lock for the duration of a chdir-based test and restore
+    /// the original working directory on Drop. The Mutex guard inside is
+    /// what serialises the tests; storing it in the struct keeps it alive
+    /// until `CwdGuard` itself is dropped.
+    struct CwdGuard {
+        original: std::path::PathBuf,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl CwdGuard {
+        fn enter(dir: &std::path::Path) -> Self {
+            let lock = CWD_MUTEX.lock().expect("CWD_MUTEX poisoned");
+            let original = std::env::current_dir().expect("current_dir");
+            std::env::set_current_dir(dir).expect("set_current_dir");
+            CwdGuard {
+                original,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
+    }
+
+    static CWD_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn find_package_json_returns_none_when_no_package_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _cwd = CwdGuard::enter(dir.path());
+        let result = find_package_json_node_version(true).expect("no error");
+        assert_eq!(result, None, "no package.json anywhere → None");
+    }
+
+    #[test]
+    fn find_package_json_returns_none_when_engines_node_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name": "x", "version": "1.0.0"}"#,
+        )
+        .expect("write");
+        let _cwd = CwdGuard::enter(dir.path());
+        let result = find_package_json_node_version(true).expect("no error");
+        assert_eq!(result, None, "no engines.node → None");
+    }
+
+    #[test]
+    fn find_package_json_finds_engines_node_in_cwd() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"engines": {"node": ">=20.0.0"}}"#,
+        )
+        .expect("write");
+        let _cwd = CwdGuard::enter(dir.path());
+        let result = find_package_json_node_version(true).expect("no error");
+        // The raw range is surfaced verbatim when no installed version matches;
+        // we only assert that *something* was found (the range resolution
+        // itself is exercised by the pick_version_for_range tests above).
+        assert!(result.is_some(), "engines.node present → Some");
+    }
+
+    #[test]
+    fn find_package_json_walks_up_to_parent() {
+        // Subdir has no package.json; parent does with engines.node.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"engines": {"node": "22.x"}}"#,
+        )
+        .expect("write");
+        let nested = dir.path().join("packages").join("a");
+        std::fs::create_dir_all(&nested).expect("mkdir");
+        let _cwd = CwdGuard::enter(&nested);
+        let result = find_package_json_node_version(true).expect("no error");
+        assert!(
+            result.is_some(),
+            "should find parent package.json by walking up"
+        );
+    }
+
+    #[test]
+    fn find_package_json_skips_malformed_json_and_continues_up() {
+        // A broken package.json at this level must not crash detection —
+        // the search should continue to the parent.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let nested = dir.path().join("sub");
+        std::fs::create_dir_all(&nested).expect("mkdir");
+        std::fs::write(nested.join("package.json"), "not valid json {{{").expect("write");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"engines": {"node": "20.0.0"}}"#,
+        )
+        .expect("write");
+        let _cwd = CwdGuard::enter(&nested);
+        let result = find_package_json_node_version(true).expect("no error");
+        assert!(
+            result.is_some(),
+            "malformed child json should fall through to parent"
         );
     }
 }
