@@ -171,6 +171,25 @@ _nvm_remote_opts() {
     _describe 'option' opts
 }
 
+_nvm_use_opts() {
+    local opts
+    opts=(
+        '--install-if-missing[Install the version if not yet installed]'
+        '--save[Persist this version as default]'
+        '--use-on-cd[Enable auto-switch on directory change]'
+    )
+    _describe 'option' opts
+}
+
+_nvm_uninstall_opts() {
+    local opts
+    opts=(
+        '--lts[Uninstall the latest LTS version]'
+        '--latest[Uninstall the latest installed version]'
+    )
+    _describe 'option' opts
+}
+
 _nvm() {
     local curcontext="$curcontext" state line
     typeset -A opt_args
@@ -190,7 +209,15 @@ _nvm() {
                 remote|ls-remote)
                     _nvm_remote_opts
                     ;;
-                use|uninstall|remove|run|exec|which|alias|unalias|reinstall-packages|install-npm|install-yarn|install-pnpm)
+                use)
+                    _nvm_use_opts
+                    _message 'version'
+                    ;;
+                uninstall|remove)
+                    _nvm_uninstall_opts
+                    _message 'version'
+                    ;;
+                run|exec|which|alias|unalias|reinstall-packages|install-npm|install-yarn|install-pnpm)
                     _message 'version'
                     ;;
                 mirror)
