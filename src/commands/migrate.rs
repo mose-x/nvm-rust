@@ -459,6 +459,43 @@ fn detect_nvm_sh_default(nvm_sh_root: &Path) -> Option<String> {
     // silently wrong.
     if trimmed == "lts/*" || trimmed.starts_with("lts/") {
         candidates.retain(|v| crate::utils::is_lts_version(v));
+
+        // `lts/-N` → Nth-previous LTS *line* relative to the newest LTS line
+        // present in the source install (e.g. lts/-1 = the LTS line before
+        // the newest). Without this, lts/-1 fell through to "latest of all
+        // LTS versions" (i.e. the newest LTS line), silently wrong —
+        // nvm-sh's lts/-1 means the LTS line BEFORE the newest. This
+        // mirrors `config::resolve_lts_relative` but operates on the
+        // SOURCE nvm-sh install's versions dir instead of nvm-rust's.
+        if let Some(offset_str) = trimmed.strip_prefix("lts/-") {
+            if let Ok(offset) = offset_str.parse::<usize>() {
+                if offset > 0 {
+                    // Unique LTS majors present in the source install, ascending.
+                    let mut majors: Vec<u32> = candidates
+                        .iter()
+                        .filter_map(|v| crate::utils::parse_major(v))
+                        .collect();
+                    majors.sort_unstable();
+                    majors.dedup();
+                    // offset=1 → second-newest (index len-2), offset=2 → len-3.
+                    match majors
+                        .len()
+                        .checked_sub(1 + offset)
+                        .and_then(|i| majors.get(i))
+                    {
+                        Some(&major) => {
+                            let prefix = format!("v{}.", major);
+                            candidates.retain(|v| v.starts_with(&prefix));
+                        }
+                        None => return None, // offset out of range: no such LTS line
+                    }
+                }
+                // offset == 0 (lts/-0) is nonsensical; fall through to lts/*
+                // behavior (return latest LTS).
+            }
+            // Non-numeric suffix (e.g. "lts/-foo") falls through to lts/*
+            // behavior too — matching the lenient handling elsewhere.
+        }
     }
     // For a bare major like "20", restrict to matching "v20.*". For generic
     // aliases ("node", "stable") we take the latest of everything.
@@ -552,6 +589,80 @@ mod tests {
         // An empty/whitespace default file is treated as "no default".
         let root = fake_nvm_sh_root("   \n  ", &[]);
         assert_eq!(detect_nvm_sh_default(root.path()), None);
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_lts_star_returns_newest_lts() {
+        // `lts/*` must resolve to the newest LTS version present in the
+        // source install. Here v22.11.0 > v22.5.1 > v20.17.0 > v18.20.0,
+        // so the answer is v22.11.0.
+        let root = fake_nvm_sh_root(
+            "lts/*",
+            &["v22.5.1", "v22.11.0", "v20.10.0", "v20.17.0", "v18.20.0"],
+        );
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            Some("v22.11.0".to_string()),
+            "lts/* must pick the newest LTS version"
+        );
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_lts_minus_one_returns_previous_lts_line() {
+        // Regression for the lts/-N bug: previously `lts/-1` fell through to
+        // "latest of all LTS" (i.e. v22.11.0, the newest LTS line), silently
+        // wrong — nvm-sh's `lts/-1` means the LTS line BEFORE the newest.
+        // With v22/v20/v18 LTS lines installed, lts/-1 must pick the newest
+        // version on the v20 line (v20.17.0), NOT v22.11.0.
+        let root = fake_nvm_sh_root(
+            "lts/-1",
+            &["v22.5.1", "v22.11.0", "v20.10.0", "v20.17.0", "v18.20.0"],
+        );
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            Some("v20.17.0".to_string()),
+            "lts/-1 must pick the newest version on the previous LTS line"
+        );
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_lts_minus_two_returns_two_lines_back() {
+        // lts/-2 → two LTS lines back from the newest. With v22/v20/v18
+        // installed, that's the v18 line → v18.20.0.
+        let root = fake_nvm_sh_root(
+            "lts/-2",
+            &["v22.5.1", "v22.11.0", "v20.10.0", "v20.17.0", "v18.20.0"],
+        );
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            Some("v18.20.0".to_string()),
+            "lts/-2 must pick the newest version on the 2nd-previous LTS line"
+        );
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_lts_offset_out_of_range_returns_none() {
+        // lts/-999 → no LTS line that far back. Must return None (not fall
+        // through to "latest LTS" as the old code did).
+        let root = fake_nvm_sh_root("lts/-999", &["v22.11.0", "v20.17.0", "v18.20.0"]);
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            None,
+            "out-of-range lts/-N must return None, not latest LTS"
+        );
+    }
+
+    #[test]
+    fn detect_nvm_sh_default_lts_minus_zero_falls_back_to_latest() {
+        // lts/-0 is nonsensical; we treat it like lts/* (latest LTS) rather
+        // than erroring, matching the lenient handling in
+        // `config::resolve_lts_relative` for offset == 0.
+        let root = fake_nvm_sh_root("lts/-0", &["v22.11.0", "v20.17.0"]);
+        assert_eq!(
+            detect_nvm_sh_default(root.path()),
+            Some("v22.11.0".to_string()),
+            "lts/-0 should behave like lts/*"
+        );
     }
 
     #[test]
