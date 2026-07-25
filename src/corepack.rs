@@ -240,8 +240,12 @@ pub fn corepack_enable(version: Option<&str>) -> anyhow::Result<()> {
     }
 
     // Trust the on-disk state, not the exit code: a successful exit doesn't
-    // guarantee shims were actually written into the version's bin.
-    let shims_present = ["pnpm", "yarn"]
+    // guarantee shims were actually written into the version's bin. Use the
+    // shared `COREPACK_SHIMS` list (the file-top constant) rather than a
+    // hand-picked subset — the previous `["pnpm", "yarn"]` diverged from the
+    // "single source" promise in the constant's doc comment and would silently
+    // miss a future shim added there.
+    let shims_present = COREPACK_SHIMS
         .iter()
         .any(|t| exe_path(&version_bin, t).exists());
 
