@@ -478,12 +478,12 @@ fn run_post_install_hooks(
             .cyan()
             .bold()
         );
-        // reinstall_packages_inner reads `current` to find the source
-        // version's global packages; point it at the freshly installed
-        // version first. A silent `.ok()` here would leave `current`
-        // pointing at the *previous* version, so the package migration
-        // below would copy packages from the wrong source — surface the
-        // write failure instead of swallowing it.
+        // Point `current` at the freshly installed version so the shell's
+        // PATH picks it up. reinstall_packages_inner takes the source
+        // version as an explicit arg (from_resolved), not from `current`,
+        // but we still surface the write failure instead of `.ok()`
+        // because a stale `current` would leave the shell on the wrong
+        // version after install.
         let current_file = nvm_dir.join("current");
         atomic_write(&current_file, &target.target_version).with_context(|| {
             format!("{}: {}", T("cannot_write_current"), current_file.display())
