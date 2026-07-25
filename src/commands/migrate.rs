@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::{load_config, save_config};
 use crate::i18n::{format_t, T};
-use crate::system::get_nvm_dir;
+use crate::system::{ensure_nvm_dir, get_nvm_dir};
 
 /// Locate the source versions directory for a given migration source.
 fn resolve_migration_source(source: &str) -> Option<PathBuf> {
@@ -194,7 +194,7 @@ pub fn cmd_migrate(source: &str) -> Result<()> {
     };
 
     let nvm_dir = get_nvm_dir();
-    ensure_nvm_dir_or_fail()?;
+    ensure_nvm_dir().context(T("cannot_create_nvm_dir"))?;
 
     println!();
     println!(
@@ -447,12 +447,4 @@ fn detect_nvm_sh_default(nvm_sh_root: &Path) -> Option<String> {
     // `v20.20.2` ('5' > '2') and pick the older version as "latest".
     candidates.sort_by(|a, b| crate::utils::compare_semver(a, b));
     candidates.last().cloned()
-}
-
-fn ensure_nvm_dir_or_fail() -> Result<()> {
-    let nvm_dir = get_nvm_dir();
-    // `create_dir_all` is idempotent; skip the racy `exists()` pre-check
-    // (see `system::ensure_nvm_dir` for the rationale).
-    fs::create_dir_all(&nvm_dir).context(T("cannot_create_nvm_dir"))?;
-    Ok(())
 }

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{compare_versions, get_base_url, get_codename, get_current_version};
+use super::{get_base_url, get_codename, get_current_version};
 use crate::config::{
     handle_mirror, list_all_aliases, load_config, remove_alias, remove_from_shell_config,
     resolve_alias, save_config, set_alias, update_shell_config,
@@ -605,7 +605,7 @@ fn find_package_json_node_version(silent: bool) -> Result<Option<String>> {
             .filter(|v| is_lts_version(v))
             .cloned()
             .collect();
-        lts.sort_by(|a, b| compare_versions(a, b));
+        lts.sort_by(|a, b| crate::utils::compare_semver(a, b));
         if let Some(chosen) = lts.last() {
             if !silent {
                 println!(
@@ -624,7 +624,7 @@ fn find_package_json_node_version(silent: bool) -> Result<Option<String>> {
     if lower == "node" || lower == "stable" || lower == "latest" || lower == "*" || lower == "x" {
         if let Some(chosen) = installed
             .iter()
-            .max_by(|a, b| compare_versions(a, b))
+            .max_by(|a, b| crate::utils::compare_semver(a, b))
             .cloned()
         {
             if !silent {
@@ -701,11 +701,13 @@ fn pick_version_for_range(range: &str, installed: &[String]) -> Option<String> {
             .cloned()
             .collect();
         if !matching.is_empty() {
-            matching.sort_by(|a, b| compare_versions(a, b));
+            matching.sort_by(|a, b| crate::utils::compare_semver(a, b));
             candidates.push(matching.pop().unwrap());
         }
     }
-    candidates.into_iter().max_by(|a, b| compare_versions(a, b))
+    candidates
+        .into_iter()
+        .max_by(|a, b| crate::utils::compare_semver(a, b))
 }
 
 /// Lightweight single-token matcher used by the compound AND branch above.
@@ -764,7 +766,7 @@ fn pick_version_for_range_single(expr: &str, installed: &[String]) -> Option<Str
         // Match any — pick newest installed
         return installed
             .iter()
-            .max_by(|a, b| compare_versions(a, b))
+            .max_by(|a, b| crate::utils::compare_semver(a, b))
             .cloned();
     }
 
@@ -790,7 +792,7 @@ fn pick_version_for_range_single(expr: &str, installed: &[String]) -> Option<Str
     if matching.is_empty() {
         return None;
     }
-    matching.sort_by(|a, b| compare_versions(a, b));
+    matching.sort_by(|a, b| crate::utils::compare_semver(a, b));
     matching.pop() // newest
 }
 
@@ -995,7 +997,7 @@ pub fn show_remote_version_info() -> Result<()> {
             versions.push(tag.trim_end_matches('/').to_string());
         }
     }
-    versions.sort_by(|a, b| compare_versions(b, a));
+    versions.sort_by(|a, b| crate::utils::compare_semver(b, a));
 
     println!();
     print!("  ");

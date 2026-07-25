@@ -167,13 +167,6 @@ pub(crate) fn render_table(title: &str, columns: &[(&str, u8)], rows: &[Vec<Stri
     println!("  ╰{}╯", "─".repeat(total_width));
 }
 
-/// Compare two version strings by semantic version (major.minor.patch).
-/// Returns greater if a is newer than b. Delegates to `utils::compare_semver`
-/// so all version comparisons share one implementation.
-pub(crate) fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
-    crate::utils::compare_semver(a, b)
-}
-
 pub(crate) fn get_current_version() -> Result<Option<String>> {
     let nvm_dir = get_nvm_dir();
     let current_file = nvm_dir.join("current");
