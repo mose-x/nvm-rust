@@ -156,7 +156,7 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
     // non-2xx branch below and bails, leaving the user stuck with a `.part`
     // they can never resume past. Delete the stale `.part` and retry once
     // from byte 0 without the Range header.
-    if start_offset > 0 && response.status().as_u16() == 416 {
+    if start_offset > 0 && response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
         let _ = fs::remove_file(&part_path);
         start_offset = 0;
         response = client.get(url).send().context(T("download_failed"))?;
@@ -169,7 +169,8 @@ pub fn download_to_cache(url: &str, filename: &str) -> Result<PathBuf> {
         );
     }
 
-    let supports_resume = start_offset > 0 && response.status().as_u16() == 206;
+    let supports_resume =
+        start_offset > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
     let total_size: u64 = if supports_resume {
         // Content-Range header looks like "bytes 100-999/1000".
         response
