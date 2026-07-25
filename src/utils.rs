@@ -70,20 +70,24 @@ pub fn is_iojs_version(version: &str) -> bool {
     strip_iojs_prefix(version).is_some()
 }
 
+/// Strip the io.js prefix and leading `v`, returning the bare "X.Y.Z" part.
+/// Shared by [`normalize_iojs_version`] and [`iojs_version_number`] so the
+/// prefix-stripping logic lives in one place.
+fn iojs_bare_version(version: &str) -> &str {
+    strip_iojs_prefix(version)
+        .unwrap_or(version)
+        .trim_start_matches('v')
+}
+
 /// Normalize an io.js version name to canonical "iojs-vX.Y.Z"
 pub fn normalize_iojs_version(version: &str) -> String {
-    let v = strip_iojs_prefix(version)
-        .unwrap_or(version)
-        .trim_start_matches('v');
-    format!("iojs-v{}", v)
+    format!("iojs-v{}", iojs_bare_version(version))
 }
 
 /// Extract the version number from an io.js version (returns "X.Y.Z")
 pub fn iojs_version_number(version: &str) -> Option<String> {
     if is_iojs_version(version) {
-        let v = strip_iojs_prefix(version)
-            .unwrap_or(version)
-            .trim_start_matches('v');
+        let v = iojs_bare_version(version);
         if v.matches('.').count() >= 2 {
             return Some(v.to_string());
         }
