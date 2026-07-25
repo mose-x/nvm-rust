@@ -346,22 +346,26 @@ pub fn display_width(s: &str) -> usize {
 
 /// Left-align `s` to `width` columns, padding with spaces on the right.
 /// Uses `display_width` so ANSI-coloured and CJK strings pad correctly.
-pub fn pad_right(s: &str, width: usize) -> String {
+///
+/// Returns a borrowed `Cow` when `s` is already at least `width` columns
+/// (no padding needed), avoiding an allocation in the common case where the
+/// input already fits — e.g. `render_table` calls this per cell.
+pub fn pad_right(s: &str, width: usize) -> std::borrow::Cow<'_, str> {
     let w = display_width(s);
     if w >= width {
-        s.to_string()
+        std::borrow::Cow::Borrowed(s)
     } else {
-        format!("{}{}", s, " ".repeat(width - w))
+        std::borrow::Cow::Owned(format!("{}{}", s, " ".repeat(width - w)))
     }
 }
 
 /// Right-align `s` to `width` columns, padding with spaces on the left.
-pub fn pad_left(s: &str, width: usize) -> String {
+pub fn pad_left(s: &str, width: usize) -> std::borrow::Cow<'_, str> {
     let w = display_width(s);
     if w >= width {
-        s.to_string()
+        std::borrow::Cow::Borrowed(s)
     } else {
-        format!("{}{}", " ".repeat(width - w), s)
+        std::borrow::Cow::Owned(format!("{}{}", " ".repeat(width - w), s))
     }
 }
 

@@ -148,7 +148,7 @@ pub(crate) fn render_table(title: &str, columns: &[(&str, u8)], rows: &[Vec<Stri
                     let dw = display_width(cell);
                     let lp = (w - dw) / 2;
                     let rp = w - dw - lp;
-                    format!("{}{}{}", " ".repeat(lp), cell, " ".repeat(rp))
+                    std::borrow::Cow::Owned(format!("{}{}{}", " ".repeat(lp), cell, " ".repeat(rp)))
                 }
                 _ => pad_right(cell, col_widths[i]),
             };
