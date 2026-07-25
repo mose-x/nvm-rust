@@ -267,7 +267,12 @@ pub fn list_cached_files() -> Result<Vec<(String, u64)>> {
     let mut files: Vec<(String, u64)> = Vec::new();
     for entry in fs::read_dir(&cache_dir)? {
         let entry = entry?;
-        let metadata = entry.metadata()?;
+        // Use symlink_metadata (not entry.metadata()) so a dangling symlink
+        // in the cache dir doesn't propagate an error and abort the whole
+        // listing. Matches clear_cache's behaviour. is_file() on symlink
+        // metadata is true only for real files (symlinks themselves are
+        // is_symlink()), which is what we want to list.
+        let metadata = entry.path().symlink_metadata()?;
         if metadata.is_file() {
             if let Some(name) = entry.file_name().to_str() {
                 // Hide .part files from the listing: they are in-flight and
