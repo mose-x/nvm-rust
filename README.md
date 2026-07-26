@@ -164,10 +164,12 @@ sudo cp target/release/nvm /usr/local/bin/
 
 Download the latest binary from the [Releases page](https://github.com/mose-x/nvm-rust/releases) and add it to your PATH.
 
+Asset naming: `nvm-<version>-<os>-<arch>.<ext>`
+
 Supported platforms:
-- Linux: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`
-- macOS: `x86_64-apple-darwin`, `aarch64-apple-darwin`
-- Windows: `x86_64-pc-windows-msvc`
+- Linux: `linux-x64`, `linux-arm64`, `linux-musl-x64` (Alpine)
+- macOS: `macos-x64` (Intel), `macos-arm64` (Apple Silicon)
+- Windows: `windows-x64`, `windows-arm64`
 
 ## Shell Integration
 
@@ -601,9 +603,9 @@ Config files inside `NVM_DIR`:
 
 ## Supported Platforms
 
-- Linux x64 / arm64
+- Linux x64 / arm64 (glibc), x64 musl (Alpine)
 - macOS x64 (Intel) / arm64 (Apple Silicon)
-- Windows x64
+- Windows x64 / arm64
 
 ## License
 

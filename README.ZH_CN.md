@@ -162,10 +162,10 @@ sudo cp target/release/nvm /usr/local/bin/
 
 从 [Releases 页面](https://github.com/mose-x/nvm-rust/releases) 下载最新的二进制文件并加入 PATH。
 
-支持的平台：
-- Linux: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`
-- macOS: `x86_64-apple-darwin`, `aarch64-apple-darwin`
-- Windows: `x86_64-pc-windows-msvc`
+支持的平台（资源命名：`nvm-<version>-<os>-<arch>.<ext>`）：
+- Linux: `linux-x64`, `linux-arm64`, `linux-musl-x64`（Alpine）
+- macOS: `macos-x64`（Intel）, `macos-arm64`（Apple Silicon）
+- Windows: `windows-x64`, `windows-arm64`
 
 ## Shell 集成
 
@@ -589,9 +589,9 @@ nvm corepack disable          # 禁用当前版本
 
 ## 支持的平台
 
-- Linux x64 / arm64
+- Linux x64 / arm64（glibc）、x64 musl（Alpine）
 - macOS x64（Intel） / arm64（Apple Silicon）
-- Windows x64
+- Windows x64 / arm64
 
 ## 许可证
 

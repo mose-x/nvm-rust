@@ -627,7 +627,11 @@ pub fn verify_gpg_signature(
 
 #[cfg(target_os = "windows")]
 pub fn os_suffix() -> &'static str {
-    "win-x64.7z"
+    if cfg!(target_arch = "aarch64") {
+        "win-arm64.7z"
+    } else {
+        "win-x64.7z"
+    }
 }
 
 #[cfg(target_os = "linux")]

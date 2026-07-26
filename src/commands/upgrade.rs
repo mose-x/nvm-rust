@@ -121,23 +121,33 @@ pub fn upgrade(
     }
 
     // 3. Pick the asset matching the host target.
-    let target = host_target();
+    //    Asset naming: `nvm-<version>-<os>-<arch>[<variant>].<ext>`
+    //    e.g. nvm-2.0.0-linux-x64.tar.gz, nvm-2.0.0-linux-musl-x64.tar.gz,
+    //         nvm-2.0.0-macos-arm64.tar.gz, nvm-2.0.0-windows-arm64.zip
+    //    `version` is the latest release tag (without leading `v`); we
+    //    don't need it for matching — we look up the asset by the
+    //    `<os>-<arch>.<ext>` suffix, which is unique per release.
+    let target = host_target()?;
     let ext = if cfg!(windows) { "zip" } else { "tar.gz" };
-    let asset_name = format!("nvm-{}.{}", target, ext);
-    let asset_url = assets
+    let suffix = format!("-{}.{}", target, ext);
+    let asset = assets
         .iter()
-        .find(|a| a.name == asset_name)
-        .map(|a| a.url.clone())
+        .find(|a| a.name.ends_with(&suffix) && a.name.starts_with("nvm-"))
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "{}",
-                format_t("upgrade_no_asset", std::slice::from_ref(&asset_name))
+                format_t(
+                    "upgrade_no_asset",
+                    std::slice::from_ref(&format!("nvm-*{}-{}.{}", target, target, ext))
+                )
             )
         })?;
+    let asset_name = asset.name.clone();
+    let asset_url = asset.url.clone();
 
     // Apply a custom mirror prefix to the GitHub download URL.
     // `--from-mirror https://ghproxy.com/` rewrites
-    //   https://github.com/.../nvm-x86_64-unknown-linux-gnu.tar.gz
+    //   https://github.com/.../nvm-2.0.0-linux-x64.tar.gz
     // to
     //   https://ghproxy.com/https://github.com/.../nvm-...tar.gz
     // The API (version check) still hits github.com directly — mirrors
@@ -231,19 +241,56 @@ fn current_binary_path() -> Result<PathBuf> {
     Ok(exe)
 }
 
-/// The Rust target triple for the host. Maps `std::env::consts::{OS, ARCH}`
-/// to the triple used in release.yml's matrix. We prefer gnu over musl on
-/// Linux because gnu is the more common glibc-based distro default; musl
-/// users can install manually if they need a fully-static binary.
-fn host_target() -> &'static str {
+/// Host platform identifier used in release asset names.
+/// Returns the `<os>-<arch>[<variant>]` portion of the asset name, e.g.
+/// `linux-x64`, `linux-arm64`, `linux-musl-x64`, `macos-arm64`,
+/// `windows-x64`, `windows-arm64`.
+///
+/// We use the user-facing `os-arch` form (matching Node.js's own naming)
+/// rather than the verbose Rust target triple (`x86_64-unknown-linux-gnu`)
+/// so users can tell at a glance which asset to download from the release
+/// page. `std::env::consts` reports the host we're running on, so this
+/// correctly handles cross-arch situations (e.g. x64 nvm running under
+/// Rosetta on an Apple Silicon Mac still reports `x86_64`).
+///
+/// On Linux we distinguish musl from gnu via `/proc/self/cputype`-free
+/// heuristic: we check `ldd --version` output for "musl". This catches
+/// Alpine/distroless users who want the fully-static binary; glibc users
+/// (the overwhelming majority) get the gnu build.
+///
+/// Unknown platforms bail instead of silently falling back to x86_64-linux,
+/// which would download an unrunnable binary and brick the next `nvm` call.
+fn host_target() -> Result<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
-        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
-        ("macos", "x86_64") => "x86_64-apple-darwin",
-        ("macos", "aarch64") => "aarch64-apple-darwin",
-        ("windows", "x86_64") => "x86_64-pc-windows-msvc",
-        _ => "x86_64-unknown-linux-gnu",
+        ("linux", "x86_64") => {
+            // Detect musl libc (Alpine, distroless). `ldd --version` on musl
+            // systems prints "musl libc"; on glibc it prints "ldd (GNU libc)".
+            // Failure to detect → fall back to gnu (the common case).
+            if is_musl_libc() {
+                Ok("linux-musl-x64")
+            } else {
+                Ok("linux-x64")
+            }
+        }
+        ("linux", "aarch64") => Ok("linux-arm64"),
+        ("macos", "x86_64") => Ok("macos-x64"),
+        ("macos", "aarch64") => Ok("macos-arm64"),
+        ("windows", "x86_64") => Ok("windows-x64"),
+        ("windows", "aarch64") => Ok("windows-arm64"),
+        (os, arch) => anyhow::bail!("{}: {}-{}", T("upgrade_unsupported_platform"), os, arch),
     }
+}
+
+/// Detect musl libc on Linux by inspecting `ldd --version` output.
+/// Returns `true` if the system uses musl, `false` for glibc or unknown.
+fn is_musl_libc() -> bool {
+    std::process::Command::new("ldd")
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.contains("musl"))
+        .unwrap_or(false)
 }
 
 /// A release asset (name + download URL).
