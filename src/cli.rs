@@ -359,6 +359,24 @@ pub enum Commands {
         #[clap(default_value = "nvm")]
         source: String,
     },
+    /// Upgrade nvm itself to the latest GitHub release
+    Upgrade {
+        /// Only check for a newer version, do not upgrade
+        #[clap(long)]
+        check: bool,
+        /// Force reinstall even if the version is the same
+        #[clap(long)]
+        force: bool,
+        /// Download from Gitee mirror instead of GitHub
+        #[clap(long = "from-gitee")]
+        from_gitee: bool,
+        /// Download from a custom mirror URL prefix
+        #[clap(long = "from-mirror", value_name = "URL")]
+        from_mirror: Option<String>,
+        /// Roll back to the previous binary saved before the last upgrade
+        #[clap(long)]
+        rollback: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

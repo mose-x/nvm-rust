@@ -117,6 +117,13 @@ fn main() -> Result<()> {
                 corepack::handle_corepack(action.as_deref(), version.as_deref())
             }
             Commands::Migrate { source } => commands::cmd_migrate(&source),
+            Commands::Upgrade {
+                check,
+                force,
+                from_gitee,
+                from_mirror,
+                rollback,
+            } => commands::upgrade(check, force, from_gitee, from_mirror, rollback),
         },
     }
 }

@@ -323,6 +323,50 @@ nvm install-npm            # upgrade npm of the current version
 nvm install-npm 20
 ```
 
+### Upgrade nvm itself
+
+`nvm upgrade` updates the nvm binary in place from the latest GitHub Release.
+No need to re-run `install.sh` — the new binary replaces the old one at the
+same path (`~/.nvm.rust/bin/nvm` by default), and the previous binary is
+kept as `nvm.bak` so you can roll back if anything goes wrong.
+
+```bash
+nvm upgrade                # download & install the latest release
+nvm upgrade --check        # only report whether a newer version exists
+nvm upgrade --force        # reinstall even if already on the latest version
+nvm upgrade --rollback     # restore the previous binary from nvm.bak
+```
+
+Every download is verified against the `sha256sums.txt` published alongside
+the release; a mismatch aborts the upgrade before touching your binary.
+
+**China mirrors.** If `github.com` is slow or blocked, download from Gitee
+or any GitHub-file mirror:
+
+```bash
+nvm upgrade --from-gitee                     # use the Gitee mirror (API + download)
+nvm upgrade --from-mirror https://ghproxy.com/   # prefix GitHub download URLs
+```
+
+`--from-gitee` switches both the release-info API call and the asset
+download to `gitee.com` (the Gitee repo must be kept in sync manually —
+see the maintainer notes). `--from-mirror` only rewrites the download URL;
+the version check still hits `api.github.com` directly so it works behind
+any raw-file mirror.
+
+**Rate limits.** GitHub's unauthenticated API allows 60 requests/hour per
+IP. If you hit the limit, export `GITHUB_TOKEN` and `nvm upgrade` will send
+it as a bearer token (5000/hour):
+
+```bash
+export GITHUB_TOKEN=ghp_xxx
+nvm upgrade
+```
+
+**After upgrading.** Restart your shell (or open a new one) so the new
+binary is picked up. The currently running shell keeps the old binary in
+memory until then.
+
 ### io.js
 
 Install and manage historical io.js versions, just like Node.js:
@@ -549,6 +593,9 @@ Config files inside `NVM_DIR`:
 | `nvm unload` | Remove nvm from shell config |
 | `nvm install-npm [ver]` | Upgrade npm to latest |
 | `nvm reinstall-packages <ver>` | Migrate global packages |
+| `nvm upgrade [--check\|--force\|--rollback]` | Self-update nvm from latest GitHub release |
+| `nvm upgrade --from-gitee` | Self-update via Gitee mirror |
+| `nvm upgrade --from-mirror <url>` | Self-update via custom GitHub-file mirror |
 | `nvm version` | Show current node/npm |
 | `nvm version-remote` | Show recent remote versions |
 
