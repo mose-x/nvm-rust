@@ -145,14 +145,21 @@ jobs:
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
+        with:
+          # Flatten all artifacts into the current directory instead of
+          # creating one subdirectory per artifact. Without this, an
+          # artifact named `nvm-2.0.0-linux-arm64.tar.gz` would be
+          # downloaded as `./nvm-2.0.0-linux-arm64.tar.gz/nvm-2.0.0-linux-arm64.tar.gz`,
+          # and the subsequent `sha256sum nvm-*.*` glob would match the
+          # outer directory rather than the file, breaking checksum
+          # generation with "cannot overwrite directory with non-directory".
+          merge-multiple: true
 
       - name: Generate checksums
         run: |
-          for f in */nvm-*.*; do
-            dirname=$(dirname "$f")
-            mv "$f" .
-          done
           sha256sum nvm-*.* > sha256sums.txt
+          echo "---checksums---"
+          cat sha256sums.txt
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
