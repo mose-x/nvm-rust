@@ -320,6 +320,46 @@ nvm install-npm            # 升级当前版本的 npm
 nvm install-npm 20
 ```
 
+### 升级 nvm 自身
+
+`nvm upgrade` 直接从 GitHub Release 拉取最新版本，原地替换 nvm 二进制。
+无需重新执行 `install.sh` —— 新二进制会替换旧二进制（默认路径
+`~/.nvm.rust/bin/nvm`），上一个版本会备份为 `nvm.bak`，出问题可一键回滚。
+
+```bash
+nvm upgrade                # 下载并安装最新发布版本
+nvm upgrade --check        # 仅检查是否有新版本，不实际升级
+nvm upgrade --force        # 即使已是最新也强制重装
+nvm upgrade --rollback     # 从 nvm.bak 恢复上一个二进制
+```
+
+每次下载都会用发布附带的 `sha256sums.txt` 校验 SHA256，校验失败会
+在动你二进制之前中止升级。
+
+**国内镜像。** 如果 `github.com` 慢或无法访问，从 Gitee 或任意 GitHub
+文件镜像下载：
+
+```bash
+nvm upgrade --from-gitee                          # 走 Gitee 镜像（API + 下载）
+nvm upgrade --from-mirror https://ghproxy.com/   # 给 GitHub 下载 URL 加前缀
+```
+
+`--from-gitee` 会同时把发布信息 API 和资源下载都切到 `gitee.com`
+（Gitee 仓库需要手动同步，见维护者说明）。`--from-mirror` 只重写下载
+URL；版本检查仍然直接打 `api.github.com`，所以适用于任意 raw 文件镜像。
+
+**API 限频。** GitHub 未鉴权 API 限制为每 IP 每小时 60 次。如果碰到
+限频，导出 `GITHUB_TOKEN`，`nvm upgrade` 会作为 bearer token 发送
+（提升到 5000/小时）：
+
+```bash
+export GITHUB_TOKEN=ghp_xxx
+nvm upgrade
+```
+
+**升级之后。** 重启 shell（或新开一个）以使用新二进制。当前 shell
+在重启前仍会使用内存中的旧二进制。
+
 ### io.js
 
 像管理 Node.js 一样安装和管理历史 io.js 版本：
@@ -541,6 +581,9 @@ nvm corepack disable          # 禁用当前版本
 | `nvm unload` | 从 Shell 配置中移除 nvm |
 | `nvm install-npm [ver]` | 升级 npm 到最新 |
 | `nvm reinstall-packages <ver>` | 迁移全局包 |
+| `nvm upgrade [--check\|--force\|--rollback]` | 从 GitHub Release 自更新 nvm |
+| `nvm upgrade --from-gitee` | 走 Gitee 镜像自更新 |
+| `nvm upgrade --from-mirror <url>` | 走自定义 GitHub 文件镜像自更新 |
 | `nvm version` | 显示当前 node/npm |
 | `nvm version-remote` | 显示最近的远程版本 |
 
