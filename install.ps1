@@ -56,9 +56,9 @@ function Get-OS {
 function Get-Arch {
     $arch = $env:PROCESSOR_ARCHITECTURE
     switch ($arch) {
-        "AMD64"   { return "x86_64" }
-        "x64"     { return "x86_64" }
-        "ARM64"   { return "aarch64" }
+        "AMD64"   { return "x64" }
+        "x64"     { return "x64" }
+        "ARM64"   { return "arm64" }
         default   {
             Write-Error "Unsupported architecture: $arch"
             exit 1
@@ -103,12 +103,10 @@ function Main {
         Write-Info "Using specified version: $Version"
     }
 
-    $target = "x86_64-pc-windows-msvc"
-    if ($arch -eq "aarch64") {
-        $target = "aarch64-pc-windows-msvc"
-    }
-
-    $archive = "nvm-${target}.zip"
+    # Asset naming: nvm-<version>-<os>-<arch>.zip
+    # $Version is the tag (e.g. v2.0.0); strip leading 'v' for the filename.
+    $versionNum = $Version -replace '^v', ''
+    $archive = "nvm-$versionNum-windows-$arch.zip"
     $downloadUrl = "$GithubDownload/$Version/$archive"
 
     Write-Info "Downloading $archive..."

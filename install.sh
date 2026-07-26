@@ -61,7 +61,7 @@ detect_os() {
     local os=""
     case "$(uname -s)" in
         Linux)   os="linux" ;;
-        Darwin)  os="darwin" ;;
+        Darwin)  os="macos" ;;
         *)
             error "Unsupported OS: $(uname -s)"
             exit 1
@@ -73,8 +73,8 @@ detect_os() {
 detect_arch() {
     local arch=""
     case "$(uname -m)" in
-        x86_64|amd64)   arch="x86_64" ;;
-        aarch64|arm64)  arch="aarch64" ;;
+        x86_64|amd64)   arch="x64" ;;
+        aarch64|arm64)  arch="arm64" ;;
         *)
             error "Unsupported architecture: $(uname -m)"
             exit 1
@@ -132,14 +132,10 @@ main() {
         info "Using specified version: $version"
     fi
 
-    local target="${arch}-${os}"
-    if [ "$os" = "linux" ]; then
-        target="${arch}-unknown-linux-gnu"
-    elif [ "$os" = "darwin" ]; then
-        target="${arch}-apple-darwin"
-    fi
-
-    local archive="nvm-${target}.tar.gz"
+    # Strip leading 'v' from tag (v2.0.0 → 2.0.0) for asset filename.
+    # Asset naming: nvm-<version>-<os>-<arch>.tar.gz
+    local version_num="${version#v}"
+    local archive="nvm-${version_num}-${os}-${arch}.tar.gz"
     local download_url="${GITHUB_DOWNLOAD}/${version}/${archive}"
 
     info "Downloading $archive..."

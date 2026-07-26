@@ -17,24 +17,45 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux glibc
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
+            asset_os: linux
+            asset_arch: x64
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             archive: tar.gz
+            asset_os: linux
+            asset_arch: arm64
+          # Linux musl (Alpine / distroless — fully static)
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             archive: tar.gz
+            asset_os: linux-musl
+            asset_arch: x64
+          # macOS Intel + Apple Silicon
           - os: macos-latest
             target: x86_64-apple-darwin
             archive: tar.gz
+            asset_os: macos
+            asset_arch: x64
           - os: macos-latest
             target: aarch64-apple-darwin
             archive: tar.gz
+            asset_os: macos
+            asset_arch: arm64
+          # Windows x64 + ARM64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
+            asset_os: windows
+            asset_arch: x64
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            archive: zip
+            asset_os: windows
+            asset_arch: arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -80,21 +101,40 @@ jobs:
         if: matrix.target != 'aarch64-unknown-linux-gnu' && matrix.target != 'x86_64-unknown-linux-musl'
         run: cargo build --release --target ${{ matrix.target }}
 
+      - name: Compute version (from tag)
+        shell: bash
+        run: |
+          # Tag form: refs/tags/v2.0.0 → version 2.0.0
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          # Fallback for workflow_dispatch (no tag): use Cargo.toml
+          if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF" ]; then
+            VERSION=$(grep '^version' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Resolved version: $VERSION"
+
       - name: Package (Unix tar.gz)
         if: matrix.archive == 'tar.gz'
         run: |
-          tar -czf nvm-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release nvm
+          ASSET_NAME="nvm-${{ env.VERSION }}-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz"
+          tar -czf "$ASSET_NAME" -C target/${{ matrix.target }}/release nvm
+          echo "ASSET_NAME=$ASSET_NAME" >> $GITHUB_ENV
+          echo "Packaged: $ASSET_NAME"
 
       - name: Package (Windows zip)
         if: matrix.archive == 'zip'
+        shell: bash
         run: |
-          Compress-Archive -Path target/${{ matrix.target }}/release/nvm.exe -DestinationPath nvm-${{ matrix.target }}.zip
+          ASSET_NAME="nvm-${{ env.VERSION }}-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.zip"
+          7z a "$ASSET_NAME" "target/${{ matrix.target }}/release/nvm.exe"
+          echo "ASSET_NAME=$ASSET_NAME" >> $GITHUB_ENV
+          echo "Packaged: $ASSET_NAME"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nvm-${{ matrix.target }}
-          path: nvm-${{ matrix.target }}.${{ matrix.archive }}
+          name: ${{ env.ASSET_NAME }}
+          path: ${{ env.ASSET_NAME }}
 
   release:
     name: Create Release
