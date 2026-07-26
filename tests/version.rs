@@ -8,8 +8,9 @@ fn long_version_flag() {
     let out = run(&["--version"]);
     assert!(out.status.success(), "--version should exit 0");
     let s = stdout(&out);
-    // clap reads the version from Cargo.toml; it should print "1.0.0".
-    assert!(s.contains("1.0.0"), "expected 1.0.0 in output: {s}");
+    // clap reads the version from Cargo.toml; match whatever Cargo.toml says.
+    let expected = env!("CARGO_PKG_VERSION");
+    assert!(s.contains(expected), "expected {expected} in output: {s}");
 }
 
 #[test]
@@ -17,7 +18,8 @@ fn short_version_flag() {
     let out = run(&["-V"]);
     assert!(out.status.success(), "-V should exit 0");
     let s = stdout(&out);
-    assert!(s.contains("1.0.0"), "expected 1.0.0 in output: {s}");
+    let expected = env!("CARGO_PKG_VERSION");
+    assert!(s.contains(expected), "expected {expected} in output: {s}");
 }
 
 #[test]
