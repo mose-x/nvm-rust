@@ -399,14 +399,15 @@ fn fetch_latest_release(
             .unwrap_or_default();
         let rate_limited = status.as_u16() == 403 && remaining == "0";
         if rate_limited {
-            anyhow::bail!(
-                "{}\n  {}",
-                format_t(
-                    "upgrade_fetch_http_failed",
-                    std::slice::from_ref(&format!("{}", status))
-                ),
-                T("upgrade_rate_limited_hint")
-            );
+            // Auto-fallback: the GitHub API is rate-limited (60/hour per IP for
+            // anonymous), but the releases HTML page (github.com/.../releases/latest)
+            // is served by a different system and is NOT rate-limited. It 302-
+            // redirects to releases/tag/<tag>, so we resolve the tag from the
+            // redirect URL and construct asset download URLs from the tag.
+            // This keeps `nvm upgrade` working for regular users on shared IPs
+            // without requiring a GITHUB_TOKEN.
+            eprintln!("{}  {}", "ℹ".cyan().bold(), T("upgrade_fallback_to_html"));
+            return fetch_latest_release_via_html(client);
         } else if !gh_msg.is_empty() {
             anyhow::bail!(
                 "{}\n  {}",
@@ -447,6 +448,86 @@ fn fetch_latest_release(
         })
         .unwrap_or_default();
     Ok((tag, assets, "GitHub"))
+}
+
+/// Fallback when the GitHub API is rate-limited: resolve the latest release
+/// tag from the `releases/latest` HTML page, which 302-redirects to
+/// `releases/tag/<tag>`. This endpoint is served by github.com (not
+/// api.github.com) and is NOT subject to the 60/hour API rate limit, so it
+/// keeps `nvm upgrade` working for regular users on shared IPs without a
+/// GITHUB_TOKEN.
+///
+/// Since we cannot list assets without the API, we construct the known asset
+/// set from the tag + the fixed release naming scheme
+/// (`nvm-<version>-<target>.<ext>` across all supported platforms, plus
+/// `sha256sums.txt`). The caller picks the matching asset by `<target>.<ext>`
+/// suffix, same as the API path. If a platform's asset is absent from the
+/// release, the download itself 404s with a clear error.
+fn fetch_latest_release_via_html(
+    client: &reqwest::blocking::Client,
+) -> Result<(String, Vec<Asset>, &'static str)> {
+    let url = format!(
+        "https://github.com/{}/{}/releases/latest",
+        REPO_OWNER, REPO_NAME
+    );
+    // reqwest follows the 302 by default; resp.url() is the final URL.
+    let resp = client
+        .get(&url)
+        .header(
+            "User-Agent",
+            format!("nvm-rust/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .send()
+        .map_err(|e| anyhow::anyhow!("{}: {}", T("upgrade_fetch_failed"), e))?;
+    if !resp.status().is_success() {
+        anyhow::bail!(
+            "{}",
+            format_t(
+                "upgrade_fetch_http_failed",
+                std::slice::from_ref(&format!("{}", resp.status()))
+            )
+        );
+    }
+    // Final URL looks like:
+    //   https://github.com/<owner>/<repo>/releases/tag/v2.0.0
+    let final_url = resp.url().as_str();
+    let tag = final_url
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("{}", T("upgrade_no_tag")))?
+        .to_string();
+    // Strip a leading 'v' to get the bare version used in asset names.
+    let version = tag.strip_prefix('v').unwrap_or(&tag);
+    // Known asset naming: covers every platform produced by release.yml.
+    // The caller matches by `-<target>.<ext>` suffix, so listing all platforms
+    // here is safe -- only the host's match is downloaded.
+    let targets_exts: &[(&str, &str)] = &[
+        ("linux-x64", "tar.gz"),
+        ("linux-musl-x64", "tar.gz"),
+        ("linux-arm64", "tar.gz"),
+        ("macos-x64", "tar.gz"),
+        ("macos-arm64", "tar.gz"),
+        ("windows-x64", "zip"),
+        ("windows-arm64", "zip"),
+    ];
+    let base = format!(
+        "https://github.com/{}/{}/releases/download/{}",
+        REPO_OWNER, REPO_NAME, tag
+    );
+    let mut assets: Vec<Asset> = targets_exts
+        .iter()
+        .map(|(target, ext)| {
+            let name = format!("nvm-{}-{}.{}", version, target, ext);
+            let url = format!("{}/{}", base, name);
+            Asset { name, url }
+        })
+        .collect();
+    assets.push(Asset {
+        name: "sha256sums.txt".to_string(),
+        url: format!("{}/sha256sums.txt", base),
+    });
+    Ok((tag, assets, "GitHub (HTML)"))
 }
 
 /// Download a file, streaming to disk to avoid loading it all in memory.
