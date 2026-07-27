@@ -28,7 +28,12 @@ pub fn generate_completions(shell: Option<&str>) -> anyhow::Result<()> {
 /// 只覆盖已存在的文件——用户未安装补全时不创建任何文件，避免凭空生成。
 /// 静默执行：不打印 "已写入" / "添加到 rc" 等提示，避免污染 `nvm language` 输出。
 /// 重新生成后用当前语言的 T() 描述覆盖旧文件，下次打开新 shell 即生效。
-pub fn regenerate_completions_if_installed() -> anyhow::Result<()> {
+///
+/// 返回值 `zsh_regenerated`：zsh 补全文件是否被实际重写。调用方据此决定
+/// 是否提示用户刷新当前 shell —— zsh 把补全函数缓存在 shell 进程内存里，
+/// 改文件后当前 shell 不会自动生效，需要 `unfunction _nvm` 再重新 autoload。
+/// bash/fish/powershell 每次补全都重新读文件，无需此提示。
+pub fn regenerate_completions_if_installed() -> anyhow::Result<bool> {
     let completions_dir = get_nvm_dir().join("completions");
     // 只覆盖已存在的文件——用户未安装补全时不创建任何文件。
     // bash/powershell 虽无描述文本，也一并重写以保持 4 种补全内容一致
@@ -38,8 +43,10 @@ pub fn regenerate_completions_if_installed() -> anyhow::Result<()> {
         fs::write(&bash, build_bash_script())?;
     }
     let zsh = completions_dir.join("_nvm");
+    let mut zsh_regenerated = false;
     if zsh.exists() {
         fs::write(&zsh, build_zsh_script())?;
+        zsh_regenerated = true;
     }
     let fish = completions_dir.join("nvm.fish");
     if fish.exists() {
@@ -49,7 +56,7 @@ pub fn regenerate_completions_if_installed() -> anyhow::Result<()> {
     if ps1.exists() {
         fs::write(&ps1, build_powershell_script())?;
     }
-    Ok(())
+    Ok(zsh_regenerated)
 }
 
 /// Shared body of the four `*_completions` functions: ensure the completions
