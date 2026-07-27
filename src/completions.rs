@@ -21,23 +21,29 @@ pub fn generate_completions(shell: Option<&str>) -> anyhow::Result<()> {
     }
 }
 
-/// 切换语言后静默重新生成已安装的全部 shell 补全脚本。
+/// Silently regenerate every installed shell completion script after a
+/// language switch.
 ///
-/// zsh/fish 含描述文本，跟随语言重新生成；bash/powershell 虽无描述文本，
-/// 也一并重写以保持 4 种补全内容一致（如未来加入命令/选项也能同步更新）。
-/// 只覆盖已存在的文件——用户未安装补全时不创建任何文件，避免凭空生成。
-/// 静默执行：不打印 "已写入" / "添加到 rc" 等提示，避免污染 `nvm language` 输出。
-/// 重新生成后用当前语言的 T() 描述覆盖旧文件，下次打开新 shell 即生效。
+/// zsh/fish carry description text and follow the new language; bash/powershell
+/// have no descriptions but are rewritten too so all four stay in sync (e.g.
+/// when commands/options are added later). Only overwrites files that already
+/// exist -- never creates files when the user has not installed completions.
+/// Silent: does not print "written" / "add to rc" banners, to avoid polluting
+/// `nvm language` output. The rewritten file uses the current language's T()
+/// descriptions and takes effect the next time a new shell is opened.
 ///
-/// 返回值 `zsh_regenerated`：zsh 补全文件是否被实际重写。调用方据此决定
-/// 是否提示用户刷新当前 shell —— zsh 把补全函数缓存在 shell 进程内存里，
-/// 改文件后当前 shell 不会自动生效，需要 `unfunction _nvm` 再重新 autoload。
-/// bash/fish/powershell 每次补全都重新读文件，无需此提示。
+/// Returns `zsh_regenerated`: whether the zsh completion file was actually
+/// rewritten. The caller uses this to decide whether to prompt the user to
+/// refresh the current shell -- zsh caches the completion function in the
+/// shell process memory, so editing the file does not take effect in the
+/// current shell; `unfunction _nvm` followed by a fresh autoload is required.
+/// bash/fish/powershell re-read the file on every completion, so no prompt.
 pub fn regenerate_completions_if_installed() -> anyhow::Result<bool> {
     let completions_dir = get_nvm_dir().join("completions");
-    // 只覆盖已存在的文件——用户未安装补全时不创建任何文件。
-    // bash/powershell 虽无描述文本，也一并重写以保持 4 种补全内容一致
-    //（如未来加入命令/选项也能同步更新）。
+    // Only overwrite files that already exist -- never create files when the
+    // user has not installed completions. bash/powershell have no descriptions
+    // but are rewritten too to keep all four in sync (e.g. when commands/options
+    // are added later).
     let bash = completions_dir.join("nvm.bash");
     if bash.exists() {
         fs::write(&bash, build_bash_script())?;
@@ -213,8 +219,9 @@ fn bash_completions() -> anyhow::Result<()> {
 }
 
 fn build_zsh_script() -> String {
-    // 命令描述: (命令名, i18n key)。别名 (remove/ls/lang) 复用主命令描述——
-    // 补全描述无需标注 "(alias)"，命令名本身已表明身份。
+    // Command descriptions: (command name, i18n key). Aliases (remove/ls/lang)
+    // reuse the main command description -- no "(alias)" tag needed, the name
+    // itself identifies it.
     let cmds: &[(&str, &str)] = &[
         ("install", "help_install_about"),
         ("uninstall", "help_uninstall_about"),
@@ -252,9 +259,10 @@ fn build_zsh_script() -> String {
         ("help", "help_root_print_help"),
     ];
 
-    // 选项描述: (flag, 值后缀, i18n key)。
-    // flag 如 "--lts" → '--lts[desc]'；"--sort=" 配合 ":order:(desc asc)" →
-    // '--sort=[desc]:order:(desc asc)'。值后缀是 zsh 值补全语法，不翻译。
+    // Option descriptions: (flag, value suffix, i18n key).
+    // flag like "--lts" -> '--lts[desc]'; "--sort=" with ":order:(desc asc)" ->
+    // '--sort=[desc]:order:(desc asc)'. The value suffix is zsh value-completion
+    // syntax and is not translated.
     let install_opts: &[(&str, &str, &str)] = &[
         ("--lts", "", "help_install_lts"),
         ("--latest", "", "help_install_latest"),
@@ -313,7 +321,7 @@ fn build_zsh_script() -> String {
     zsh_append_opts(&mut s, "_nvm_upgrade", upgrade_opts);
     zsh_append_opts(&mut s, "_nvm_auto", auto_opts);
 
-    // _nvm 主函数: state machine，无描述文本，保持静态
+    // _nvm main function: state machine, no description text, kept static
     s.push_str(
         r#"_nvm() {
     local curcontext="$curcontext" state line
@@ -385,11 +393,13 @@ fn build_zsh_script() -> String {
 
 fn zsh_completions() -> anyhow::Result<()> {
     let script = build_zsh_script();
-    // 检测 ~/.zshrc 是否已初始化补全系统。zsh 的 fpath + autoload 只有在
-    // compinit 被调用后才会真正加载补全函数；若用户 .zshrc 没有 compinit，
-    // 光加 fpath/autoload 不生效（tab 补全无反应）。检测到缺失时额外提示
-    // 用户补一行 `autoload -Uz compinit && compinit`，并在 install_lines
-    // 最前面带上这行，方便用户直接复制。
+    // Detect whether ~/.zshrc has already initialized the completion system.
+    // zsh's fpath + autoload only actually load completion functions after
+    // compinit is called; if the user's .zshrc lacks compinit, adding
+    // fpath/autoload alone has no effect (Tab completion does nothing). When
+    // missing, we additionally prompt the user to add
+    // `autoload -Uz compinit && compinit`, and prepend that line to
+    // install_lines so the user can copy-paste directly.
     let zshrc = Some(std::path::PathBuf::from(crate::system::get_home_dir()).join(".zshrc"));
     let has_compinit = zshrc
         .as_ref()
@@ -416,8 +426,9 @@ fn zsh_completions() -> anyhow::Result<()> {
             let dir = f.parent().unwrap_or(f);
             let mut lines = Vec::new();
             if !has_compinit {
-                // 放在 fpath 之前：compinit 必须先初始化补全系统，
-                // 之后 fpath 里新增的 _nvm 才会被 autoload 加载。
+                // Prepend before fpath: compinit must initialize the completion
+                // system first, only then can the newly added _nvm in fpath be
+                // loaded via autoload.
                 lines.push("autoload -Uz compinit && compinit".to_string());
             }
             lines.push(format!("fpath=( {} $fpath )", dir.display()));
@@ -428,7 +439,8 @@ fn zsh_completions() -> anyhow::Result<()> {
 }
 
 fn build_fish_script() -> String {
-    // 命令描述: (命令名, i18n key) — 同 zsh，别名复用主命令描述。
+    // Command descriptions: (command name, i18n key) -- same as zsh, aliases
+    // reuse the main command description.
     let cmds: &[(&str, &str)] = &[
         ("install", "help_install_about"),
         ("uninstall", "help_uninstall_about"),
@@ -466,7 +478,7 @@ fn build_fish_script() -> String {
         ("help", "help_root_print_help"),
     ];
 
-    // 选项: (fish 条件, flag, i18n key)
+    // Options: (fish condition, flag, i18n key)
     let install_opts: &[(&str, &str, &str)] = &[
         (
             "__fish_seen_subcommand_from install",
@@ -574,7 +586,7 @@ fn build_fish_script() -> String {
         "help_auto_silent",
     )];
 
-    // 值补全: (值, i18n key)
+    // Value completions: (value, i18n key)
     let mirror_vals: &[(&str, &str)] = &[
         ("taobao", "comp_mirror_taobao"),
         ("official", "comp_mirror_official"),
@@ -601,7 +613,7 @@ fn build_fish_script() -> String {
     let mut s = String::new();
     s.push_str("# nvm fish completion\n\n");
 
-    // 命令补全
+    // Command completions
     for (name, key) in cmds {
         s.push_str(&format!(
             "complete -c nvm -n '__fish_use_subcommand' -a '{}' -d '{}'\n",
@@ -611,7 +623,7 @@ fn build_fish_script() -> String {
     }
     s.push('\n');
 
-    // 选项补全
+    // Option completions
     fish_append_opts(&mut s, upgrade_opts);
     fish_append_opts(&mut s, auto_opts);
     fish_append_opts(&mut s, install_opts);
@@ -619,7 +631,7 @@ fn build_fish_script() -> String {
     fish_append_opts(&mut s, remote_opts);
     s.push('\n');
 
-    // 值补全
+    // Value completions
     fish_append_vals(&mut s, "__fish_seen_subcommand_from mirror", mirror_vals);
     fish_append_vals(&mut s, lang_cond, lang_vals);
     fish_append_vals(&mut s, "__fish_seen_subcommand_from proxy", proxy_vals);
@@ -631,7 +643,7 @@ fn build_fish_script() -> String {
     fish_append_vals(&mut s, "__fish_seen_subcommand_from cache", cache_vals);
     fish_append_vals(&mut s, "__fish_seen_subcommand_from migrate", migrate_vals);
 
-    // shell 值: Bash/Zsh/Fish/PowerShell 是专有名词，不翻译
+    // shell values: Bash/Zsh/Fish/PowerShell are proper nouns, not translated
     for (val, desc) in &[
         ("bash", "Bash"),
         ("zsh", "Zsh"),

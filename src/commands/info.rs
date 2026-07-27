@@ -1223,11 +1223,15 @@ pub fn cmd_language(lang: Option<&str>) -> Result<()> {
         Some(l) => {
             if let Some(parsed) = Lang::from_str(l) {
                 set_language(parsed)?;
-                // 切换语言后静默重新生成已安装的 zsh/fish 补全，使其描述
-                // 跟随新语言。用户无需再手动执行 `nvm completion`。
-                // 用 let _ = 吞掉错误：补全更新失败不应阻断语言切换本身。
-                // 返回 zsh_regenerated：zsh 把补全函数缓存在 shell 进程内存，
-                // 改文件后当前 shell 不生效，需要提示用户手动刷新。
+                // After switching the language, silently regenerate the
+                // installed zsh/fish completions so their descriptions follow
+                // the new language. The user no longer needs to run
+                // `nvm completion` manually. Errors are swallowed: a failure
+                // to update completions must not block the language switch.
+                // Returns zsh_regenerated: zsh caches the completion function
+                // in the shell process memory, so editing the file does not
+                // take effect in the current shell -- the user must be prompted
+                // to refresh manually.
                 let zsh_regenerated =
                     crate::completions::regenerate_completions_if_installed().unwrap_or(false);
                 println!(
@@ -1236,8 +1240,10 @@ pub fn cmd_language(lang: Option<&str>) -> Result<()> {
                     T("language_set_label").green(),
                     parsed.display_name().white().bold()
                 );
-                // 仅当 zsh 补全被实际重写时提示。bash/fish/powershell 每次补全
-                // 都重新读文件，无需此提示；未安装 zsh 补全也不提示，避免误导。
+                // Only prompt when the zsh completion was actually rewritten.
+                // bash/fish/powershell re-read the file on every completion, so
+                // no prompt is needed; if zsh completion is not installed we
+                // also stay silent to avoid misleading the user.
                 if zsh_regenerated {
                     println!();
                     println!(

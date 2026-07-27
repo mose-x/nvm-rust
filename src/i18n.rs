@@ -32,7 +32,7 @@ impl Lang {
     /// Accepts any canonical code from `LANG_CODES` (case-insensitive) and
     /// any alias declared in a locale's `[_meta] aliases` table. For
     /// example, `cn.toml` declares `aliases = ["zh", "zh-cn", "chinese",
-    /// "中文"]`, so all of those resolve to `Lang("cn")`.
+    /// ...]`, so all of those resolve to `Lang("cn")`.
     pub fn from_str(s: &str) -> Option<Self> {
         let lower = s.to_lowercase();
         // 1. Direct match against a canonical code.
@@ -55,7 +55,8 @@ impl Lang {
         self.0
     }
 
-    /// Human-readable name for display, e.g. `"English"` or `"中文"`.
+    /// Human-readable name for display, e.g. `"English"` for `en` or the
+    /// locale's `_meta.display_name` for other languages.
     ///
     /// Falls back to the lang code if a locale file omitted `_meta.display_name`.
     pub fn display_name(&self) -> &'static str {
