@@ -501,6 +501,7 @@ upgrade_restart_hint = "Restart your shell (or open a new one) for the new binar
 upgrade_find_exe_failed = "Cannot locate the running nvm binary on disk."
 upgrade_fetch_failed = "Failed to fetch latest release info"
 upgrade_fetch_http_failed = "Failed to fetch latest release info: HTTP {0}"
+upgrade_rate_limited_hint = "GitHub API rate limit exceeded (60/hour per IP for anonymous). Set GITHUB_TOKEN env var to lift it to 5000/hour:  export GITHUB_TOKEN=ghp_xxx"
 upgrade_parse_failed = "Failed to parse release JSON response."
 upgrade_no_tag = "Release JSON has no `tag_name` field."
 extract_failed = "Archive extraction failed"
