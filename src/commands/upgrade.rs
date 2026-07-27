@@ -405,8 +405,14 @@ fn fetch_latest_release(
             // redirects to releases/tag/<tag>, so we resolve the tag from the
             // redirect URL and construct asset download URLs from the tag.
             // This keeps `nvm upgrade` working for regular users on shared IPs
-            // without requiring a GITHUB_TOKEN.
-            eprintln!("{}  {}", "ℹ".cyan().bold(), T("upgrade_fallback_to_html"));
+            // without requiring a GITHUB_TOKEN. Print a clear two-line notice:
+            // what happened + what (if anything) the user can do about it.
+            eprintln!(
+                "  {} {}",
+                "ℹ".cyan().bold(),
+                T("upgrade_fallback_to_html").cyan()
+            );
+            eprintln!("    {}", T("upgrade_fallback_to_html_detail").dimmed());
             return fetch_latest_release_via_html(client);
         } else if !gh_msg.is_empty() {
             anyhow::bail!(
@@ -480,12 +486,16 @@ fn fetch_latest_release_via_html(
         .send()
         .map_err(|e| anyhow::anyhow!("{}: {}", T("upgrade_fetch_failed"), e))?;
     if !resp.status().is_success() {
+        // Both the API and the HTML fallback failed. Surface the status and
+        // the GITHUB_TOKEN hint: the token is the only reliable way to bypass
+        // IP-based rate limiting on shared networks.
         anyhow::bail!(
-            "{}",
+            "{}\n  {}",
             format_t(
                 "upgrade_fetch_http_failed",
                 std::slice::from_ref(&format!("{}", resp.status()))
-            )
+            ),
+            T("upgrade_rate_limited_hint")
         );
     }
     // Final URL looks like:
