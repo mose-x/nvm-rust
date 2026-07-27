@@ -1226,13 +1226,33 @@ pub fn cmd_language(lang: Option<&str>) -> Result<()> {
                 // 切换语言后静默重新生成已安装的 zsh/fish 补全，使其描述
                 // 跟随新语言。用户无需再手动执行 `nvm completion`。
                 // 用 let _ = 吞掉错误：补全更新失败不应阻断语言切换本身。
-                let _ = crate::completions::regenerate_completions_if_installed();
+                // 返回 zsh_regenerated：zsh 把补全函数缓存在 shell 进程内存，
+                // 改文件后当前 shell 不生效，需要提示用户手动刷新。
+                let zsh_regenerated =
+                    crate::completions::regenerate_completions_if_installed().unwrap_or(false);
                 println!(
                     "  {} {} {}",
                     "✓".green().bold(),
                     T("language_set_label").green(),
                     parsed.display_name().white().bold()
                 );
+                // 仅当 zsh 补全被实际重写时提示。bash/fish/powershell 每次补全
+                // 都重新读文件，无需此提示；未安装 zsh 补全也不提示，避免误导。
+                if zsh_regenerated {
+                    println!();
+                    println!(
+                        "  {} {}",
+                        "ℹ".cyan().bold(),
+                        T("lang_switched_zsh_reload_note")
+                    );
+                    println!(
+                        "    {}",
+                        "unfunction _nvm 2>/dev/null; autoload -Uz _nvm"
+                            .yellow()
+                            .bold()
+                    );
+                    println!("  {}", T("lang_switched_or_new_shell"));
+                }
             } else {
                 anyhow::bail!(
                     "{}",
