@@ -379,13 +379,52 @@ fn fetch_latest_release(
         .send()
         .map_err(|e| anyhow::anyhow!("{}: {}", T("upgrade_fetch_failed"), e))?;
     if !resp.status().is_success() {
-        anyhow::bail!(
-            "{}",
-            format_t(
-                "upgrade_fetch_http_failed",
-                std::slice::from_ref(&format!("{}", resp.status()))
-            )
-        );
+        // On failure, surface GitHub's message body instead of just the status
+        // code. GitHub returns JSON with a "message" field explaining the
+        // reason (rate limit, repo not found, etc.); printing it tells the
+        // user exactly what to fix. For 403 with rate-limit headers, append a
+        // hint to set GITHUB_TOKEN (raises the anonymous 60/hour cap to
+        // 5000/hour).
+        let status = resp.status();
+        let remaining = resp
+            .headers()
+            .get("x-ratelimit-remaining")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let body = resp.text().unwrap_or_default();
+        let gh_msg = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(String::from))
+            .unwrap_or_default();
+        let rate_limited = status.as_u16() == 403 && remaining == "0";
+        if rate_limited {
+            anyhow::bail!(
+                "{}\n  {}",
+                format_t(
+                    "upgrade_fetch_http_failed",
+                    std::slice::from_ref(&format!("{}", status))
+                ),
+                T("upgrade_rate_limited_hint")
+            );
+        } else if !gh_msg.is_empty() {
+            anyhow::bail!(
+                "{}\n  {}",
+                format_t(
+                    "upgrade_fetch_http_failed",
+                    std::slice::from_ref(&format!("{}", status))
+                ),
+                gh_msg
+            );
+        } else {
+            anyhow::bail!(
+                "{}",
+                format_t(
+                    "upgrade_fetch_http_failed",
+                    std::slice::from_ref(&format!("{}", status))
+                )
+            );
+        }
     }
     let text = resp.text().context(T("upgrade_parse_failed"))?;
     let json: serde_json::Value = serde_json::from_str(&text).context(T("upgrade_parse_failed"))?;
