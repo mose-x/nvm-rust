@@ -113,6 +113,7 @@ const KNOWN_COMMANDS: &[&str] = &[
     "completion",
     "corepack",
     "migrate",
+    "upgrade",
 ];
 
 /// Detect help requests (`-h`, `--help`, or `help` subcommand) so we can render
@@ -511,6 +512,7 @@ pub fn print_root_help() {
             ("completion", "help_completion_about"),
             ("corepack", "help_corepack_about"),
             ("migrate", "help_migrate_about"),
+            ("upgrade", "help_upgrade_about"),
             ("help", "help_root_print_help"),
         ],
     );
@@ -730,6 +732,19 @@ pub fn print_command_help(cmd: &str) {
             "help_migrate_usage",
             &[("[SOURCE]", "help_migrate_source_arg")],
             &[],
+            &[],
+        ),
+        "upgrade" => render_cmd_help(
+            "help_upgrade_about",
+            "help_upgrade_usage",
+            &[],
+            &[
+                ("    --check", "help_upgrade_check"),
+                ("    --force", "help_upgrade_force"),
+                ("    --from-gitee", "help_upgrade_from_gitee"),
+                ("    --from-mirror <URL>", "help_upgrade_from_mirror"),
+                ("    --rollback", "help_upgrade_rollback"),
+            ],
             &[],
         ),
         _ => {

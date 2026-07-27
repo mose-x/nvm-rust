@@ -1223,6 +1223,10 @@ pub fn cmd_language(lang: Option<&str>) -> Result<()> {
         Some(l) => {
             if let Some(parsed) = Lang::from_str(l) {
                 set_language(parsed)?;
+                // 切换语言后静默重新生成已安装的 zsh/fish 补全，使其描述
+                // 跟随新语言。用户无需再手动执行 `nvm completion`。
+                // 用 let _ = 吞掉错误：补全更新失败不应阻断语言切换本身。
+                let _ = crate::completions::regenerate_completions_if_installed();
                 println!(
                     "  {} {} {}",
                     "✓".green().bold(),
