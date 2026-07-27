@@ -734,19 +734,33 @@ pub fn print_command_help(cmd: &str) {
             &[],
             &[],
         ),
-        "upgrade" => render_cmd_help(
-            "help_upgrade_about",
-            "help_upgrade_usage",
-            &[],
-            &[
-                ("    --check", "help_upgrade_check"),
-                ("    --force", "help_upgrade_force"),
-                ("    --from-gitee", "help_upgrade_from_gitee"),
-                ("    --from-mirror <URL>", "help_upgrade_from_mirror"),
-                ("    --rollback", "help_upgrade_rollback"),
-            ],
-            &[],
-        ),
+        "upgrade" => {
+            render_cmd_help(
+                "help_upgrade_about",
+                "help_upgrade_usage",
+                &[],
+                &[
+                    ("    --check", "help_upgrade_check"),
+                    ("    --force", "help_upgrade_force"),
+                    ("    --from-gitee", "help_upgrade_from_gitee"),
+                    ("    --from-mirror <URL>", "help_upgrade_from_mirror"),
+                    ("    --rollback", "help_upgrade_rollback"),
+                ],
+                &[],
+            );
+            // Token setup notes (i18n-aware). Printed as plain prose because
+            // the rows are shell commands, not flag/desc pairs.
+            println!();
+            println!("{}", T("help_upgrade_token_title"));
+            println!("{}", T("help_upgrade_token_intro"));
+            println!("{}", T("help_upgrade_token_create"));
+            println!("{}", T("help_upgrade_token_temp"));
+            println!("{}", T("help_upgrade_token_temp_cmd"));
+            println!("{}", T("help_upgrade_token_perm"));
+            println!("{}", T("help_upgrade_token_perm_bash"));
+            println!("{}", T("help_upgrade_token_perm_zsh"));
+            println!("{}", T("help_upgrade_token_alt"));
+        }
         _ => {
             // Unknown command: fall back to root help
             print_root_help();
