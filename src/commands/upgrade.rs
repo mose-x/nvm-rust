@@ -56,6 +56,40 @@ pub fn upgrade(
     from_mirror: Option<String>,
     rollback: bool,
 ) -> Result<()> {
+    // Reject mutually-exclusive flag combos up front so users get a clear
+    // error instead of silent precedence (e.g. `--check --rollback` used to
+    // silently run rollback because rollback returns first).
+    let mut active: Vec<&str> = Vec::new();
+    if check {
+        active.push("--check");
+    }
+    if force {
+        active.push("--force");
+    }
+    if rollback {
+        active.push("--rollback");
+    }
+    if active.len() > 1 {
+        anyhow::bail!(
+            "{}",
+            format_t(
+                "upgrade_conflict_flags",
+                std::slice::from_ref(&active.join(", "))
+            )
+        );
+    }
+
+    // --from-gitee and --from-mirror are not conflicting (both can be set),
+    // but --from-mirror is silently ignored when --from-gitee is active
+    // because Gitee serves its own download URLs. Warn so the user knows.
+    if from_gitee && from_mirror.is_some() {
+        eprintln!(
+            "  {} {}",
+            "⚠".yellow().bold(),
+            T("upgrade_gitee_ignores_mirror").yellow()
+        );
+    }
+
     let bin_path = current_binary_path()?;
 
     if rollback {
@@ -138,7 +172,7 @@ pub fn upgrade(
                 "{}",
                 format_t(
                     "upgrade_no_asset",
-                    std::slice::from_ref(&format!("nvm-*{}-{}.{}", target, target, ext))
+                    std::slice::from_ref(&format!("nvm-*{}.{}", target, ext))
                 )
             )
         })?;
@@ -200,9 +234,13 @@ pub fn upgrade(
         );
     }
 
-    // 6. Extract the binary from the archive. The archive layout is just
-    //    `nvm` (or `nvm.exe`) at the root — release.yml packages with
-    //    `tar -czf ... -C target/.../release nvm`.
+    // 6. Extract the binary from the archive.
+    //    - Unix tar.gz: `tar -czf ... -C target/.../release nvm` → archive
+    //      root contains just `nvm`.
+    //    - Windows zip: `7z a ... target/.../release/nvm.exe` (no `-C`/`-spf`)
+    //      → the entry may carry its source path prefix
+    //      (`target/x86_64-pc-windows-msvc/release/nvm.exe`). `extract_binary`
+    //      matches by `ends_with("/nvm.exe")` so both layouts work.
     let extracted_bin = extract_binary(&archive_path, tmp_dir.path())?;
 
     // 7. Swap into place: backup current → move new into bin_path.
@@ -283,13 +321,23 @@ fn host_target() -> Result<&'static str> {
 
 /// Detect musl libc on Linux by inspecting `ldd --version` output.
 /// Returns `true` if the system uses musl, `false` for glibc or unknown.
+///
+/// Some Alpine versions print the version banner to stderr instead of
+/// stdout, so we merge both streams before checking for "musl".
 fn is_musl_libc() -> bool {
     std::process::Command::new("ldd")
         .arg("--version")
         .output()
         .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.contains("musl"))
+        .and_then(|o| {
+            let mut combined = String::from_utf8_lossy(&o.stdout).into_owned();
+            combined.push_str(&String::from_utf8_lossy(&o.stderr));
+            if combined.contains("musl") {
+                Some(true)
+            } else {
+                None
+            }
+        })
         .unwrap_or(false)
 }
 
@@ -456,6 +504,67 @@ fn fetch_latest_release(
     Ok((tag, assets, "GitHub"))
 }
 
+/// Extract the release tag from a `releases/tag/<tag>` redirect URL.
+/// Returns `None` if the URL has no trailing path segment.
+fn parse_tag_from_url(url: &str) -> Option<String> {
+    let tag = url.rsplit('/').next()?;
+    if tag.is_empty() {
+        None
+    } else {
+        Some(tag.to_string())
+    }
+}
+
+/// Construct the known asset list for a release tag, using the fixed
+/// `nvm-<version>-<target>.<ext>` naming scheme produced by release.yml.
+/// Includes `sha256sums.txt`. The tag keeps its leading `v` (used in the
+/// download URL path); the version (leading `v` stripped) is used in asset
+/// filenames.
+fn build_assets_from_tag(tag: &str) -> Vec<Asset> {
+    let version = tag.strip_prefix('v').unwrap_or(tag);
+    let targets_exts: &[(&str, &str)] = &[
+        ("linux-x64", "tar.gz"),
+        ("linux-musl-x64", "tar.gz"),
+        ("linux-arm64", "tar.gz"),
+        ("macos-x64", "tar.gz"),
+        ("macos-arm64", "tar.gz"),
+        ("windows-x64", "zip"),
+        ("windows-arm64", "zip"),
+    ];
+    let base = format!(
+        "https://github.com/{}/{}/releases/download/{}",
+        REPO_OWNER, REPO_NAME, tag
+    );
+    let mut assets: Vec<Asset> = targets_exts
+        .iter()
+        .map(|(target, ext)| {
+            let name = format!("nvm-{}-{}.{}", version, target, ext);
+            let url = format!("{}/{}", base, name);
+            Asset { name, url }
+        })
+        .collect();
+    assets.push(Asset {
+        name: "sha256sums.txt".to_string(),
+        url: format!("{}/sha256sums.txt", base),
+    });
+    assets
+}
+
+/// Find the expected SHA256 hash for `asset_name` in a `sha256sums.txt` body.
+/// Format: `<hex>  <filename>` per line. Returns `None` if no entry matches.
+fn find_checksum_for_asset(text: &str, asset_name: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let mut parts = line.split_whitespace();
+        let hash = parts.next()?;
+        let name = parts.next()?;
+        if name == asset_name {
+            Some(hash.to_lowercase())
+        } else {
+            None
+        }
+    })
+}
+
 /// Fallback when the GitHub API is rate-limited: resolve the latest release
 /// tag from the `releases/latest` HTML page, which 302-redirects to
 /// `releases/tag/<tag>`. This endpoint is served by github.com (not
@@ -500,43 +609,9 @@ fn fetch_latest_release_via_html(
     }
     // Final URL looks like:
     //   https://github.com/<owner>/<repo>/releases/tag/v2.0.0
-    let final_url = resp.url().as_str();
-    let tag = final_url
-        .rsplit('/')
-        .next()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("{}", T("upgrade_no_tag")))?
-        .to_string();
-    // Strip a leading 'v' to get the bare version used in asset names.
-    let version = tag.strip_prefix('v').unwrap_or(&tag);
-    // Known asset naming: covers every platform produced by release.yml.
-    // The caller matches by `-<target>.<ext>` suffix, so listing all platforms
-    // here is safe -- only the host's match is downloaded.
-    let targets_exts: &[(&str, &str)] = &[
-        ("linux-x64", "tar.gz"),
-        ("linux-musl-x64", "tar.gz"),
-        ("linux-arm64", "tar.gz"),
-        ("macos-x64", "tar.gz"),
-        ("macos-arm64", "tar.gz"),
-        ("windows-x64", "zip"),
-        ("windows-arm64", "zip"),
-    ];
-    let base = format!(
-        "https://github.com/{}/{}/releases/download/{}",
-        REPO_OWNER, REPO_NAME, tag
-    );
-    let mut assets: Vec<Asset> = targets_exts
-        .iter()
-        .map(|(target, ext)| {
-            let name = format!("nvm-{}-{}.{}", version, target, ext);
-            let url = format!("{}/{}", base, name);
-            Asset { name, url }
-        })
-        .collect();
-    assets.push(Asset {
-        name: "sha256sums.txt".to_string(),
-        url: format!("{}/sha256sums.txt", base),
-    });
+    let tag = parse_tag_from_url(resp.url().as_str())
+        .ok_or_else(|| anyhow::anyhow!("{}", T("upgrade_no_tag")))?;
+    let assets = build_assets_from_tag(&tag);
     Ok((tag, assets, "GitHub (HTML)"))
 }
 
@@ -596,26 +671,14 @@ fn verify_sha256(
         );
     }
     let text = resp.text().context(T("upgrade_checksum_fetch_failed"))?;
-    // Find the line matching our asset. sha256sum writes `<hash>  <name>`
-    // (two spaces). split_whitespace tolerates any run of whitespace.
-    let expected: String = text
-        .lines()
-        .find_map(|line| {
-            let mut parts = line.split_whitespace();
-            let hash = parts.next()?;
-            let name = parts.next()?;
-            if name == asset_name {
-                Some(hash.to_lowercase())
-            } else {
-                None
-            }
-        })
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "{}",
-                format_t("upgrade_checksum_no_entry", &[asset_name.to_string()])
-            )
-        })?;
+    // sha256sum writes `<hash>  <name>` per line; `find_checksum_for_asset`
+    // tolerates any whitespace run between them.
+    let expected: String = find_checksum_for_asset(&text, asset_name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{}",
+            format_t("upgrade_checksum_no_entry", &[asset_name.to_string()])
+        )
+    })?;
 
     // Compute the file's SHA256.
     let mut file = fs::File::open(archive_path)
@@ -730,14 +793,30 @@ fn swap_binary(bin_path: &Path, new_bin: &Path) -> Result<()> {
 
     #[cfg(unix)]
     {
-        // Rename old → bak (overwrites previous .bak). Then rename new → bin_path.
-        // Both are atomic on Unix. If the old binary doesn't exist (first
-        // upgrade, binary moved manually), the rename fails — skip it.
+        // Three-step atomic swap that survives both cross-device (EXDEV) and
+        // mid-swap crashes:
+        //   1. copy new_bin → bin_path.tmp  (same dir as bin_path → same fs)
+        //   2. rename bin_path → bak        (atomic, same fs)
+        //   3. rename bin_path.tmp → bin_path (atomic, same fs)
+        // Step 1 uses copy (not rename) so it works even if new_bin lives on
+        // a different mount (e.g. /tmp tmpfs vs ~/.nvm.rust/bin on ext4).
+        // Steps 2/3 are same-directory renames → never EXDEV, always atomic.
+        // If we crash between 2 and 3, bin_path.tmp is still on disk and a
+        // retry (or the user) can finish the swap; bin_path is gone but the
+        // .bak holds the previous version.
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = bin_path.with_extension("tmp");
+        fs::copy(new_bin, &tmp)
+            .with_context(|| format!("{}: {}", T("upgrade_swap_failed"), tmp.display()))?;
+        // fs::copy applies the source file's mode on Unix, but be explicit so
+        // a 0o644 source never yields a non-executable nvm.
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("{}: {}", T("upgrade_swap_failed"), tmp.display()))?;
         if bin_path.exists() {
             fs::rename(bin_path, &bak)
                 .with_context(|| format!("{}: {}", T("upgrade_backup_failed"), bak.display()))?;
         }
-        fs::rename(new_bin, bin_path)
+        fs::rename(&tmp, bin_path)
             .with_context(|| format!("{}: {}", T("upgrade_swap_failed"), bin_path.display()))?;
     }
     #[cfg(windows)]
@@ -837,4 +916,155 @@ fn install_dir() -> PathBuf {
         }
     }
     PathBuf::from(get_home_dir()).join(R_NVM_PATH).join("bin")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_tag_from_url_normal() {
+        let url = "https://github.com/mose-x/nvm-rust/releases/tag/v2.0.0";
+        assert_eq!(parse_tag_from_url(url).as_deref(), Some("v2.0.0"));
+    }
+
+    #[test]
+    fn test_parse_tag_from_url_no_trailing_segment() {
+        // Trailing slash → empty segment → None
+        let url = "https://github.com/mose-x/nvm-rust/releases/tag/";
+        assert_eq!(parse_tag_from_url(url), None);
+    }
+
+    #[test]
+    fn test_parse_tag_from_url_pre_release_tag() {
+        let url = "https://github.com/mose-x/nvm-rust/releases/tag/v2.0.0-rc.1";
+        assert_eq!(parse_tag_from_url(url).as_deref(), Some("v2.0.0-rc.1"));
+    }
+
+    #[test]
+    fn test_build_assets_from_tag_v_prefixed() {
+        let assets = build_assets_from_tag("v2.0.0");
+        // 7 platform assets + sha256sums.txt
+        assert_eq!(assets.len(), 8);
+        // Asset filenames use the version WITHOUT the leading 'v'
+        let linux_x64 = assets
+            .iter()
+            .find(|a| a.name == "nvm-2.0.0-linux-x64.tar.gz")
+            .expect("linux-x64 asset must exist");
+        assert!(linux_x64.url.starts_with("https://github.com/"));
+        assert!(linux_x64
+            .url
+            .ends_with("/releases/download/v2.0.0/nvm-2.0.0-linux-x64.tar.gz"));
+        // Download URL path keeps the leading 'v' (it's the tag name)
+        assert!(assets
+            .iter()
+            .any(|a| a.name == "nvm-2.0.0-linux-musl-x64.tar.gz"));
+        assert!(assets
+            .iter()
+            .any(|a| a.name == "nvm-2.0.0-macos-arm64.tar.gz"));
+        assert!(assets.iter().any(|a| a.name == "nvm-2.0.0-windows-x64.zip"));
+        let sums = assets
+            .iter()
+            .find(|a| a.name == "sha256sums.txt")
+            .expect("sha256sums.txt must exist");
+        assert!(sums
+            .url
+            .ends_with("/releases/download/v2.0.0/sha256sums.txt"));
+    }
+
+    #[test]
+    fn test_build_assets_from_tag_no_v_prefix() {
+        // Some users/CI may tag without 'v'; the version in filenames
+        // equals the tag itself.
+        let assets = build_assets_from_tag("2.0.0");
+        assert!(assets
+            .iter()
+            .any(|a| a.name == "nvm-2.0.0-linux-x64.tar.gz"));
+        assert!(assets.iter().any(|a| a
+            .url
+            .ends_with("/releases/download/2.0.0/nvm-2.0.0-linux-x64.tar.gz")));
+    }
+
+    #[test]
+    fn test_build_assets_covers_all_release_yml_targets() {
+        // Must match the 7 targets produced by release.yml exactly.
+        let assets = build_assets_from_tag("v9.9.9");
+        let names: Vec<&str> = assets.iter().map(|a| a.name.as_str()).collect();
+        assert!(names.contains(&"nvm-9.9.9-linux-x64.tar.gz"));
+        assert!(names.contains(&"nvm-9.9.9-linux-musl-x64.tar.gz"));
+        assert!(names.contains(&"nvm-9.9.9-linux-arm64.tar.gz"));
+        assert!(names.contains(&"nvm-9.9.9-macos-x64.tar.gz"));
+        assert!(names.contains(&"nvm-9.9.9-macos-arm64.tar.gz"));
+        assert!(names.contains(&"nvm-9.9.9-windows-x64.zip"));
+        assert!(names.contains(&"nvm-9.9.9-windows-arm64.zip"));
+        assert!(names.contains(&"sha256sums.txt"));
+    }
+
+    #[test]
+    fn test_find_checksum_for_asset_normal() {
+        let text = "\
+abc123  nvm-2.0.0-linux-x64.tar.gz
+def456  nvm-2.0.0-macos-arm64.tar.gz
+789abc  sha256sums.txt
+";
+        assert_eq!(
+            find_checksum_for_asset(text, "nvm-2.0.0-linux-x64.tar.gz").as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(
+            find_checksum_for_asset(text, "nvm-2.0.0-macos-arm64.tar.gz").as_deref(),
+            Some("def456")
+        );
+    }
+
+    #[test]
+    fn test_find_checksum_for_asset_normalizes_case() {
+        // sha256sum prints lowercase, but be tolerant of uppercase input.
+        let text = "ABCDEF  nvm-2.0.0-linux-x64.tar.gz\n";
+        assert_eq!(
+            find_checksum_for_asset(text, "nvm-2.0.0-linux-x64.tar.gz").as_deref(),
+            Some("abcdef")
+        );
+    }
+
+    #[test]
+    fn test_find_checksum_for_asset_missing_entry() {
+        let text = "abc123  some-other-file.tar.gz\n";
+        assert_eq!(
+            find_checksum_for_asset(text, "nvm-2.0.0-linux-x64.tar.gz"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_find_checksum_for_asset_tolerates_extra_whitespace() {
+        // sha256sum uses two spaces; some tools may use tabs or more spaces.
+        let text = "abc123\t\tnvm-2.0.0-linux-x64.tar.gz\n";
+        assert_eq!(
+            find_checksum_for_asset(text, "nvm-2.0.0-linux-x64.tar.gz").as_deref(),
+            Some("abc123")
+        );
+    }
+
+    #[test]
+    fn test_find_checksum_for_asset_empty_text() {
+        assert_eq!(
+            find_checksum_for_asset("", "nvm-2.0.0-linux-x64.tar.gz"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_find_checksum_for_asset_skips_malformed_lines() {
+        // Lines without a hash+name pair are ignored, not panicked.
+        let text = "\
+garbage line with no hash
+abc123  nvm-2.0.0-linux-x64.tar.gz
+justoneword
+";
+        assert_eq!(
+            find_checksum_for_asset(text, "nvm-2.0.0-linux-x64.tar.gz").as_deref(),
+            Some("abc123")
+        );
+    }
 }

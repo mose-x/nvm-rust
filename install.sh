@@ -60,7 +60,15 @@ error() {
 detect_os() {
     local os=""
     case "$(uname -s)" in
-        Linux)   os="linux" ;;
+        Linux)
+            os="linux"
+            # Detect musl libc (Alpine, distroless). `ldd --version` on musl
+            # prints "musl libc"; on glibc it prints "ldd (GNU libc)".
+            # Some Alpine versions print to stderr, so merge streams.
+            if ldd --version 2>&1 | grep -qi "musl"; then
+                os="linux-musl"
+            fi
+            ;;
         Darwin)  os="macos" ;;
         *)
             error "Unsupported OS: $(uname -s)"

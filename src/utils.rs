@@ -45,25 +45,46 @@ pub fn parse_version_parts(v: &str) -> Option<(u32, u32, u32)> {
     ))
 }
 
+/// Parse a version string into (is_iojs, major, minor, patch, pre_release)
+/// for `compare_semver`. The pre-release is the substring after the first
+/// `-` in the prefix-stripped form (e.g. `v2.0.0-rc.1` → `Some("rc.1")`).
+fn parse_v_for_compare(v: &str) -> (bool, u32, u32, u32, Option<&str>) {
+    let is_iojs = is_iojs_version(v);
+    let (maj, min, pat) = parse_version_parts(v).unwrap_or((0, 0, 0));
+    let s = strip_iojs_prefix(v).unwrap_or(v).trim_start_matches('v');
+    let pre = s.split_once('-').map(|(_, pre)| pre);
+    (is_iojs, maj, min, pat, pre)
+}
+
 /// Compare two version strings semantically (major.minor.patch), returning
 /// `Greater` if `a` is newer than `b`. Handles both Node.js (`v20.11.0`) and
 /// io.js (`iojs-v3.3.1`, `io.js-v2.5.0`) forms.
+///
+/// Pre-release suffixes (e.g. `-rc.1`, `-beta.2`) are compared per semver:
+/// for equal `major.minor.patch`, a version WITHOUT a pre-release is newer
+/// than one WITH a pre-release, so `v2.0.0` > `v2.0.0-rc.1`. Among two
+/// pre-releases, compare the suffix lexicographically (`rc.1` < `rc.2`).
 ///
 /// This MUST be used instead of `String::cmp` / `Vec::sort()` when picking the
 /// "latest" of a set of installed versions: alphabetical sort puts `v20.5.0`
 /// after `v20.20.2` (because '5' > '2' as chars), which is the wrong answer.
 pub fn compare_semver(a: &str, b: &str) -> Ordering {
-    let parse_v = |v: &str| -> (bool, u32, u32, u32) {
-        let is_iojs = is_iojs_version(v);
-        let (maj, min, pat) = parse_version_parts(v).unwrap_or((0, 0, 0));
-        (is_iojs, maj, min, pat)
-    };
-    let (ai, amj, ami, apa) = parse_v(a);
-    let (bi, bmj, bmi, bpa) = parse_v(b);
-    // Sort by (major, minor, patch) numerically, then break ties by treating
-    // io.js as newer than Node.js for the same version (matches the legacy
-    // behavior of `compare_versions` in commands.rs).
-    (amj, ami, apa, ai).cmp(&(bmj, bmi, bpa, bi))
+    let (ai, amj, ami, apa, apre) = parse_v_for_compare(a);
+    let (bi, bmj, bmi, bpa, bpre) = parse_v_for_compare(b);
+    // Sort by (major, minor, patch) numerically first.
+    match (amj, ami, apa).cmp(&(bmj, bmi, bpa)) {
+        std::cmp::Ordering::Equal => {}
+        ord => return ord,
+    }
+    // Equal X.Y.Z: per semver, no pre-release > has pre-release.
+    // None sorts as Greater than Some (no pre-release is newer).
+    match (apre, bpre) {
+        (None, None) => std::cmp::Ordering::Equal,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (Some(a), Some(b)) => a.cmp(b),
+    }
+    .then(ai.cmp(&bi)) // break ties: io.js newer than Node.js for same version
 }
 
 /// Check if a version string is an io.js version (prefixes "iojs-" or "io.js-v")
@@ -975,6 +996,43 @@ mod tests {
         // Two malformed inputs are Equal (both parse to all-zeros, non-iojs).
         assert_eq!(compare_semver("", ""), Ordering::Equal);
         assert_eq!(compare_semver("garbage", "v"), Ordering::Equal);
+    }
+
+    #[test]
+    fn test_compare_semver_prerelease_lower_than_release() {
+        use std::cmp::Ordering;
+        // Per semver: a version WITHOUT a pre-release is newer than one WITH.
+        // This is the upgrade.rs bug fix — previously both parsed to (2,0,0)
+        // and compared Equal, so `nvm upgrade` would skip a real release
+        // when the latest tag was a pre-release.
+        assert_eq!(compare_semver("v2.0.0", "v2.0.0-rc.1"), Ordering::Greater);
+        assert_eq!(compare_semver("v2.0.0-rc.1", "v2.0.0"), Ordering::Less);
+        assert_eq!(compare_semver("v2.0.0-beta", "v2.0.0"), Ordering::Less);
+        assert_eq!(compare_semver("v2.0.0-alpha.2", "v2.0.0"), Ordering::Less);
+    }
+
+    #[test]
+    fn test_compare_semver_two_prereleases_lexicographic() {
+        use std::cmp::Ordering;
+        // Two pre-releases of the same X.Y.Z compare lexicographically by
+        // the pre-release string. `rc.1` < `rc.2`.
+        assert_eq!(compare_semver("v2.0.0-rc.1", "v2.0.0-rc.2"), Ordering::Less);
+        assert_eq!(
+            compare_semver("v2.0.0-rc.2", "v2.0.0-rc.1"),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_semver("v2.0.0-rc.1", "v2.0.0-rc.1"),
+            Ordering::Equal
+        );
+    }
+
+    #[test]
+    fn test_compare_semver_prerelease_does_not_affect_different_xyz() {
+        use std::cmp::Ordering;
+        // When X.Y.Z differs, the pre-release is irrelevant.
+        assert_eq!(compare_semver("v2.1.0-rc.1", "v2.0.0"), Ordering::Greater);
+        assert_eq!(compare_semver("v1.9.0-rc.1", "v2.0.0"), Ordering::Less);
     }
 
     #[test]

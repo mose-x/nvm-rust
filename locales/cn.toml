@@ -526,6 +526,8 @@ upgrade_swap_failed = "将新二进制写入 {0} 失败"
 upgrade_no_backup = "在 {0} 未找到备份，无法回滚。"
 upgrade_restoring = "回滚中："
 upgrade_rollback_done = "已回滚到上一个版本。"
+upgrade_conflict_flags = "冲突的参数：{0}。请只使用其中一个。"
+upgrade_gitee_ignores_mirror = "已设置 --from-gitee；忽略 --from-mirror（Gitee 使用自己的下载地址）。"
 
 [_meta]
 display_name = "中文"
