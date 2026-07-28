@@ -526,6 +526,8 @@ upgrade_swap_failed = "Failed to put the new binary in place at {0}"
 upgrade_no_backup = "No backup found at {0}. Nothing to roll back to."
 upgrade_restoring = "Restoring:"
 upgrade_rollback_done = "Rolled back to the previous binary."
+upgrade_conflict_flags = "Conflicting flags: {0}. Use only one of them."
+upgrade_gitee_ignores_mirror = "--from-gitee is set; ignoring --from-mirror (Gitee serves its own URLs)."
 
 [_meta]
 display_name = "English"
