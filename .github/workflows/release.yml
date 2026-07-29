@@ -120,11 +120,20 @@ jobs:
       # Docs, install scripts, and shell integration files are added beside
       # the binary so a beginner who just runs `tar xzf` sees a usable
       # bundle without needing to read GitHub release notes.
+      #
+      # We use `$GITHUB_WORKSPACE/.stage-$$` (not `mktemp -d`) so the
+      # stage dir lives inside the workspace. The Package step then
+      # `cd`'s into STAGE and writes the archive to `..` — which is the
+      # workspace itself on every OS, matching the upload path and the
+      # `7z l` listing afterwards. With `/tmp` (mktemp's default) on
+      # Windows runners, `..` lands in `/tmp` instead of the workspace
+      # and the subsequent `7z l "$ASSET_NAME"` cannot find the file.
       - name: Stage friendly-pack files
         if: matrix.archive == 'tar.gz' || matrix.archive == 'zip'
         shell: bash
         run: |
-          STAGE=$(mktemp -d)
+          STAGE="$GITHUB_WORKSPACE/.stage-$$"
+          mkdir -p "$STAGE"
           # Binary is platform-specific and was built above; keep its name.
           if [ -f "target/${{ matrix.target }}/release/nvm" ]; then
             cp "target/${{ matrix.target }}/release/nvm" "$STAGE/nvm"
