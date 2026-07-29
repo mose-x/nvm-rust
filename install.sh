@@ -168,33 +168,39 @@ main() {
     chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
     success "Installed to ${INSTALL_DIR}/${BINARY_NAME}"
 
-    # Download shell integration scripts
+    # Install shell integration scripts shipped inside the tarball.
+    # The release archive includes `shell/{nvm.sh,nvm.fish,nvm.psm1}` so we
+    # copy them from the local extraction — no extra network round-trip
+    # to raw.githubusercontent.com (which would fail behind proxies, on
+    # offline machines, or for users who deleted the repo's `main` branch
+    # tag). Fall back to a raw download only if the bundled files are
+    # missing (e.g. an older / hand-rolled tarball).
     local nvm_dir="${NVM_INSTALL_DIR:-$HOME/.nvm.rust}"
     local shell_dir="${nvm_dir}/shell"
+    mkdir -p "$shell_dir"
 
-    info "Downloading shell integration scripts..."
-
-    local raw_base="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}"
-    if [ -n "$GITHUB_PREFIX" ]; then
-        raw_base="${GITHUB_PREFIX}${raw_base}"
+    info "Installing shell integration scripts..."
+    local bundled_shell="${tmp_dir}/shell"
+    if [ -d "$bundled_shell" ]; then
+        cp -f "${bundled_shell}/nvm.sh"   "${shell_dir}/nvm.sh"
+        cp -f "${bundled_shell}/nvm.fish" "${shell_dir}/nvm.fish"
+        cp -f "${bundled_shell}/nvm.psm1" "${shell_dir}/nvm.psm1"
+        success "Shell integration scripts installed (bundled)"
+    else
+        # Legacy fallback: tarball without bundled shell/ dir.
+        warn "Tarball does not contain shell/ dir, falling back to download"
+        local raw_base="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}"
+        if [ -n "$GITHUB_PREFIX" ]; then
+            raw_base="${GITHUB_PREFIX}${raw_base}"
+        fi
+        download_file "${raw_base}/${version}/shell/nvm.sh"   "${shell_dir}/nvm.sh"   2>/dev/null || \
+            download_file "${raw_base}/main/shell/nvm.sh"    "${shell_dir}/nvm.sh"   2>/dev/null || true
+        download_file "${raw_base}/${version}/shell/nvm.fish" "${shell_dir}/nvm.fish" 2>/dev/null || \
+            download_file "${raw_base}/main/shell/nvm.fish"  "${shell_dir}/nvm.fish" 2>/dev/null || true
+        download_file "${raw_base}/${version}/shell/nvm.psm1" "${shell_dir}/nvm.psm1" 2>/dev/null || \
+            download_file "${raw_base}/main/shell/nvm.psm1"  "${shell_dir}/nvm.psm1" 2>/dev/null || true
+        success "Shell integration scripts installed (downloaded)"
     fi
-
-    # Download nvm.sh (for bash/zsh)
-    if ! download_file "${raw_base}/${version}/shell/nvm.sh" "${shell_dir}/nvm.sh" 2>/dev/null; then
-        download_file "${raw_base}/main/shell/nvm.sh" "${shell_dir}/nvm.sh" 2>/dev/null || true
-    fi
-
-    # Download nvm.fish (for Fish shell)
-    if ! download_file "${raw_base}/${version}/shell/nvm.fish" "${shell_dir}/nvm.fish" 2>/dev/null; then
-        download_file "${raw_base}/main/shell/nvm.fish" "${shell_dir}/nvm.fish" 2>/dev/null || true
-    fi
-
-    # Download nvm.psm1 (for PowerShell)
-    if ! download_file "${raw_base}/${version}/shell/nvm.psm1" "${shell_dir}/nvm.psm1" 2>/dev/null; then
-        download_file "${raw_base}/main/shell/nvm.psm1" "${shell_dir}/nvm.psm1" 2>/dev/null || true
-    fi
-
-    success "Shell integration scripts installed"
 
     # Detect shell and add to PATH
     local shell_profile=""

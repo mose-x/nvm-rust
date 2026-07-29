@@ -136,28 +136,44 @@ function Main {
     Move-Item -Path $exeSource -Destination $exeDest -Force
     Write-Success "Installed to $exeDest"
 
-    # Download shell integration scripts
+    # Install shell integration scripts shipped inside the tarball.
+    # The release archive includes `shell/nvm.psm1` so we copy it from the
+    # local extraction — no extra network round-trip to raw.githubusercontent.com
+    # (which would fail behind proxies, on offline machines, or for users who
+    # deleted the repo's `main` branch tag). Fall back to a raw download only
+    # if the bundled file is missing (e.g. an older / hand-rolled zip).
     $nvmDir = Join-Path $env:USERPROFILE ".nvm.rust"
     $shellDir = Join-Path $nvmDir "shell"
 
-    Write-Info "Downloading shell integration scripts..."
-
-    $rawBase = "https://raw.githubusercontent.com/$RepoOwner/$RepoName"
-    if ($GithubPrefix) {
-        $rawBase = "$GithubPrefix$rawBase"
+    if (-not (Test-Path $shellDir)) {
+        New-Item -ItemType Directory -Path $shellDir -Force | Out-Null
     }
 
-    $ps1Url = "$rawBase/$Version/shell/nvm.psm1"
-    if (-not $Version) {
-        $ps1Url = "$rawBase/main/shell/nvm.psm1"
-    }
-
-    try {
-        $shellDest = Join-Path $shellDir "nvm.psm1"
-        Invoke-WebRequest -Uri $ps1Url -OutFile $shellDest -UseBasicParsing -ErrorAction SilentlyContinue
-        Write-Success "Shell integration scripts installed"
-    } catch {
-        Write-Warn "Could not download shell scripts, but nvm binary is installed"
+    Write-Info "Installing shell integration scripts..."
+    $bundledShell = Join-Path $tmpDir "shell"
+    if (Test-Path $bundledShell) {
+        $psm1Source = Join-Path $bundledShell "nvm.psm1"
+        $psm1Dest = Join-Path $shellDir "nvm.psm1"
+        Copy-Item -Path $psm1Source -Destination $psm1Dest -Force
+        Write-Success "Shell integration scripts installed (bundled)"
+    } else {
+        # Legacy fallback: zip without bundled shell/ dir.
+        Write-Warn "Tarball does not contain shell/ dir, falling back to download"
+        $rawBase = "https://raw.githubusercontent.com/$RepoOwner/$RepoName"
+        if ($GithubPrefix) {
+            $rawBase = "$GithubPrefix$rawBase"
+        }
+        $ps1Url = "$rawBase/$Version/shell/nvm.psm1"
+        if (-not $Version) {
+            $ps1Url = "$rawBase/main/shell/nvm.psm1"
+        }
+        try {
+            $shellDest = Join-Path $shellDir "nvm.psm1"
+            Invoke-WebRequest -Uri $ps1Url -OutFile $shellDest -UseBasicParsing -ErrorAction SilentlyContinue
+            Write-Success "Shell integration scripts installed (downloaded)"
+        } catch {
+            Write-Warn "Could not download shell scripts, but nvm binary is installed"
+        }
     }
 
     # Add to user PATH

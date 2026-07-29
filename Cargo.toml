@@ -1,6 +1,6 @@
 [package]
 name = "nvm"
-version = "2.0.1"
+version = "2.0.2"
 edition = "2021"
 description = "A fast, feature-rich Node.js version manager written in Rust"
 license = "MIT"
