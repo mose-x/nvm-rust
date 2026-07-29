@@ -1,3 +1,7 @@
 /target
 .idea
 /VSCode
+# Release staging dirs created by .github/workflows/release.yml
+# (only used on CI runners, but ignore in case someone runs the same
+# commands locally for verification).
+/.stage-*
