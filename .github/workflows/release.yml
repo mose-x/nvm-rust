@@ -122,6 +122,7 @@ jobs:
       # bundle without needing to read GitHub release notes.
       - name: Stage friendly-pack files
         if: matrix.archive == 'tar.gz' || matrix.archive == 'zip'
+        shell: bash
         run: |
           STAGE=$(mktemp -d)
           # Binary is platform-specific and was built above; keep its name.
