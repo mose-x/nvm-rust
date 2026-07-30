@@ -11,6 +11,14 @@ BINARY_NAME="nvm"
 INSTALL_DIR="${NVM_INSTALL_DIR:-$HOME/.nvm.rust/bin}"
 BIN_LINK="/usr/local/bin/nvm"
 
+# Directory the script itself lives in. When the release archive is extracted
+# and the user runs `./install.sh`, this is the archive root — which already
+# contains the `nvm` binary and `shell/` dir. We use that to install from the
+# bundle without any network round-trip (offline install). When piped via
+# `curl | bash`, BASH_SOURCE resolves to a pipe/stdin and this is empty —
+# the script then falls back to the online download path below.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+
 # GitHub mirror for China users
 # Set GITHUB_MIRROR=ghproxy or custom URL to use a mirror
 GITHUB_PREFIX=""
@@ -124,6 +132,110 @@ download_file() {
     fi
 }
 
+# install_completion — auto-install tab-completion for the user's shell.
+#
+# Why: `nvm completion <shell>` (see src/completions.rs) is the single source
+# of truth for the completion script body. Running it here keeps the generated
+# file in lock-step with the installed binary — no stale shipped copy.
+#
+# Args: $1=current_shell  $2=shell_profile  $3=shell_dir  $4=nvm_dir
+#
+# Skip rules (all silent, never fail the install):
+#   - NVM_NO_COMPLETION=1          user opted out
+#   - SHELL unset / unrecognized   csh/tcsh/nushell/xonsh not supported
+#   - binary missing               something went wrong
+#   - `nvm completion` fails       older binary without the subcommand
+#
+# Idempotency: greps the rc for the completion path before appending.
+install_completion() {
+    local current_shell="$1"
+    local shell_profile="$2"
+    local shell_dir="$3"
+    local nvm_dir="$4"
+
+    if [ "${NVM_NO_COMPLETION:-0}" = "1" ]; then
+        info "NVM_NO_COMPLETION=1, skipping completion"
+        return 0
+    fi
+
+    local shell_name
+    shell_name=$(basename "${current_shell:-}")
+    case "$shell_name" in
+        bash|zsh|fish) ;;
+        *) return 0 ;;
+    esac
+
+    local nvm_bin="${INSTALL_DIR}/${BINARY_NAME}"
+    if [ ! -x "$nvm_bin" ]; then
+        warn "nvm binary not found at $nvm_bin, skipping completion"
+        return 0
+    fi
+
+    # Let the binary generate the script file; silence its stdout banner.
+    if ! "$nvm_bin" completion "$shell_name" >/dev/null 2>&1; then
+        info "nvm completion not available, skipping"
+        return 0
+    fi
+
+    local completions_dir="${nvm_dir}/completions"
+    case "$shell_name" in
+        bash)
+            local completion_file="${completions_dir}/nvm.bash"
+            local source_line="source ${completion_file}"
+            if [ -z "$shell_profile" ] || [ ! -f "$shell_profile" ]; then
+                info "Completion written: $completion_file"
+                info "Add to your shell rc:  $source_line"
+                return 0
+            fi
+            if grep -qF "$completion_file" "$shell_profile" 2>/dev/null; then
+                info "Bash completion already configured"
+                return 0
+            fi
+            printf '\n# nvm-rs completion\n%s\n' "$source_line" >> "$shell_profile"
+            success "Added bash completion to $shell_profile"
+            ;;
+        zsh)
+            local completion_file="${completions_dir}/_nvm"
+            # zsh fpath takes a DIRECTORY, not a file — adding the file path
+            # is a common mistake that silently breaks autoload.
+            if [ -z "$shell_profile" ] || [ ! -f "$shell_profile" ]; then
+                info "Completion written: $completion_file"
+                info "Add to ~/.zshrc:"
+                echo "  fpath=( ${completions_dir} \$fpath )"
+                echo "  autoload -Uz _nvm"
+                return 0
+            fi
+            if grep -qF "$completions_dir" "$shell_profile" 2>/dev/null; then
+                info "zsh completion already configured"
+                return 0
+            fi
+            # Bootstrap compinit if missing (filter comment lines first —
+            # a `# no compinit` comment must not fool the check).
+            local prepend_compinit=""
+            if ! grep -vE '^[[:space:]]*#' "$shell_profile" 2>/dev/null | grep -qF 'compinit'; then
+                prepend_compinit="autoload -Uz compinit && compinit"$'\n'
+            fi
+            printf '\n# nvm-rs completion\n%s%s\n' \
+                "$prepend_compinit" \
+                "fpath=( ${completions_dir} \$fpath )"$'\n'"autoload -Uz _nvm" \
+                >> "$shell_profile"
+            success "Added zsh completion to $shell_profile"
+            ;;
+        fish)
+            # fish auto-loads by filename from this dir; no rc edit needed.
+            local fish_dir="${HOME}/.config/fish/completions"
+            mkdir -p "$fish_dir"
+            local src="${completions_dir}/nvm.fish"
+            if [ -f "$src" ]; then
+                cp -f "$src" "${fish_dir}/nvm.fish"
+                success "Installed fish completion to ${fish_dir}/nvm.fish"
+            else
+                warn "Fish completion file not generated"
+            fi
+            ;;
+    esac
+}
+
 main() {
     info "Installing nvm-rs..."
 
@@ -132,39 +244,66 @@ main() {
     info "Detected OS: $os, Architecture: $arch"
 
     local version="${NVM_VERSION:-}"
-    if [ -z "$version" ]; then
-        info "Checking latest version..."
-        version=$(get_latest_version)
-        success "Latest version: $version"
+    local tmp_dir=""
+    local source_dir=""
+    local offline=0
+
+    # Offline detection: if the script sits next to a bundled `nvm` binary
+    # (the user extracted the release archive and ran `./install.sh`), use
+    # that binary directly — no GitHub API call, no download. When piped via
+    # `curl | bash`, SCRIPT_DIR is empty and we fall through to online mode.
+    if [ -n "${SCRIPT_DIR:-}" ] && [ -x "${SCRIPT_DIR}/${BINARY_NAME}" ]; then
+        offline=1
+        source_dir="$SCRIPT_DIR"
+        info "Found bundled binary at $SCRIPT_DIR (offline install)"
+        if [ -z "$version" ]; then
+            version=$("${SCRIPT_DIR}/${BINARY_NAME}" --version 2>/dev/null || echo "")
+            if [ -n "$version" ]; then
+                success "Detected version: $version"
+            else
+                version="unknown"
+            fi
+        else
+            info "Using specified version: $version"
+        fi
     else
-        info "Using specified version: $version"
+        # Online mode: fetch latest release tarball from GitHub.
+        if [ -z "$version" ]; then
+            info "Checking latest version..."
+            version=$(get_latest_version)
+            success "Latest version: $version"
+        else
+            info "Using specified version: $version"
+        fi
+
+        # Strip leading 'v' from tag (v2.0.0 → 2.0.0) for asset filename.
+        # Asset naming: nvm-<version>-<os>-<arch>.tar.gz
+        local version_num="${version#v}"
+        local archive="nvm-${version_num}-${os}-${arch}.tar.gz"
+        local download_url="${GITHUB_DOWNLOAD}/${version}/${archive}"
+
+        info "Downloading $archive..."
+        info "URL: $download_url"
+
+        tmp_dir=$(mktemp -d)
+        trap 'rm -rf "$tmp_dir"' EXIT
+
+        local archive_path="${tmp_dir}/${archive}"
+        if ! download_file "$download_url" "$archive_path"; then
+            error "Failed to download $archive"
+            exit 1
+        fi
+        success "Download complete"
+
+        info "Extracting..."
+        tar -xzf "$archive_path" -C "$tmp_dir"
+        source_dir="$tmp_dir"
     fi
 
-    # Strip leading 'v' from tag (v2.0.0 → 2.0.0) for asset filename.
-    # Asset naming: nvm-<version>-<os>-<arch>.tar.gz
-    local version_num="${version#v}"
-    local archive="nvm-${version_num}-${os}-${arch}.tar.gz"
-    local download_url="${GITHUB_DOWNLOAD}/${version}/${archive}"
-
-    info "Downloading $archive..."
-    info "URL: $download_url"
-
-    local tmp_dir
-    tmp_dir=$(mktemp -d)
-    trap 'rm -rf "$tmp_dir"' EXIT
-
-    local archive_path="${tmp_dir}/${archive}"
-    if ! download_file "$download_url" "$archive_path"; then
-        error "Failed to download $archive"
-        exit 1
-    fi
-    success "Download complete"
-
-    info "Extracting..."
-    tar -xzf "$archive_path" -C "$tmp_dir"
-
+    # Install binary — cp (not mv) so offline mode doesn't damage the
+    # extracted bundle; online mode's tmp_dir is cleaned by the trap.
     mkdir -p "$INSTALL_DIR"
-    mv "${tmp_dir}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+    cp -f "${source_dir}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
     chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
     success "Installed to ${INSTALL_DIR}/${BINARY_NAME}"
 
@@ -180,12 +319,15 @@ main() {
     mkdir -p "$shell_dir"
 
     info "Installing shell integration scripts..."
-    local bundled_shell="${tmp_dir}/shell"
+    local bundled_shell="${source_dir}/shell"
     if [ -d "$bundled_shell" ]; then
         cp -f "${bundled_shell}/nvm.sh"   "${shell_dir}/nvm.sh"
         cp -f "${bundled_shell}/nvm.fish" "${shell_dir}/nvm.fish"
         cp -f "${bundled_shell}/nvm.psm1" "${shell_dir}/nvm.psm1"
         success "Shell integration scripts installed (bundled)"
+    elif [ "$offline" = "1" ]; then
+        # Offline bundle has no shell/ dir — can't download, just warn.
+        warn "Bundle has no shell/ dir; skipping shell integration"
     else
         # Legacy fallback: tarball without bundled shell/ dir.
         warn "Tarball does not contain shell/ dir, falling back to download"
@@ -244,7 +386,26 @@ main() {
             esac
             success "Added to $shell_profile"
         fi
+    else
+        # Fresh install: the rc file doesn't exist yet. Create it so PATH
+        # is configured immediately — without this, a brand-new machine
+        # would install nvm but `nvm` wouldn't be on PATH until the user
+        # manually creates an rc file.
+        mkdir -p "$(dirname "$shell_profile")"
+        echo "# nvm-rs" >> "$shell_profile"
+        case "$(basename "$current_shell")" in
+            fish)
+                echo "$fish_path_line" >> "$shell_profile"
+                ;;
+            *)
+                echo "$source_line" >> "$shell_profile"
+                ;;
+        esac
+        success "Created $shell_profile with nvm-rs config"
     fi
+
+    # Auto-install tab-completion for the current shell.
+    install_completion "$current_shell" "$shell_profile" "$shell_dir" "$nvm_dir"
 
     # Try to create symlink to /usr/local/bin
     if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
@@ -256,27 +417,28 @@ main() {
     echo ""
     success "nvm-rs $version installed successfully!"
     echo ""
-    info "To get started, restart your shell or run:"
+    # A child process cannot `source` into the parent shell, so we print
+    # the exact command for the user to copy-paste. This is the closest
+    # to "auto-source" that's safe — `exec $SHELL -l` would discard the
+    # user's current session state.
+    info "To activate now, run:"
     if [ -n "$shell_profile" ] && [ -f "$shell_profile" ]; then
         echo "  source $shell_profile"
     else
         echo "  source ${shell_dir}/nvm.sh"
     fi
     echo ""
+    info "Or open a new terminal to apply changes automatically."
+    echo ""
     info "Quick start:"
     echo "  nvm install 20          # Install Node.js 20"
     echo "  nvm use 20             # Switch to Node.js 20"
     echo "  nvm ls                 # List installed versions"
-    echo ""
-    info "For Fish shell, add to ~/.config/fish/config.fish:"
-    echo "  set -gx PATH ${INSTALL_DIR} \$PATH"
-    echo "  source ${shell_dir}/nvm.fish"
-    echo ""
-    info "For PowerShell, add to your profile:"
-    echo "  Import-Module ${shell_dir}/nvm.psm1"
-    echo ""
-    info "For China users, use mirror for faster downloads:"
-    echo "  curl -fsSL https://raw.githubusercontent.com/mose-x/nvm-rust/main/install.sh | GITHUB_MIRROR=ghproxy bash"
+    if [ "$offline" = "0" ]; then
+        echo ""
+        info "For China users, use mirror for faster downloads:"
+        echo "  curl -fsSL https://raw.githubusercontent.com/mose-x/nvm-rust/main/install.sh | GITHUB_MIRROR=ghproxy bash"
+    fi
 }
 
 main "$@"

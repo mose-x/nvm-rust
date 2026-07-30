@@ -88,6 +88,64 @@ function Download-File($url, $dest) {
     }
 }
 
+# Install-Completion — auto-install tab-completion for PowerShell.
+# Runs `nvm completion powershell` so the binary (single source of truth,
+# see src/completions.rs) generates the script, then dot-sources it in
+# $PROFILE. Skip on NVM_NO_COMPLETION=1, missing binary, or older binary
+# without the `completion` subcommand. Idempotent: checks profile for the
+# completion file path before appending.
+function Install-Completion {
+    param([string]$NvmExePath, [string]$NvmDir)
+
+    if ($env:NVM_NO_COMPLETION -eq "1") {
+        Write-Info "NVM_NO_COMPLETION=1, skipping completion"
+        return
+    }
+
+    if (-not (Test-Path $NvmExePath)) {
+        Write-Warn "nvm.exe not found at $NvmExePath, skipping completion"
+        return
+    }
+
+    $NvmExePath = (Resolve-Path $NvmExePath).Path
+    & $NvmExePath completion powershell 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Info "nvm completion not available, skipping"
+        return
+    }
+
+    $completionFile = Join-Path $NvmDir "completions\nvm.ps1"
+    if (-not (Test-Path $completionFile)) {
+        Write-Warn "Completion file was not generated at $completionFile"
+        return
+    }
+
+    $dotSourceLine = ". `"$completionFile`""
+
+    # $PROFILE can be empty on a locked-down fresh install.
+    $profilePath = $PROFILE
+    if (-not $profilePath) {
+        $profilePath = Join-Path $env:USERPROFILE "Documents\PowerShell\Microsoft.PowerShell_profile.ps1"
+    }
+    $profileDir = Split-Path $profilePath -Parent
+    if (-not (Test-Path $profileDir)) {
+        New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
+    }
+
+    if (Test-Path $profilePath) {
+        $content = Get-Content $profilePath -Raw -ErrorAction SilentlyContinue
+        if ($content -and $content.Contains($completionFile)) {
+            Write-Info "PowerShell completion already configured"
+            return
+        }
+        Add-Content -Path $profilePath -Value "`n# nvm-rs completion`n$dotSourceLine"
+        Write-Success "Added PowerShell completion to $profilePath"
+    } else {
+        Set-Content -Path $profilePath -Value "# nvm-rs completion`n$dotSourceLine"
+        Write-Success "Created profile with nvm completion at $profilePath"
+    }
+}
+
 function Main {
     Write-Info "Installing nvm-rs..."
 
@@ -95,45 +153,72 @@ function Main {
     $arch = Get-Arch
     Write-Info "Detected OS: $os, Architecture: $arch"
 
-    if (-not $Version) {
-        Write-Info "Checking latest version..."
-        $Version = Get-LatestVersion
-        Write-Success "Latest version: $Version"
+    $offline = $false
+    $sourceDir = ""
+    $tmpDir = $null
+
+    # Offline detection: if the script sits next to a bundled nvm.exe
+    # (extracted release zip), use it directly — no download. When piped
+    # via `irm | iex`, $PSScriptRoot is empty and we fall through to online.
+    if ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "nvm.exe"))) {
+        $offline = $true
+        $sourceDir = $PSScriptRoot
+        Write-Info "Found bundled binary at $PSScriptRoot (offline install)"
+        if (-not $Version) {
+            $bundledExe = Join-Path $PSScriptRoot "nvm.exe"
+            $verOutput = & $bundledExe --version 2>$null
+            if ($verOutput) {
+                $Version = $verOutput.Trim()
+                Write-Success "Detected version: $Version"
+            } else {
+                $Version = "unknown"
+            }
+        } else {
+            Write-Info "Using specified version: $Version"
+        }
     } else {
-        Write-Info "Using specified version: $Version"
+        # Online mode: fetch latest release zip from GitHub.
+        if (-not $Version) {
+            Write-Info "Checking latest version..."
+            $Version = Get-LatestVersion
+            Write-Success "Latest version: $Version"
+        } else {
+            Write-Info "Using specified version: $Version"
+        }
+
+        $versionNum = $Version -replace '^v', ''
+        $archive = "nvm-$versionNum-windows-$arch.zip"
+        $downloadUrl = "$GithubDownload/$Version/$archive"
+
+        Write-Info "Downloading $archive..."
+        Write-Info "URL: $downloadUrl"
+
+        $tmpDir = Join-Path $env:TEMP "nvm-rs-install-$(Get-Random)"
+        New-Item -ItemType Directory -Path $tmpDir | Out-Null
+
+        $archivePath = Join-Path $tmpDir $archive
+
+        if (-not (Download-File $downloadUrl $archivePath)) {
+            Write-Error "Failed to download $archive"
+            Remove-Item $tmpDir -Recurse -Force
+            exit 1
+        }
+        Write-Success "Download complete"
+
+        Write-Info "Extracting..."
+        Expand-Archive -Path $archivePath -DestinationPath $tmpDir -Force
+        $sourceDir = $tmpDir
     }
 
-    # Asset naming: nvm-<version>-<os>-<arch>.zip
-    # $Version is the tag (e.g. v2.0.0); strip leading 'v' for the filename.
-    $versionNum = $Version -replace '^v', ''
-    $archive = "nvm-$versionNum-windows-$arch.zip"
-    $downloadUrl = "$GithubDownload/$Version/$archive"
-
-    Write-Info "Downloading $archive..."
-    Write-Info "URL: $downloadUrl"
-
-    $tmpDir = Join-Path $env:TEMP "nvm-rs-install-$(Get-Random)"
-    New-Item -ItemType Directory -Path $tmpDir | Out-Null
-
-    $archivePath = Join-Path $tmpDir $archive
-
-    if (-not (Download-File $downloadUrl $archivePath)) {
-        Write-Error "Failed to download $archive"
-        Remove-Item $tmpDir -Recurse -Force
-        exit 1
-    }
-    Write-Success "Download complete"
-
-    Write-Info "Extracting..."
-    Expand-Archive -Path $archivePath -DestinationPath $tmpDir -Force
-
+    # Install binary — Copy-Item (not Move) so offline mode doesn't damage
+    # the extracted bundle.
     if (-not (Test-Path $InstallDir)) {
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     }
 
-    $exeSource = Join-Path $tmpDir "nvm.exe"
+    $exeSource = Join-Path $sourceDir "nvm.exe"
     $exeDest = Join-Path $InstallDir "nvm.exe"
-    Move-Item -Path $exeSource -Destination $exeDest -Force
+    Copy-Item -Path $exeSource -Destination $exeDest -Force
     Write-Success "Installed to $exeDest"
 
     # Install shell integration scripts shipped inside the tarball.
@@ -150,12 +235,14 @@ function Main {
     }
 
     Write-Info "Installing shell integration scripts..."
-    $bundledShell = Join-Path $tmpDir "shell"
+    $bundledShell = Join-Path $sourceDir "shell"
     if (Test-Path $bundledShell) {
         $psm1Source = Join-Path $bundledShell "nvm.psm1"
         $psm1Dest = Join-Path $shellDir "nvm.psm1"
         Copy-Item -Path $psm1Source -Destination $psm1Dest -Force
         Write-Success "Shell integration scripts installed (bundled)"
+    } elseif ($offline) {
+        Write-Warn "Bundle has no shell/ dir; skipping shell integration"
     } else {
         # Legacy fallback: zip without bundled shell/ dir.
         Write-Warn "Tarball does not contain shell/ dir, falling back to download"
@@ -207,22 +294,32 @@ function Main {
         Write-Success "Created PowerShell profile with nvm module"
     }
 
+    # Auto-install tab-completion for PowerShell.
+    $nvmExePath = Join-Path $InstallDir "nvm.exe"
+    Install-Completion -NvmExePath $nvmExePath -NvmDir $nvmDir
+
     Write-Host ""
     Write-Success "nvm-rs $Version installed successfully!"
+    Write-Host ""
+    Write-Info "To activate now, run:"
+    Write-Host "  Import-Module `"$shellDir\nvm.psm1`""
+    Write-Host ""
+    Write-Info "Or open a new PowerShell window to apply changes automatically."
     Write-Host ""
     Write-Info "Quick start:"
     Write-Host "  nvm install 20          # Install Node.js 20"
     Write-Host "  nvm use 20             # Switch to Node.js 20"
     Write-Host "  nvm ls                 # List installed versions"
-    Write-Host ""
-    Write-Info "Restart PowerShell or run:"
-    Write-Host "  Import-Module `"$shellDir\nvm.psm1`""
-    Write-Host ""
-    Write-Info "For China users, use mirror for faster downloads:"
-    Write-Host "  `$env:GITHUB_MIRROR = 'ghproxy'"
-    Write-Host "  irm https://raw.githubusercontent.com/mose-x/nvm-rust/main/install.ps1 | iex"
+    if (-not $offline) {
+        Write-Host ""
+        Write-Info "For China users, use mirror for faster downloads:"
+        Write-Host "  `$env:GITHUB_MIRROR = 'ghproxy'"
+        Write-Host "  irm https://raw.githubusercontent.com/mose-x/nvm-rust/main/install.ps1 | iex"
+    }
 
-    Remove-Item $tmpDir -Recurse -Force
+    if ($tmpDir) {
+        Remove-Item $tmpDir -Recurse -Force
+    }
 }
 
 Main
