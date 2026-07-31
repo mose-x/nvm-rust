@@ -2,23 +2,24 @@
 
 ## Code Hooks
 
-本项目使用外部 code-hooks 进行 commit/PR 校验，规则定义在公共仓库：
+This project uses an external code-hooks repository to enforce
+commit/PR validation. Rules are defined in the public repo:
 
-- Hook 仓库地址：`https://github.com/mose-x/code-hooks`
+- Hook repo: `https://github.com/mose-x/code-hooks`
 
-关键规则摘要（完整规则以 hook 仓库为准）：
+Key rules (full rules take precedence from the hook repo):
 
-- Commit author 和 committer 邮箱必须在 allowlist 内（当前可用：`602187256@qq.com`）
-- Commit message 总长度不超过 200 字符
-- 禁止在 commit message 中出现 `Co-authored-by`、`traeagent` 等 token
-- 使用 Conventional Commits 格式（如 `feat(install): ...`、`fix: ...`）
+- Both commit author **and** committer emails must be on the allowlist (currently: `602187256@qq.com`)
+- Total commit message length must NOT exceed 200 characters
+- Forbidden tokens in commit messages: `Co-authored-by`, `traeagent`, etc.
+- Use Conventional Commits format (e.g., `feat(install): ...`, `fix: ...`)
 
-## 提交流程
+## Commit Workflow
 
-- **不要直推 main**。main 是保护分支，需走 feature 分支 + PR。
-- 流程：
-  1. 新建 feature 分支：`git checkout -b feat/xxx`
-  2. 提交时用 `GIT_COMMITTER_NAME` / `GIT_COMMITTER_EMAIL` 和 `--author` 同时指定 author 与 committer 为 allowlist 内的邮箱
-  3. 推送 feature 分支并创建 PR
-  4. 推送成功后等待 CI 全绿
-  5. CI 全绿后再 merge 到 main
+- **Do NOT push directly to `main`**. `main` is a protected branch; always go through a feature branch + PR.
+- Workflow:
+  1. Create a feature branch: `git checkout -b feat/xxx`
+  2. Commit with both `GIT_COMMITTER_NAME` / `GIT_COMMITTER_EMAIL` and `--author` so that BOTH author and committer use an allowlisted email
+  3. Push the feature branch and create a PR
+  4. After push succeeds, wait for all CI checks to go green
+  5. Merge to main only after all CI passes
