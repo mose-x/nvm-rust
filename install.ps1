@@ -273,6 +273,18 @@ function Main {
         Write-Info "PATH already configured"
     }
 
+    # Ensure PowerShell can load the profile (and thus our module).
+    # Default Windows policy is Restricted, which silently blocks the
+    # profile script this installer just wrote below, so `nvm` in a new
+    # PowerShell window does nothing.
+    $currentPolicy = Get-ExecutionPolicy
+    if ($currentPolicy -eq 'Restricted') {
+        Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+        Write-Success "PowerShell execution policy set to RemoteSigned"
+    } else {
+        Write-Info "PowerShell execution policy: $currentPolicy"
+    }
+
     # Add to PowerShell profile
     $profilePath = $PROFILE
     $profileDir = Split-Path $profilePath -Parent
