@@ -5,3 +5,6 @@
 # (only used on CI runners, but ignore in case someone runs the same
 # commands locally for verification).
 /.stage-*
+
+# Notes (local planning docs, not for commits)
+note/
