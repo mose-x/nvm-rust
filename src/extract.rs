@@ -15,7 +15,6 @@ use tar::Archive;
 #[cfg(not(target_os = "windows"))]
 use xz2::read::XzDecoder;
 
-#[cfg(not(target_os = "windows"))]
 use crate::system::os_suffix;
 
 pub fn extract_archive(archive_path: &Path, dest_dir: &Path, version: &str) -> Result<()> {
@@ -65,7 +64,7 @@ fn extract_inner(archive_path: &Path, dest_dir: &Path, label: &str) -> Result<()
             )
         })?;
 
-        let extracted = dest_dir.join(format!("{}-win-x64", label));
+        let extracted = dest_dir.join(extracted_dir_name(label));
         if extracted.exists() {
             flatten_dir(&extracted, dest_dir)?;
         }
@@ -128,18 +127,19 @@ impl Drop for DirGuard {
 /// `iojs-v3.3.1-darwin-x64`.
 ///
 /// `label` is the version-prefixed head (`node-v20.0.0` / `iojs-v3.3.1`); the
-/// `<platform>-<arch>` tail is derived from `os_suffix()` with the `.tar.xz`
-/// extension stripped, so it always matches the directory inside the tarball.
+/// `<platform>-<arch>` tail is derived from `os_suffix()` with the archive
+/// extension (`.tar.xz` or `.7z`) stripped, so it always matches the
+/// directory inside the tarball/7z.
 ///
 /// This is the single source of truth for the extracted-dir name. The
-/// previous inline `format!("node-{}-{}-x64", …)` appended a literal `-x64`
-/// and silently broke ARM64 hosts: the looked-up path never existed, so
+/// previous approach hardcoded `win-x64` on Windows and `-x64` on Unix,
+/// both of which broke ARM64 hosts: the looked-up path never existed, so
 /// `flatten_dir` was skipped and the version dir stayed nested one level
-/// deep. (Windows uses a 7z archive and hardcodes `win-x64`, so it does not
-/// go through here.)
-#[cfg(not(target_os = "windows"))]
+/// deep.
 fn extracted_dir_name(label: &str) -> String {
-    let suffix = os_suffix().trim_end_matches(".tar.xz");
+    let suffix = os_suffix()
+        .trim_end_matches(".tar.xz")
+        .trim_end_matches(".7z");
     format!("{}-{}", label, suffix)
 }
 

@@ -37,20 +37,13 @@ use crate::utils::{atomic_write, get_installed_versions, is_lts_version, pad_rig
 ///   and stays total on any future non-Unix target where `code()` might
 ///   return `None` (no current such target exists in std).
 fn exit_with_status(status: std::process::ExitStatus) -> ! {
+    #[cfg(unix)]
     let code = status.code().unwrap_or_else(|| {
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::ExitStatusExt;
-            // `signal()` returns `None` only if the process exited normally,
-            // which contradicts `code()` returning `None` — but fall back to
-            // `1` defensively in case a platform reports neither.
-            status.signal().map(|s| 128 + s).unwrap_or(1)
-        }
-        #[cfg(not(unix))]
-        {
-            1
-        }
+        use std::os::unix::process::ExitStatusExt;
+        status.signal().map(|s| 128 + s).unwrap_or(1)
     });
+    #[cfg(not(unix))]
+    let code = status.code().unwrap_or(1);
     std::process::exit(code);
 }
 
