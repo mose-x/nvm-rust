@@ -9,14 +9,21 @@
 NVM_RUST_DIR="${NVM_DIR:-$HOME/.nvm.rust}"
 NVM_RUST_SH="${NVM_RUST_DIR}/bin/nvm.sh"
 NVM_RUST_BIN="${NVM_RUST_DIR}/bin"
+NVM_RUST_SHIMS="${NVM_RUST_DIR}/shims"
 
 # Check if nvm binary exists
 _nvm_binary_exists() {
     [ -f "${NVM_RUST_BIN}/nvm" ] || [ -f "${NVM_RUST_BIN}/nvm.exe" ]
 }
 
-# Add nvm bin to PATH if not already there
+# Add nvm shims + bin to PATH if not already there.
+# Shims (node/npm/npx/corepack) must be in PATH so they resolve
+# via the `current` file without shell-wrapper PATH manipulation.
 _nvm_prepend_path() {
+    case ":${PATH}:" in
+        *":${NVM_RUST_SHIMS}:"*) ;;
+        *) export PATH="${NVM_RUST_SHIMS}:${PATH}" ;;
+    esac
     case ":${PATH}:" in
         *":${NVM_RUST_BIN}:"*) ;;
         *) export PATH="${NVM_RUST_BIN}:${PATH}" ;;
