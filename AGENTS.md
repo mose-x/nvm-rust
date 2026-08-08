@@ -14,6 +14,17 @@ Key rules (full rules take precedence from the hook repo):
 - Forbidden tokens in commit messages: `Co-authored-by`, `traeagent`, etc.
 - Use Conventional Commits format (e.g., `feat(install): ...`, `fix: ...`)
 
+## Unit Test Requirement
+
+**All new code, bug fixes, and refactors MUST include unit tests.**
+
+- Every new public function, bug fix, or behavior change requires at least one test.
+- Tests should cover: the happy path, edge cases, and error paths.
+- New modules must include a `#[cfg(test)]` block with at least basic coverage.
+- If a change is difficult to test (e.g., network I/O), add tests for the testable
+  parts (parsing, URL construction, logic branches) and mock/stub the rest.
+- PRs without tests will NOT be merged — the reviewer should block on this.
+
 ## Commit Workflow
 
 - **Do NOT push directly to `main`**. `main` is a protected branch; always go through a feature branch + PR.

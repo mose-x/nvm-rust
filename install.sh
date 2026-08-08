@@ -428,7 +428,7 @@ main() {
                 echo "$fish_path_line" >> "$shell_profile"
                 ;;
             *)
-                echo "$source_line" >> "$shell_profile"
+                echo "$path_line" >> "$shell_profile"
                 ;;
         esac
         success "Created $shell_profile with nvm-rs config"
