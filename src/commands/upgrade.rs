@@ -249,6 +249,20 @@ pub fn upgrade(
     //    is locked, so we rename the old one to .bak first, then write new.
     swap_binary(&bin_path, &extracted_bin)?;
 
+    // Migrate to shim architecture: create shim scripts for node/npm/npx/corepack
+    // if they don't exist yet. The `current` file already has the active version
+    // from the previous nvm use, so shims work immediately.
+    // This is idempotent — if shims already exist (re-upgrade), it's a no-op.
+    if !crate::shim::shims_exist() {
+        if let Err(e) = crate::shim::migrate_to_shims() {
+            eprintln!(
+                "  {} {}",
+                "⚠".yellow().bold(),
+                format_t("shim_create_failed", &[e.to_string()])
+            );
+        }
+    }
+
     println!(
         "{}  {} ({} → {})",
         "✓".green().bold(),

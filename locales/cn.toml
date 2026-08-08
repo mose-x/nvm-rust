@@ -529,6 +529,10 @@ upgrade_rollback_done = "已回滚到上一个版本。"
 upgrade_conflict_flags = "冲突的参数：{0}。请只使用其中一个。"
 upgrade_gitee_ignores_mirror = "已设置 --from-gitee；忽略 --from-mirror（Gitee 使用自己的下载地址）。"
 
+switched_to = "已切换到"
+uninstalled_label = "已卸载"
+shim_create_failed = "创建 shim 失败：{0}"
+
 [_meta]
 display_name = "中文"
 aliases = ["zh", "zh-cn", "zh-hans", "chinese", "中文"]

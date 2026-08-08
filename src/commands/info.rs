@@ -315,6 +315,12 @@ pub fn deactivate() -> Result<()> {
 }
 
 pub fn unload() -> Result<()> {
+    let nvm_dir = get_nvm_dir();
+    // Remove shims directory so node/npm/etc. stop resolving via nvm.
+    let _ = crate::shim::remove_shims();
+    // Clear current version file.
+    let current_file = nvm_dir.join("current");
+    let _ = fs::remove_file(&current_file);
     remove_from_shell_config()
 }
 

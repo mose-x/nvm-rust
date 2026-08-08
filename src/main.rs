@@ -9,6 +9,7 @@ mod download;
 mod extract;
 mod i18n;
 mod proxy;
+mod shim;
 mod system;
 mod utils;
 
