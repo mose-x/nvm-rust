@@ -597,6 +597,19 @@ fn run_post_install_hooks(
         }
     }
 
+    // Create shims if they don't exist yet (idempotent — safe on every install).
+    // Shims let `node`/`npm`/`npx` resolve to the active version without
+    // shell-wrapper PATH manipulation.
+    if !crate::shim::shims_exist() {
+        if let Err(e) = crate::shim::create_shims() {
+            eprintln!(
+                "{} {}",
+                "⚠".yellow().bold(),
+                format_t("shim_create_failed", &[e.to_string()])
+            );
+        }
+    }
+
     Ok(())
 }
 

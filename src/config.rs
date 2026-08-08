@@ -938,12 +938,20 @@ pub fn update_shell_config(version: &str, use_on_cd: bool) -> Result<()> {
     let (nvm_export, node_export) = if shell_type == "powershell" {
         (
             format!(r#"$env:NVM_HOME = "{}""#, nvm_dir.display()),
-            format!(r#"$env:PATH = "{};" + $env:PATH"#, bin_dir.display()),
+            format!(
+                r#"$env:PATH = "{};{};" + $env:PATH"#,
+                nvm_dir.join("shims").display(),
+                bin_dir.display()
+            ),
         )
     } else {
         (
             format!(r#"export NVM_HOME="{}""#, nvm_dir.display()),
-            format!(r#"export PATH="{}:$PATH""#, bin_dir.display()),
+            format!(
+                r#"export PATH="{}:{}:$PATH""#,
+                nvm_dir.join("shims").display(),
+                bin_dir.display()
+            ),
         )
     };
 

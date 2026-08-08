@@ -236,6 +236,32 @@ install_completion() {
     esac
 }
 
+create_shims() {
+    local nvm_dir="${NVM_INSTALL_DIR:-$HOME/.nvm.rust}"
+    local shims_dir="${nvm_dir}/shims"
+    mkdir -p "$shims_dir"
+
+    for cmd in node npm npx corepack; do
+        cat > "$shims_dir/$cmd" << 'SHIM_EOF'
+#!/bin/sh
+NVM_DIR="${NVM_DIR:-$HOME/.nvm.rust}"
+CMD=$(basename "$0")
+read_current() { cat "$NVM_DIR/current" 2>/dev/null | tr -d "[:space:]"; }
+CURRENT=$(read_current)
+if [ -z "$CURRENT" ] || [ ! -x "$NVM_DIR/$CURRENT/bin/$CMD" ]; then
+    "$NVM_DIR/bin/nvm" auto --silent 2>/dev/null
+    CURRENT=$(read_current)
+fi
+if [ -z "$CURRENT" ] || [ ! -x "$NVM_DIR/$CURRENT/bin/$CMD" ]; then
+    echo "nvm: $CMD not found. Run 'nvm use <version>' or 'nvm install <version>'." >&2
+    exit 1
+fi
+exec "$NVM_DIR/$CURRENT/bin/$CMD" "$@"
+SHIM_EOF
+        chmod +x "$shims_dir/$cmd"
+    done
+}
+
 main() {
     info "Installing nvm-rs..."
 
@@ -307,6 +333,10 @@ main() {
     chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
     success "Installed to ${INSTALL_DIR}/${BINARY_NAME}"
 
+    # Create shim scripts for node/npm/npx/corepack so they resolve
+    # via the `current` file without shell-wrapper PATH manipulation.
+    create_shims
+
     # Install shell integration scripts shipped inside the tarball.
     # The release archive includes `shell/{nvm.sh,nvm.fish,nvm.psm1}` so we
     # copy them from the local extraction — no extra network round-trip
@@ -367,8 +397,8 @@ main() {
             ;;
     esac
 
-    local source_line="source ${shell_dir}/nvm.sh"
-    local fish_path_line="set -gx PATH ${INSTALL_DIR} \$PATH"
+    local path_line="export PATH=\"${nvm_dir}/shims:${INSTALL_DIR}:\$PATH\""
+    local fish_path_line="set -gx PATH ${nvm_dir}/shims ${INSTALL_DIR} \$PATH"
 
     if [ -f "$shell_profile" ]; then
         if grep -qF "nvm.sh" "$shell_profile" 2>/dev/null || grep -qF "nvm.rust" "$shell_profile" 2>/dev/null; then
@@ -381,7 +411,7 @@ main() {
                     echo "$fish_path_line" >> "$shell_profile"
                     ;;
                 *)
-                    echo "$source_line" >> "$shell_profile"
+                    echo "$path_line" >> "$shell_profile"
                     ;;
             esac
             success "Added to $shell_profile"

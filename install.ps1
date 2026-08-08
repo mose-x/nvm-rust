@@ -263,11 +263,56 @@ function Main {
         }
     }
 
-    # Add to user PATH
+    # Create shim scripts for node/npm/npx/corepack
+    $shimsDir = Join-Path $nvmDir "shims"
+    if (-not (Test-Path $shimsDir)) {
+        New-Item -ItemType Directory -Path $shimsDir -Force | Out-Null
+    }
+    Write-Info "Creating shim scripts..."
+    $shimScript = @"
+@echo off
+setlocal
+set NVM_DIR=%USERPROFILE%\.nvm.rust
+set CMD=%~n0
+set CURRENT=
+if exist "%NVM_DIR%\current" for /f "delims=" %%a in (%NVM_DIR%\current) do set CURRENT=%%a
+call :resolve
+if not defined BIN (
+    "%NVM_DIR%\bin\nvm.exe" auto --silent 2>nul
+    set CURRENT=
+    if exist "%NVM_DIR%\current" for /f "delims=" %%a in (%NVM_DIR%\current) do set CURRENT=%%a
+    call :resolve
+)
+if not defined BIN (
+    echo nvm: %CMD% not found. Run 'nvm use ^<version^>' or 'nvm install ^<version^>'.
+    exit /b 1
+)
+"%BIN%" %*
+goto :eof
+
+:resolve
+set BIN=
+if not "%CURRENT%"=="" (
+    if exist "%NVM_DIR%\%CURRENT%\bin\%CMD%.exe" set BIN=%NVM_DIR%\%CURRENT%\bin\%CMD%.exe
+    if not defined BIN if exist "%NVM_DIR%\%CURRENT%\bin\%CMD%.cmd" set BIN=%NVM_DIR%\%CURRENT%\bin\%CMD%.cmd
+)
+goto :eof
+"@
+    foreach ($cmd in @("node", "npm", "npx", "corepack")) {
+        $shimFile = Join-Path $shimsDir "$cmd.cmd"
+        Set-Content -Path $shimFile -Value $shimScript -Encoding ascii
+    }
+    Write-Success "Shim scripts created in $shimsDir"
+
+    # Add to user PATH (shims dir + bin dir)
     $pathKey = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($pathKey -notlike "*$InstallDir*") {
-        [Environment]::SetEnvironmentVariable("Path", "$pathKey;$InstallDir", "User")
-        $env:Path = "$env:Path;$InstallDir"
+    if ($pathKey -notlike "*$shimsDir*") {
+        [Environment]::SetEnvironmentVariable("Path", "$shimsDir;$pathKey;$InstallDir", "User")
+        $env:Path = "$shimsDir;$env:Path;$InstallDir"
+        Write-Success "Added to user PATH"
+    } elseif ($pathKey -notlike "*$InstallDir*") {
+        [Environment]::SetEnvironmentVariable("Path", "$shimsDir;$pathKey;$InstallDir", "User")
+        $env:Path = "$shimsDir;$env:Path;$InstallDir"
         Write-Success "Added to user PATH"
     } else {
         Write-Info "PATH already configured"

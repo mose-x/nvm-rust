@@ -65,21 +65,41 @@ pub fn uninstall(version: &str) -> Result<()> {
     fs::remove_dir_all(&version_dir).context(T("uninstall_failed"))?;
     println!(" {}", "✓".green().bold());
 
-    // Clear `current` if we just removed the active version, so subsequent
-    // `nvm current` / `nvm ls` don't point at a deleted directory. A plain
-    // `let _ =` here would silently swallow errors (permissions, AV lock,
-    // read-only fs) and leave `current` pointing at the just-deleted dir —
-    // surface as a warning so the user knows `current` is stale.
+    // If we just removed the active version, auto-switch to the next
+    // available version (highest semver). This prevents shims from pointing
+    // at a deleted directory. Only clear `current` if no other versions exist.
     if is_current_active {
-        let current_file = nvm_dir.join("current");
-        if let Err(e) = fs::remove_file(&current_file) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                eprintln!(
-                    "{} {}: {}",
-                    "⚠".yellow().bold(),
-                    T("current_clear_failed"),
-                    e
+        match crate::shim::next_available_version(&resolved) {
+            Some(next) => {
+                let current_file = nvm_dir.join("current");
+                if let Err(e) = crate::utils::atomic_write(&current_file, &next) {
+                    eprintln!(
+                        "{} {}: {}",
+                        "⚠".yellow().bold(),
+                        T("cannot_write_current"),
+                        e
+                    );
+                }
+                println!(
+                    "{} {} {} {}",
+                    "ℹ".cyan().bold(),
+                    T("switched_to").cyan(),
+                    next.white().bold(),
+                    format!("({} {})", resolved, T("uninstalled_label")).dimmed()
                 );
+            }
+            None => {
+                let current_file = nvm_dir.join("current");
+                if let Err(e) = fs::remove_file(&current_file) {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        eprintln!(
+                            "{} {}: {}",
+                            "⚠".yellow().bold(),
+                            T("current_clear_failed"),
+                            e
+                        );
+                    }
+                }
             }
         }
     }

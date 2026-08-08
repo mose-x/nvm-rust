@@ -529,6 +529,10 @@ upgrade_rollback_done = "Rolled back to the previous binary."
 upgrade_conflict_flags = "Conflicting flags: {0}. Use only one of them."
 upgrade_gitee_ignores_mirror = "--from-gitee is set; ignoring --from-mirror (Gitee serves its own URLs)."
 
+switched_to = "Switched to"
+uninstalled_label = "uninstalled"
+shim_create_failed = "Failed to create shims: {0}"
+
 [_meta]
 display_name = "English"
 aliases = ["en-us", "english"]
