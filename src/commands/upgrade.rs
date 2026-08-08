@@ -324,7 +324,15 @@ fn host_target() -> Result<&'static str> {
                 Ok("linux-x64")
             }
         }
-        ("linux", "aarch64") => Ok("linux-arm64"),
+        ("linux", "aarch64") => {
+            // Detect musl libc on ARM64 (Alpine ARM64, distroless).
+            // Same heuristic as x86_64: check `ldd --version` for "musl".
+            if is_musl_libc() {
+                Ok("linux-musl-arm64")
+            } else {
+                Ok("linux-arm64")
+            }
+        }
         ("macos", "x86_64") => Ok("macos-x64"),
         ("macos", "aarch64") => Ok("macos-arm64"),
         ("windows", "x86_64") => Ok("windows-x64"),
@@ -540,6 +548,7 @@ fn build_assets_from_tag(tag: &str) -> Vec<Asset> {
         ("linux-x64", "tar.gz"),
         ("linux-musl-x64", "tar.gz"),
         ("linux-arm64", "tar.gz"),
+        ("linux-musl-arm64", "tar.gz"),
         ("macos-x64", "tar.gz"),
         ("macos-arm64", "tar.gz"),
         ("windows-x64", "zip"),
@@ -958,8 +967,8 @@ mod tests {
     #[test]
     fn test_build_assets_from_tag_v_prefixed() {
         let assets = build_assets_from_tag("v2.0.0");
-        // 7 platform assets + sha256sums.txt
-        assert_eq!(assets.len(), 8);
+        // 8 platform assets + sha256sums.txt
+        assert_eq!(assets.len(), 9);
         // Asset filenames use the version WITHOUT the leading 'v'
         let linux_x64 = assets
             .iter()
@@ -973,6 +982,9 @@ mod tests {
         assert!(assets
             .iter()
             .any(|a| a.name == "nvm-2.0.0-linux-musl-x64.tar.gz"));
+        assert!(assets
+            .iter()
+            .any(|a| a.name == "nvm-2.0.0-linux-musl-arm64.tar.gz"));
         assert!(assets
             .iter()
             .any(|a| a.name == "nvm-2.0.0-macos-arm64.tar.gz"));
@@ -1001,17 +1013,49 @@ mod tests {
 
     #[test]
     fn test_build_assets_covers_all_release_yml_targets() {
-        // Must match the 7 targets produced by release.yml exactly.
+        // Must match the 8 targets produced by release.yml exactly.
         let assets = build_assets_from_tag("v9.9.9");
         let names: Vec<&str> = assets.iter().map(|a| a.name.as_str()).collect();
         assert!(names.contains(&"nvm-9.9.9-linux-x64.tar.gz"));
         assert!(names.contains(&"nvm-9.9.9-linux-musl-x64.tar.gz"));
         assert!(names.contains(&"nvm-9.9.9-linux-arm64.tar.gz"));
+        assert!(names.contains(&"nvm-9.9.9-linux-musl-arm64.tar.gz"));
         assert!(names.contains(&"nvm-9.9.9-macos-x64.tar.gz"));
         assert!(names.contains(&"nvm-9.9.9-macos-arm64.tar.gz"));
         assert!(names.contains(&"nvm-9.9.9-windows-x64.zip"));
         assert!(names.contains(&"nvm-9.9.9-windows-arm64.zip"));
         assert!(names.contains(&"sha256sums.txt"));
+    }
+
+    #[test]
+    fn test_host_target_returns_valid_asset_suffix() {
+        // host_target() returns a suffix like "linux-x64", "linux-musl-arm64",
+        // "macos-arm64", "windows-x64". Verify the result is one of the
+        // known targets in build_assets_from_tag.
+        let target = host_target().expect("host_target should succeed on supported platforms");
+        let assets = build_assets_from_tag("v9.9.9");
+        let expected_name = format!("nvm-9.9.9-{}.tar.gz", target);
+        let expected_zip = format!("nvm-9.9.9-{}.zip", target);
+        assert!(
+            assets
+                .iter()
+                .any(|a| a.name == expected_name || a.name == expected_zip),
+            "host_target() returned '{}' but no matching asset found in build_assets_from_tag",
+            target
+        );
+    }
+
+    #[test]
+    fn test_build_assets_includes_musl_arm64() {
+        // Regression test: linux-musl-arm64 was missing from the asset list,
+        // causing Alpine ARM64 users to download a glibc binary via nvm upgrade.
+        let assets = build_assets_from_tag("v1.0.0");
+        assert!(
+            assets
+                .iter()
+                .any(|a| a.name == "nvm-1.0.0-linux-musl-arm64.tar.gz"),
+            "linux-musl-arm64 asset must exist for Alpine ARM64 self-upgrade"
+        );
     }
 
     #[test]
