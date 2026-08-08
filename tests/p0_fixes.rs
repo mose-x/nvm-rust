@@ -86,3 +86,73 @@ fn p0_2_install_sh_defines_path_line() {
         "install.sh must define $fish_path_line for fish shells"
     );
 }
+
+/// P0-3 regression: _nvm_prepend_path must prepend bin FIRST, then shims,
+/// so the final PATH order is shims:bin:<rest> (shims take precedence).
+/// If shims is prepended first and bin second, the order would be bin:shims
+/// which is wrong — legacy bin/ binaries would shadow shims.
+#[test]
+fn p0_3_shims_prepend_order_is_shims_before_bin() {
+    let shell_nvm_sh = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.sh");
+    let content = fs::read_to_string(&shell_nvm_sh).expect("shell/nvm.sh must exist");
+
+    // Find _nvm_prepend_path function body. Can't use find("}") because
+    // ${NVM_RUST_BIN} contains a } character. Instead, find the } that
+    // appears at the start of a line (the function's closing brace).
+    let func_start = content.find("_nvm_prepend_path()").unwrap_or(0);
+    let lines: Vec<&str> = content[func_start..].lines().collect();
+    let func_line_count = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with('}'))
+        .unwrap_or(lines.len());
+    let func_body: String = lines[..func_line_count].join("\n");
+
+    let bin_pos = func_body.find("NVM_RUST_BIN").unwrap_or(usize::MAX);
+    let shims_pos = func_body.find("NVM_RUST_SHIMS").unwrap_or(usize::MAX);
+    assert!(
+        bin_pos < shims_pos,
+        "_nvm_prepend_path must prepend BIN first, then SHIMS (so shims ends up at front). \
+         BIN at pos {}, SHIMS at pos {} — BIN should come first in the function body.",
+        bin_pos,
+        shims_pos
+    );
+}
+
+/// P0-3 regression: deactivate and unload must strip BOTH NVM_RUST_SHIMS
+/// and NVM_RUST_BIN from PATH. Before the fix, they only stripped BIN,
+/// leaving shims active after deactivate.
+#[test]
+fn p0_3_deactivate_and_unload_strip_shims_from_path() {
+    let shell_nvm_sh = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.sh");
+    let content = fs::read_to_string(&shell_nvm_sh).expect("shell/nvm.sh must exist");
+
+    // Find the deactivate case
+    let deactivate_start = content.find("deactivate)").unwrap_or(0);
+    let deactivate_section = &content[deactivate_start..];
+    let deactivate_end = deactivate_section
+        .find(";;")
+        .map(|i| deactivate_start + i)
+        .unwrap_or(content.len());
+    let deactivate_body = &content[deactivate_start..deactivate_end];
+    assert!(
+        deactivate_body.contains("${NVM_RUST_SHIMS}"),
+        "deactivate must strip NVM_RUST_SHIMS from PATH, not just NVM_RUST_BIN"
+    );
+
+    // Find the unload case
+    let unload_start = content.find("unload)").unwrap_or(0);
+    let unload_section = &content[unload_start..];
+    let unload_end = unload_section
+        .find(";;")
+        .map(|i| unload_start + i)
+        .unwrap_or(content.len());
+    let unload_body = &content[unload_start..unload_end];
+    assert!(
+        unload_body.contains("${NVM_RUST_SHIMS}"),
+        "unload must strip NVM_RUST_SHIMS from PATH, not just NVM_RUST_BIN"
+    );
+}
