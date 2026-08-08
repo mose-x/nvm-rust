@@ -17,16 +17,18 @@ _nvm_binary_exists() {
 }
 
 # Add nvm shims + bin to PATH if not already there.
-# Shims (node/npm/npx/corepack) must be in PATH so they resolve
-# via the `current` file without shell-wrapper PATH manipulation.
+# Prepend bin first, then shims, so the final order is:
+#   shims:bin:<rest>
+# This ensures shims (node/npm/npx/corepack) take precedence over
+# any legacy binaries in bin/.
 _nvm_prepend_path() {
-    case ":${PATH}:" in
-        *":${NVM_RUST_SHIMS}:"*) ;;
-        *) export PATH="${NVM_RUST_SHIMS}:${PATH}" ;;
-    esac
     case ":${PATH}:" in
         *":${NVM_RUST_BIN}:"*) ;;
         *) export PATH="${NVM_RUST_BIN}:${PATH}" ;;
+    esac
+    case ":${PATH}:" in
+        *":${NVM_RUST_SHIMS}:"*) ;;
+        *) export PATH="${NVM_RUST_SHIMS}:${PATH}" ;;
     esac
 }
 
@@ -113,10 +115,14 @@ nvm() {
             "${NVM_RUST_BIN}/nvm" auto
             ;;
         deactivate)
+            "${NVM_RUST_BIN}/nvm" deactivate 2>/dev/null
+            export PATH="${PATH#${NVM_RUST_SHIMS}:}"
             export PATH="${PATH#${NVM_RUST_BIN}:}"
             echo "nvm-rust deactivated (PATH updated)"
             ;;
         unload)
+            "${NVM_RUST_BIN}/nvm" unload 2>/dev/null
+            export PATH="${PATH#${NVM_RUST_SHIMS}:}"
             export PATH="${PATH#${NVM_RUST_BIN}:}"
             unset -f nvm _nvm_auto_switch
             echo "nvm-rust unloaded from shell"
