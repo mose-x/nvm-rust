@@ -141,8 +141,78 @@ fn test_scripts_readme_exists_and_lists_all_platforms() {
     assert!(c.contains("build-linux.sh"), "must list Linux script");
     assert!(c.contains("build-macos.sh"), "must list macOS script");
     assert!(c.contains("build-windows.bat"), "must list Windows script");
+    assert!(c.contains("package.sh"), "must list package script");
     assert!(
         c.contains("Prerequisites"),
         "must have prerequisites section"
+    );
+}
+
+// --- package.sh ---
+
+#[test]
+fn test_package_sh_exists_and_has_usage() {
+    let c = read_script("package.sh");
+    assert!(c.contains("Usage:"), "must have usage instructions");
+    assert!(
+        c.contains("binary_path"),
+        "usage must mention binary_path arg"
+    );
+    assert!(c.contains("version"), "usage must mention version arg");
+    assert!(c.contains("os"), "usage must mention os arg");
+    assert!(c.contains("arch"), "usage must mention arch arg");
+}
+
+#[test]
+fn test_package_sh_handles_both_formats() {
+    let c = read_script("package.sh");
+    assert!(c.contains("tar.gz"), "must support tar.gz format");
+    assert!(c.contains("zip"), "must support zip format");
+}
+
+#[test]
+fn test_package_sh_includes_friendly_pack_files() {
+    let c = read_script("package.sh");
+    assert!(c.contains("README.md"), "must include README.md");
+    assert!(c.contains("README.ZH_CN.md"), "must include Chinese README");
+    assert!(c.contains("LICENSE"), "must include LICENSE");
+    assert!(c.contains("install.sh"), "must include install.sh");
+    assert!(c.contains("install.ps1"), "must include install.ps1");
+    assert!(c.contains("shell/nvm.sh"), "must include nvm.sh");
+    assert!(c.contains("shell/nvm.fish"), "must include nvm.fish");
+    assert!(c.contains("shell/nvm.psm1"), "must include nvm.psm1");
+}
+
+#[test]
+fn test_package_sh_detects_format_by_os() {
+    let c = read_script("package.sh");
+    assert!(
+        c.contains("windows") && c.contains("zip"),
+        "Windows must use zip"
+    );
+}
+
+#[test]
+fn test_package_sh_cleans_up_staging() {
+    let c = read_script("package.sh");
+    assert!(c.contains("rm -rf"), "must clean up staging directory");
+    assert!(c.contains("STAGE"), "must use a staging directory");
+}
+
+#[test]
+fn test_release_yml_calls_package_sh() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(".github")
+        .join("workflows")
+        .join("release.yml");
+    let c = fs::read_to_string(&path).expect("release.yml must exist");
+
+    assert!(
+        c.contains("scripts/package.sh"),
+        "release.yml must call scripts/package.sh for packaging (single source of truth)"
+    );
+    assert!(
+        !c.contains("Stage friendly-pack files"),
+        "release.yml must NOT have inline staging (moved to package.sh)"
     );
 }
