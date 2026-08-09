@@ -179,7 +179,10 @@ pub(crate) fn get_current_version() -> Result<Option<String>> {
     match fs::read_to_string(&current_file) {
         Ok(content) => {
             let version = content.trim();
-            if version.is_empty() {
+            // "none" is the deactivation marker written by `nvm deactivate`.
+            // Treat it as no active version so callers don't try to use
+            // "none" as a version directory path.
+            if version.is_empty() || version == "none" {
                 Ok(None)
             } else {
                 Ok(Some(version.to_string()))

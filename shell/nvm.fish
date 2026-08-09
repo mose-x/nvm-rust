@@ -6,12 +6,14 @@ set -g NVM_RUST_DIR (set -q NVM_DIR; and echo $NVM_DIR; or echo "$HOME/.nvm.rust
 set -g NVM_RUST_BIN "$NVM_RUST_DIR/bin"
 set -g NVM_RUST_SHIMS "$NVM_RUST_DIR/shims"
 
-# Add nvm shims + bin to PATH
-if not contains "$NVM_RUST_SHIMS" $PATH
-    set -gx PATH "$NVM_RUST_SHIMS" $PATH
-end
+# Add nvm shims + bin to PATH.
+# Prepend bin first, then shims, so the final order is:
+#   shims:bin:rest — shims take precedence over legacy bin/ binaries.
 if not contains "$NVM_RUST_BIN" $PATH
     set -gx PATH "$NVM_RUST_BIN" $PATH
+end
+if not contains "$NVM_RUST_SHIMS" $PATH
+    set -gx PATH "$NVM_RUST_SHIMS" $PATH
 end
 
 # Resolve nvm version from alias
