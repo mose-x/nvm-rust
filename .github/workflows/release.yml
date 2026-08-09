@@ -132,80 +132,23 @@ jobs:
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "Resolved version: $VERSION"
 
-      # Stage every friendly-pack file next to the binary before archiving.
-      # Keeps the binary at the archive root so existing `nvm upgrade`
-      # extract logic (looks for `nvm` / `nvm.exe` at the root) keeps working
-      # for users on older versions — no breaking change in tarball layout.
-      # Docs, install scripts, and shell integration files are added beside
-      # the binary so a beginner who just runs `tar xzf` sees a usable
-      # bundle without needing to read GitHub release notes.
-      #
-      # We use `$GITHUB_WORKSPACE/.stage-$$` (not `mktemp -d`) so the
-      # stage dir lives inside the workspace. The Package step then
-      # `cd`'s into STAGE and writes the archive to `..` — which is the
-      # workspace itself on every OS, matching the upload path and the
-      # `7z l` listing afterwards. With `/tmp` (mktemp's default) on
-      # Windows runners, `..` lands in `/tmp` instead of the workspace
-      # and the subsequent `7z l "$ASSET_NAME"` cannot find the file.
-      - name: Stage friendly-pack files
+      - name: Package release archive
         if: matrix.archive == 'tar.gz' || matrix.archive == 'zip'
         shell: bash
         run: |
-          STAGE="$GITHUB_WORKSPACE/.stage-$$"
-          mkdir -p "$STAGE"
-          # Binary is platform-specific and was built above; keep its name.
+          # Detect binary path (nvm on Unix, nvm.exe on Windows)
+          BIN=""
           if [ -f "target/${{ matrix.target }}/release/nvm" ]; then
-            cp "target/${{ matrix.target }}/release/nvm" "$STAGE/nvm"
+            BIN="target/${{ matrix.target }}/release/nvm"
           elif [ -f "target/${{ matrix.target }}/release/nvm.exe" ]; then
-            cp "target/${{ matrix.target }}/release/nvm.exe" "$STAGE/nvm.exe"
+            BIN="target/${{ matrix.target }}/release/nvm.exe"
           else
             echo "::error::Binary not found in target/${{ matrix.target }}/release/"
             exit 1
           fi
-          # Documentation: bilingual README + LICENSE (MIT).
-          cp README.md "$STAGE/README.md"
-          cp README.ZH_CN.md "$STAGE/README.ZH_CN.md"
-          cp LICENSE "$STAGE/LICENSE"
-          # Installers: ship the repo's install scripts so a beginner can
-          # run `./install.sh` after extracting (or `./install.ps1` on
-          # Windows). The scripts read paths relative to their own
-          # location, so this works without a separate download.
-          cp install.sh "$STAGE/install.sh"
-          cp install.ps1 "$STAGE/install.ps1"
-          # Shell integration: bash/zsh (nvm.sh), fish (nvm.fish),
-          # PowerShell (nvm.psm1). These are PATH-setup / environment
-          # helpers, NOT tab-completion scripts. The actual completion
-          # files are generated at runtime by `nvm completion <shell>`
-          # (see src/completions.rs), and installing them is out of scope
-          # for the static tarball.
-          mkdir -p "$STAGE/shell"
-          cp shell/nvm.sh "$STAGE/shell/nvm.sh"
-          cp shell/nvm.fish "$STAGE/shell/nvm.fish"
-          cp shell/nvm.psm1 "$STAGE/shell/nvm.psm1"
-          echo "STAGE=$STAGE" >> $GITHUB_ENV
-          echo "Staged files:"
-          ( cd "$STAGE" && find . -maxdepth 3 -type f | sort )
-
-      - name: Package (Unix tar.gz)
-        if: matrix.archive == 'tar.gz'
-        run: |
-          ASSET_NAME="nvm-${{ env.VERSION }}-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz"
-          tar -czf "$ASSET_NAME" -C "$STAGE" .
+          # Call the shared packaging script (same one local users use)
+          ASSET_NAME=$(bash scripts/package.sh "$BIN" "${{ env.VERSION }}" "${{ matrix.asset_os }}" "${{ matrix.asset_arch }}")
           echo "ASSET_NAME=$ASSET_NAME" >> $GITHUB_ENV
-          echo "Packaged: $ASSET_NAME"
-          echo "Contents:"
-          tar -tzf "$ASSET_NAME" | sort
-
-      - name: Package (Windows zip)
-        if: matrix.archive == 'zip'
-        shell: bash
-        run: |
-          ASSET_NAME="nvm-${{ env.VERSION }}-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.zip"
-          ( cd "$STAGE" && 7z a "../$ASSET_NAME" . > /dev/null )
-          echo "ASSET_NAME=$ASSET_NAME" >> $GITHUB_ENV
-          echo "Packaged: $ASSET_NAME"
-          echo "Contents:"
-          7z l "$ASSET_NAME" | tail -n +20 | head -n -2 | awk '{print $NF}' | sort
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
