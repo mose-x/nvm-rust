@@ -172,6 +172,31 @@ fn test_scripts_readme_exists_and_lists_all_platforms() {
     );
 }
 
+#[test]
+fn test_scripts_readme_is_bilingual() {
+    let c = read_script("README.md");
+    assert!(c.contains("English"), "must have English section");
+    assert!(c.contains("中文"), "must have Chinese section");
+}
+
+#[test]
+fn test_scripts_readme_documents_version_flag() {
+    let c = read_script("README.md");
+    assert!(c.contains("--version"), "must document --version flag");
+    assert!(c.contains("9.9.9"), "must show --version usage example");
+    assert!(
+        c.contains("Restored Cargo.toml") || c.contains("恢复"),
+        "must explain Cargo.toml restore"
+    );
+}
+
+#[test]
+fn test_scripts_readme_documents_package_usage() {
+    let c = read_script("README.md");
+    assert!(c.contains("package.sh"), "must document package.sh usage");
+    assert!(c.contains("friendly-pack"), "must mention friendly-pack");
+}
+
 // --- package.sh ---
 
 #[test]
