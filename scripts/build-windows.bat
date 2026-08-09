@@ -76,10 +76,34 @@ set "NVM_DIR=%TEMP%\nvm-test-env"
 rd /s /q "%NVM_DIR%" 2>nul
 mkdir "%NVM_DIR%"
 
-REM === Step 4: Dispatch by mode ===
+REM === Step 4: Parse --version and mode from args ===
 set "MODE=%1"
 if "%MODE%"=="" set "MODE=build"
+set "CUSTOM_VERSION="
 
+REM Parse all args for --version
+set "arg_idx=0"
+set "next_is_version=0"
+for %%A in (%*) do (
+    if "!next_is_version!"=="1" (
+        set "CUSTOM_VERSION=%%~A"
+        set "next_is_version=0"
+    ) else if "%%~A"=="--version" (
+        set "next_is_version=1"
+    )
+)
+
+REM Override Cargo.toml version if requested
+if defined CUSTOM_VERSION (
+    echo [INFO] Using custom version: %CUSTOM_VERSION%
+    REM Backup Cargo.toml and override version
+    copy /y Cargo.toml Cargo.toml.bak >nul 2>&1
+    powershell -NoProfile -Command "(Get-Content Cargo.toml) -replace '^version = \".*\"', 'version = \"%CUSTOM_VERSION%\"' | Set-Content Cargo.toml"
+    REM Set trap to restore on exit
+    set "RESTORE_CARGO=1"
+)
+
+REM === Step 5: Dispatch by mode ===
 if /i "%MODE%"=="check" goto :check
 if /i "%MODE%"=="release" goto :release
 if /i "%MODE%"=="build" goto :build
@@ -117,6 +141,11 @@ if %ERRORLEVEL% neq 0 (
 echo [OK] All tests passed.
 
 :check_done
+if defined RESTORE_CARGO (
+    copy /y Cargo.toml.bak Cargo.toml >nul 2>&1
+    del Cargo.toml.bak >nul 2>&1
+    echo [INFO] Restored Cargo.toml
+)
 echo.
 echo ====================================
 echo  All checks passed. Ready to commit.
@@ -127,8 +156,14 @@ goto :eof
 echo [INFO] Building release ^(optimized + LTO + static CRT^)...
 cargo build --release
 if %ERRORLEVEL% neq 0 (
+    if defined RESTORE_CARGO copy /y Cargo.toml.bak Cargo.toml >nul 2>&1
     echo [ERROR] Build failed.
     exit /b 1
+)
+if defined RESTORE_CARGO (
+    copy /y Cargo.toml.bak Cargo.toml >nul 2>&1
+    del Cargo.toml.bak >nul 2>&1
+    echo [INFO] Restored Cargo.toml
 )
 echo [OK] Release build: target\release\nvm.exe
 goto :eof
@@ -137,17 +172,24 @@ goto :eof
 echo [INFO] Building debug...
 cargo build
 if %ERRORLEVEL% neq 0 (
+    if defined RESTORE_CARGO copy /y Cargo.toml.bak Cargo.toml >nul 2>&1
     echo [ERROR] Build failed.
     exit /b 1
+)
+if defined RESTORE_CARGO (
+    copy /y Cargo.toml.bak Cargo.toml >nul 2>&1
+    del Cargo.toml.bak >nul 2>&1
+    echo [INFO] Restored Cargo.toml
 )
 echo [OK] Debug build: target\debug\nvm.exe
 goto :eof
 
 :usage
-echo Usage: scripts\build-windows.bat [build^|release^|check [quick]]
+echo Usage: scripts\build-windows.bat [build^|release^|check [quick]] [--version X.Y.Z]
 echo.
-echo   build      - Debug build (default)
-echo   release    - Release build (optimized + LTO + static CRT)
-echo   check      - fmt + clippy + test
-echo   check quick - fmt + clippy only
+echo   build              Debug build (default)
+echo   release            Release build (optimized + LTO + static CRT)
+echo   check              fmt + clippy + test
+echo   check quick        fmt + clippy only
+echo   --version X.Y.Z    Override version (skips nvm upgrade checks)
 exit /b 1

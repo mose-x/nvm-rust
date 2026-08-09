@@ -133,6 +133,30 @@ fn test_windows_script_no_unix_commands() {
     assert!(!c.contains("uname"), "Windows script must not use uname");
 }
 
+#[test]
+fn test_linux_script_supports_custom_version() {
+    let c = read_script("build-linux.sh");
+    assert!(c.contains("--version"), "must support --version flag");
+    assert!(c.contains("CUSTOM_VERSION"), "must parse custom version");
+    assert!(c.contains("Restored Cargo.toml"), "must restore Cargo.toml");
+}
+
+#[test]
+fn test_macos_script_supports_custom_version() {
+    let c = read_script("build-macos.sh");
+    assert!(c.contains("--version"), "must support --version flag");
+    assert!(c.contains("CUSTOM_VERSION"), "must parse custom version");
+    assert!(c.contains("Restored Cargo.toml"), "must restore Cargo.toml");
+}
+
+#[test]
+fn test_windows_script_supports_custom_version() {
+    let c = read_script("build-windows.bat");
+    assert!(c.contains("--version"), "must support --version flag");
+    assert!(c.contains("CUSTOM_VERSION"), "must parse custom version");
+    assert!(c.contains("Restored Cargo.toml"), "must restore Cargo.toml");
+}
+
 // --- README ---
 
 #[test]

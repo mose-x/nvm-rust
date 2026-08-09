@@ -3,18 +3,19 @@
 # nvm-rust macOS build script
 #
 # Usage:
-#   ./scripts/build-macos.sh              — debug build
-#   ./scripts/build-macos.sh release       — release build (optimized + LTO)
-#   ./scripts/build-macos.sh check         — fmt + clippy + test (full verification)
-#   ./scripts/build-macos.sh check quick    — fmt + clippy only
+#   ./scripts/build-macos.sh                          — debug build
+#   ./scripts/build-macos.sh release                   — release build (optimized + LTO)
+#   ./scripts/build-macos.sh check                     — fmt + clippy + test
+#   ./scripts/build-macos.sh check quick               — fmt + clippy only
+#   ./scripts/build-macos.sh release --version 9.9.9  — release with custom version
+#
+# --version X.Y.Z overrides Cargo.toml version (useful for local builds
+# that shouldn't trigger `nvm upgrade` checks). Cargo.toml is restored
+# after the build.
 #
 # Prerequisites:
 #   - Rust toolchain (rustup): https://rustup.rs/
 #   - Xcode Command Line Tools: xcode-select --install
-#
-# This is a LOCAL build script. CI uses .github/workflows/ci.yml and
-# release.yml which have their own cross-compilation, caching, and
-# artifact staging — NOT replaced by this script.
 # ==========================================================================
 set -euo pipefail
 
@@ -40,8 +41,31 @@ mkdir -p "$NVM_DIR" 2>/dev/null || true
 ARCH=$(uname -m)
 echo "[INFO] Detected arch: $ARCH"
 
+# --- Parse --version from args ---
+CUSTOM_VERSION=""
+ARGS=()
+for arg in "$@"; do
+    if [ "$arg" = "--version" ]; then
+        shift_next=true
+    elif [ "${shift_next:-}" = "true" ]; then
+        CUSTOM_VERSION="$arg"
+        shift_next=false
+    else
+        ARGS+=("$arg")
+    fi
+done
+
+# --- Override Cargo.toml version if requested ---
+if [ -n "$CUSTOM_VERSION" ]; then
+    echo "[INFO] Using custom version: $CUSTOM_VERSION"
+    ORIG_CARGO=$(cat Cargo.toml)
+    # macOS sed needs '' after -i
+    trap 'echo "$ORIG_CARGO" > Cargo.toml; echo "[INFO] Restored Cargo.toml"' EXIT
+    sed -i '' "s/^version = \".*\"/version = \"$CUSTOM_VERSION\"/" Cargo.toml
+fi
+
 # --- Dispatch by mode ---
-MODE="${1:-build}"
+MODE="${ARGS[0]:-build}"
 
 case "$MODE" in
     check)
@@ -54,7 +78,7 @@ case "$MODE" in
         cargo clippy --all-targets -- -D warnings || { echo "[FAIL] clippy"; exit 1; }
         echo "[OK] Clippy clean."
 
-        if [ "${2:-}" != "quick" ]; then
+        if [ "${ARGS[1]:-}" != "quick" ]; then
             echo "[3/3] Tests..."
             cargo test --all || { echo "[FAIL] tests"; exit 1; }
             echo "[OK] All tests passed."
@@ -77,7 +101,7 @@ case "$MODE" in
         echo "[OK] Debug build: target/debug/nvm"
         ;;
     *)
-        echo "Usage: $0 [build|release|check [quick]]"
+        echo "Usage: $0 [build|release|check [quick]] [--version X.Y.Z]"
         exit 1
         ;;
 esac
