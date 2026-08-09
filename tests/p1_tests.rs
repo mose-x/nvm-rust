@@ -229,3 +229,51 @@ fn p1_6_upgrade_has_swap_binary() {
         "upgrade.rs must have BAK_SUFFIX constant for backup file naming"
     );
 }
+
+/// Regression: get_current_version() must filter "none" marker.
+/// When deactivate() writes "none" to the current file, get_current_version()
+/// should return None (not Some("none")), so callers don't treat "none" as
+/// a valid version directory path.
+#[test]
+fn regression_get_current_version_filters_none_marker() {
+    let mod_rs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/mod.rs");
+    let content = fs::read_to_string(&mod_rs).expect("mod.rs must exist");
+
+    // The function must check for "none" alongside the empty check.
+    let func_start = content.find("fn get_current_version()").unwrap_or(0);
+    let func_section = &content[func_start..];
+    let func_end = func_section
+        .find("\n}")
+        .map(|i| func_start + i + 2)
+        .unwrap_or(content.len());
+    let func_body = &content[func_start..func_end];
+
+    assert!(
+        func_body.contains("\"none\""),
+        "get_current_version() must filter 'none' marker — when current file contains 'none', \
+         it should return None, not Some(\"none\")"
+    );
+}
+
+/// Regression: nvm.fish PATH order must be shims:bin:rest (shims first).
+/// BIN must be prepended first, then SHIMS, so SHIMS ends up at front.
+#[test]
+fn regression_fish_path_order_is_shims_before_bin() {
+    let nvm_fish = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.fish");
+    let content = fs::read_to_string(&nvm_fish).expect("nvm.fish must exist");
+
+    // Find the PATH prepend section.
+    // BIN should be prepended first (appears first in the code),
+    // then SHIMS (appears second) — so SHIMS ends up at the front.
+    let bin_pos = content.find("NVM_RUST_BIN").unwrap_or(usize::MAX);
+    let shims_pos = content.find("NVM_RUST_SHIMS").unwrap_or(usize::MAX);
+    assert!(
+        bin_pos < shims_pos,
+        "nvm.fish must prepend BIN first, then SHIMS (so SHIMS ends up at front). \
+         BIN at pos {}, SHIMS at pos {}",
+        bin_pos,
+        shims_pos
+    );
+}
