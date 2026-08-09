@@ -133,6 +133,30 @@ fn test_windows_script_no_unix_commands() {
     assert!(!c.contains("uname"), "Windows script must not use uname");
 }
 
+#[test]
+fn test_linux_script_supports_custom_version() {
+    let c = read_script("build-linux.sh");
+    assert!(c.contains("--version"), "must support --version flag");
+    assert!(c.contains("CUSTOM_VERSION"), "must parse custom version");
+    assert!(c.contains("Restored Cargo.toml"), "must restore Cargo.toml");
+}
+
+#[test]
+fn test_macos_script_supports_custom_version() {
+    let c = read_script("build-macos.sh");
+    assert!(c.contains("--version"), "must support --version flag");
+    assert!(c.contains("CUSTOM_VERSION"), "must parse custom version");
+    assert!(c.contains("Restored Cargo.toml"), "must restore Cargo.toml");
+}
+
+#[test]
+fn test_windows_script_supports_custom_version() {
+    let c = read_script("build-windows.bat");
+    assert!(c.contains("--version"), "must support --version flag");
+    assert!(c.contains("CUSTOM_VERSION"), "must parse custom version");
+    assert!(c.contains("Restored Cargo.toml"), "must restore Cargo.toml");
+}
+
 // --- README ---
 
 #[test]
@@ -146,6 +170,31 @@ fn test_scripts_readme_exists_and_lists_all_platforms() {
         c.contains("Prerequisites"),
         "must have prerequisites section"
     );
+}
+
+#[test]
+fn test_scripts_readme_is_bilingual() {
+    let c = read_script("README.md");
+    assert!(c.contains("English"), "must have English section");
+    assert!(c.contains("中文"), "must have Chinese section");
+}
+
+#[test]
+fn test_scripts_readme_documents_version_flag() {
+    let c = read_script("README.md");
+    assert!(c.contains("--version"), "must document --version flag");
+    assert!(c.contains("9.9.9"), "must show --version usage example");
+    assert!(
+        c.contains("Restored Cargo.toml") || c.contains("恢复"),
+        "must explain Cargo.toml restore"
+    );
+}
+
+#[test]
+fn test_scripts_readme_documents_package_usage() {
+    let c = read_script("README.md");
+    assert!(c.contains("package.sh"), "must document package.sh usage");
+    assert!(c.contains("friendly-pack"), "must mention friendly-pack");
 }
 
 // --- package.sh ---
