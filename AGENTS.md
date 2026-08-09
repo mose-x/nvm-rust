@@ -28,6 +28,67 @@ Key rules (full rules take precedence from the hook repo):
   (string-matching tests in `tests/` are acceptable for shell scripts).
 - PRs without tests will NOT be merged — the reviewer should block on this.
 
+### Platform-aware testing
+
+Tests must pass on all 3 CI OSes (Ubuntu, Windows, macOS). When code is
+platform-specific, guard tests with `#[cfg(unix)]` / `#[cfg(windows)]` /
+`#[cfg(target_arch = "aarch64")]` so they only run on the relevant platform.
+
+For shell script changes (`shell/nvm.sh`, `install.sh`, `install.ps1`), add
+content-verification tests in `tests/` that read the file and assert the
+expected strings are present (see `tests/p0_fixes.rs` for examples).
+
+### Test isolation
+
+**Never touch the real `~/.nvm.rust/` in tests.** Always set `NVM_DIR` to a
+temp directory (`std::env::temp_dir()` in Rust, `%TEMP%\nvm-test-env` in
+batch files). This prevents test interference with the user's actual nvm
+installation and avoids flaky tests caused by stale state.
+
+### Existing test locations
+
+- Unit tests: `#[cfg(test)]` blocks inside each `src/*.rs` file (236 tests)
+- Integration tests: `tests/*.rs` (94 tests across 8 files)
+- Shell script verification: `tests/p0_fixes.rs` (7 tests)
+
+## TODO Tracking
+
+When a fix or feature addresses an item documented in a tracking file
+(e.g. `note/todo.md`), the **same commit** that fixes the code MUST also
+update the item's status in the tracking file (e.g. change "待处理" to
+"✅ 已修复"). This keeps tracking files in sync with the codebase — no
+stale "待处理" items for already-fixed bugs.
+
+Rules:
+- If the tracking file is in `.gitignore` (like `note/`), update it locally
+  but do NOT `git add` it — the status is for local reference only.
+- If the tracking file IS tracked by git, `git add` it together with the
+  code fix so both land in the same commit.
+- Update status to include the PR number or commit hash for traceability
+  (e.g. `✅ 已修复 (PR #38)` or `✅ 已完成 (v2.1.0)`).
+
+## Why Recreate `dev` Each Cycle
+
+**Always create a fresh `dev` branch from `main` for each development cycle.
+Never reuse an old `dev` or rebase `dev` onto `main`.**
+
+Squash-merge commits on `main` have `committer = GitHub <noreply@github.com>`.
+The pre-push hook rejects any noreply-committer commit inside `dev`'s push
+range. If `dev` is rebased onto or merged with `main`, the noreply squash
+commits enter `dev`'s push range and pre-push fails.
+
+Creating `dev` fresh from `main` each cycle keeps the push range = only the
+new commits (main's noreply squashes sit on `origin/main`, not counted as
+"new" and not scanned), so pre-push passes.
+
+## Caveats
+
+- `git push --delete <branch>` and force-pushes are rejected by the pre-push
+  hook (it errors on `new=0000` ref deletions and on noreply in a force-push
+  range). Use the GitHub API (`DELETE /repos/.../git/refs/heads/dev`) or the
+  GitHub UI "Delete branch" instead.
+- Same applies to deleting a tag: use the GitHub API, not `git push --delete`.
+
 ## Development Workflow (Mandatory)
 
 Every code change MUST follow this exact sequence. No steps may be skipped.
