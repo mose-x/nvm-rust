@@ -202,12 +202,15 @@ mod tests {
     use std::env;
     use std::fs;
 
-    fn setup_temp_nvm_dir() -> tempfile::TempDir {
+    /// Acquire the ENV_TESTS_MUTEX so that env::set_var("NVM_DIR") doesn't
+    /// interfere with other tests running in parallel that also read NVM_DIR.
+    fn setup_temp_nvm_dir() -> (tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+        let guard = crate::system::ENV_TESTS_MUTEX
+            .lock()
+            .expect("ENV_TESTS_MUTEX poisoned");
         let dir = tempfile::tempdir().expect("tempdir");
         env::set_var("NVM_DIR", dir.path());
-        // Also set the env var that get_nvm_dir reads
-        // get_nvm_dir checks NVM_DIR then falls back to ~/.nvm.rust
-        dir
+        (dir, guard)
     }
 
     fn create_fake_version(nvm_dir: &std::path::Path, version: &str) {
@@ -222,14 +225,14 @@ mod tests {
 
     #[test]
     fn test_list_installed_versions_empty() {
-        let _dir = setup_temp_nvm_dir();
+        let (_dir, _guard) = setup_temp_nvm_dir();
         let versions = list_installed_versions().expect("list");
         assert!(versions.is_empty());
     }
 
     #[test]
     fn test_list_installed_versions_finds_versions() {
-        let dir = setup_temp_nvm_dir();
+        let (dir, _guard) = setup_temp_nvm_dir();
         create_fake_version(dir.path(), "v18.0.0");
         create_fake_version(dir.path(), "v20.0.0");
         // Create a non-version dir that should be skipped
@@ -245,7 +248,7 @@ mod tests {
 
     #[test]
     fn test_next_available_version_picks_highest() {
-        let dir = setup_temp_nvm_dir();
+        let (dir, _guard) = setup_temp_nvm_dir();
         create_fake_version(dir.path(), "v18.0.0");
         create_fake_version(dir.path(), "v20.0.0");
         create_fake_version(dir.path(), "v19.0.0");
@@ -259,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_next_available_version_none_when_no_others() {
-        let dir = setup_temp_nvm_dir();
+        let (dir, _guard) = setup_temp_nvm_dir();
         create_fake_version(dir.path(), "v20.0.0");
 
         let next = next_available_version("v20.0.0");
@@ -268,20 +271,20 @@ mod tests {
 
     #[test]
     fn test_next_available_version_none_when_empty() {
-        let _dir = setup_temp_nvm_dir();
+        let (_dir, _guard) = setup_temp_nvm_dir();
         let next = next_available_version("v20.0.0");
         assert_eq!(next, None);
     }
 
     #[test]
     fn test_shims_exist_false_before_creation() {
-        let _dir = setup_temp_nvm_dir();
+        let (_dir, _guard) = setup_temp_nvm_dir();
         assert!(!shims_exist());
     }
 
     #[test]
     fn test_create_shims_creates_all_commands() {
-        let _dir = setup_temp_nvm_dir();
+        let (_dir, _guard) = setup_temp_nvm_dir();
         create_shims().expect("create shims");
 
         let shims_dir = get_nvm_dir().join("shims");
@@ -312,7 +315,7 @@ mod tests {
 
     #[test]
     fn test_shims_exist_true_after_creation() {
-        let _dir = setup_temp_nvm_dir();
+        let (_dir, _guard) = setup_temp_nvm_dir();
         create_shims().expect("create shims");
         assert!(shims_exist());
     }
