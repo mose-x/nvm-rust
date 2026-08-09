@@ -22,11 +22,15 @@ read_current() {
     cat "$NVM_DIR/current" 2>/dev/null | tr -d '[:space:]'
 }
 CURRENT=$(read_current)
+if [ "$CURRENT" = "none" ]; then
+    echo "nvm: deactivated. Run 'nvm use <version>' to reactivate." >&2
+    exit 1
+fi
 if [ -z "$CURRENT" ] || [ ! -x "$NVM_DIR/$CURRENT/bin/$CMD" ]; then
     "$NVM_DIR/bin/nvm" auto --silent 2>/dev/null
     CURRENT=$(read_current)
 fi
-if [ -z "$CURRENT" ] || [ ! -x "$NVM_DIR/$CURRENT/bin/$CMD" ]; then
+if [ -z "$CURRENT" ] || [ "$CURRENT" = "none" ] || [ ! -x "$NVM_DIR/$CURRENT/bin/$CMD" ]; then
     echo "nvm: $CMD not found. Run 'nvm use <version>' or 'nvm install <version>'." >&2
     exit 1
 fi
@@ -43,6 +47,10 @@ set NVM_DIR=%USERPROFILE%\.nvm.rust
 set CMD=%~n0
 set CURRENT=
 if exist "%NVM_DIR%\current" for /f "delims=" %%a in (%NVM_DIR%\current) do set CURRENT=%%a
+if "%CURRENT%"=="none" (
+    echo nvm: deactivated. Run 'nvm use ^<version^>' to reactivate.
+    exit /b 1
+)
 call :resolve
 if not defined BIN (
     "%NVM_DIR%\bin\nvm.exe" auto --silent 2>nul
@@ -186,4 +194,152 @@ pub fn next_available_version(exclude: &str) -> Option<String> {
         .into_iter()
         .filter(|v| v != exclude)
         .max_by(|a, b| crate::utils::compare_semver(a, b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::fs;
+
+    fn setup_temp_nvm_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        env::set_var("NVM_DIR", dir.path());
+        // Also set the env var that get_nvm_dir reads
+        // get_nvm_dir checks NVM_DIR then falls back to ~/.nvm.rust
+        dir
+    }
+
+    fn create_fake_version(nvm_dir: &std::path::Path, version: &str) {
+        let version_dir = nvm_dir.join(version);
+        fs::create_dir_all(&version_dir).expect("create version dir");
+        let bin_dir = version_dir.join("bin");
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+        // Create a fake node binary
+        let node_name = if cfg!(windows) { "node.exe" } else { "node" };
+        fs::write(bin_dir.join(node_name), "fake").expect("create fake node");
+    }
+
+    #[test]
+    fn test_list_installed_versions_empty() {
+        let _dir = setup_temp_nvm_dir();
+        let versions = list_installed_versions().expect("list");
+        assert!(versions.is_empty());
+    }
+
+    #[test]
+    fn test_list_installed_versions_finds_versions() {
+        let dir = setup_temp_nvm_dir();
+        create_fake_version(dir.path(), "v18.0.0");
+        create_fake_version(dir.path(), "v20.0.0");
+        // Create a non-version dir that should be skipped
+        fs::create_dir(dir.path().join("cache")).ok();
+        fs::create_dir(dir.path().join("shims")).ok();
+
+        let versions = list_installed_versions().expect("list");
+        assert!(versions.contains(&"v18.0.0".to_string()));
+        assert!(versions.contains(&"v20.0.0".to_string()));
+        assert!(!versions.contains(&"cache".to_string()));
+        assert!(!versions.contains(&"shims".to_string()));
+    }
+
+    #[test]
+    fn test_next_available_version_picks_highest() {
+        let dir = setup_temp_nvm_dir();
+        create_fake_version(dir.path(), "v18.0.0");
+        create_fake_version(dir.path(), "v20.0.0");
+        create_fake_version(dir.path(), "v19.0.0");
+
+        let next = next_available_version("v20.0.0");
+        assert_eq!(next, Some("v19.0.0".to_string())); // 19 > 18
+
+        let next = next_available_version("v18.0.0");
+        assert_eq!(next, Some("v20.0.0".to_string())); // 20 > 19
+    }
+
+    #[test]
+    fn test_next_available_version_none_when_no_others() {
+        let dir = setup_temp_nvm_dir();
+        create_fake_version(dir.path(), "v20.0.0");
+
+        let next = next_available_version("v20.0.0");
+        assert_eq!(next, None);
+    }
+
+    #[test]
+    fn test_next_available_version_none_when_empty() {
+        let _dir = setup_temp_nvm_dir();
+        let next = next_available_version("v20.0.0");
+        assert_eq!(next, None);
+    }
+
+    #[test]
+    fn test_shims_exist_false_before_creation() {
+        let _dir = setup_temp_nvm_dir();
+        assert!(!shims_exist());
+    }
+
+    #[test]
+    fn test_create_shims_creates_all_commands() {
+        let _dir = setup_temp_nvm_dir();
+        create_shims().expect("create shims");
+
+        let shims_dir = get_nvm_dir().join("shims");
+        assert!(shims_dir.exists());
+
+        if cfg!(windows) {
+            for cmd in SHIM_COMMANDS {
+                assert!(
+                    shims_dir.join(format!("{}.cmd", cmd)).exists(),
+                    "shim {}.cmd should exist",
+                    cmd
+                );
+            }
+        } else {
+            for cmd in SHIM_COMMANDS {
+                let shim = shims_dir.join(cmd);
+                assert!(shim.exists(), "shim {} should exist", cmd);
+                // Check it's executable on Unix
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let perms = fs::metadata(&shim).unwrap().permissions().mode();
+                    assert!(perms & 0o111 != 0, "shim {} should be executable", cmd);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_shims_exist_true_after_creation() {
+        let _dir = setup_temp_nvm_dir();
+        create_shims().expect("create shims");
+        assert!(shims_exist());
+    }
+
+    #[test]
+    fn test_unix_shim_script_checks_for_none_marker() {
+        let script = unix_shim_script();
+        assert!(
+            script.contains("none"),
+            "Unix shim script must check for 'none' marker"
+        );
+        assert!(
+            script.contains("deactivated"),
+            "Unix shim script must print deactivation message"
+        );
+    }
+
+    #[test]
+    fn test_windows_shim_script_checks_for_none_marker() {
+        let script = windows_shim_script();
+        assert!(
+            script.contains("none"),
+            "Windows shim script must check for 'none' marker"
+        );
+        assert!(
+            script.contains("deactivated"),
+            "Windows shim script must print deactivation message"
+        );
+    }
 }

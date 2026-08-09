@@ -2,10 +2,14 @@
 # Place this file in ~/.config/fish/functions/nvm.fish
 # Or add: source /path/to/nvm.fish in ~/.config/fish/config.fish
 
-set -g NVM_RUST_DIR "$HOME/.nvm.rust"
+set -g NVM_RUST_DIR (set -q NVM_DIR; and echo $NVM_DIR; or echo "$HOME/.nvm.rust")
 set -g NVM_RUST_BIN "$NVM_RUST_DIR/bin"
+set -g NVM_RUST_SHIMS "$NVM_RUST_DIR/shims"
 
-# Add nvm binaries to PATH
+# Add nvm shims + bin to PATH
+if not contains "$NVM_RUST_SHIMS" $PATH
+    set -gx PATH "$NVM_RUST_SHIMS" $PATH
+end
 if not contains "$NVM_RUST_BIN" $PATH
     set -gx PATH "$NVM_RUST_BIN" $PATH
 end
@@ -121,6 +125,15 @@ function nvm --description "Node version manager (nvm-rust)"
             echo "  proxy [on|off]     Proxy settings"
             echo "  completion <shell> Generate completions"
             echo "  corepack <action>  Corepack support"
+            echo "  install-npm       Upgrade npm"
+            echo "  install-yarn      Install latest yarn"
+            echo "  install-pnpm      Install latest pnpm"
+            echo "  reinstall-packages Migrate packages"
+            echo "  upgrade           Self-upgrade nvm"
+            echo "  migrate           Migrate from nvm-sh"
+            echo "  version           Show nvm version"
+            echo "  version-remote    Show remote version"
+            echo "  mirror [source]   Set download mirror"
             echo ""
             echo "Examples:"
             echo "  nvm install 20"

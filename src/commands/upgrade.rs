@@ -1125,4 +1125,48 @@ justoneword
             Some("abc123")
         );
     }
+
+    #[test]
+    fn test_swap_binary_creates_backup_and_replaces() {
+        let dir = std::env::temp_dir();
+        let bin_path = dir.join(format!("nvm_swap_test_{}", std::process::id()));
+        let new_bin = dir.join(format!("nvm_swap_new_{}", std::process::id()));
+        let bak_path = dir.join(format!("nvm_swap_test_{}.bak", std::process::id()));
+
+        // Clean up any leftover files from previous runs
+        std::fs::remove_file(&bin_path).ok();
+        std::fs::remove_file(&new_bin).ok();
+        std::fs::remove_file(&bak_path).ok();
+
+        // Create original and new binaries
+        std::fs::write(&bin_path, "original").expect("write original");
+        std::fs::write(&new_bin, "replacement").expect("write replacement");
+
+        // Swap: original → .bak, replacement → original
+        swap_binary(&bin_path, &new_bin).expect("swap should succeed");
+
+        // Verify: bin_path now has replacement content
+        let content = std::fs::read_to_string(&bin_path).expect("read swapped");
+        assert_eq!(
+            content, "replacement",
+            "bin_path should have replacement content"
+        );
+
+        // Verify: .bak file exists with original content
+        let bak_content = std::fs::read_to_string(&bak_path).expect("read backup");
+        assert_eq!(
+            bak_content, "original",
+            "bak file should have original content"
+        );
+
+        // Verify: new_bin is gone (moved, not copied)
+        assert!(
+            !new_bin.exists(),
+            "new_bin should have been moved, not copied"
+        );
+
+        // Clean up
+        std::fs::remove_file(&bin_path).ok();
+        std::fs::remove_file(&bak_path).ok();
+    }
 }

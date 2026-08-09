@@ -55,8 +55,9 @@ function nvm {
         [ValidateSet('use', 'install', 'uninstall', 'ls', 'list', 'ls-remote', 'remote',
                      'current', 'which', 'run', 'exec', 'alias', 'unalias', 'auto',
                      'deactivate', 'unload', 'cache', 'language', 'proxy', 'completion',
-                     'corepack', 'install-npm', 'reinstall-packages', 'version',
-                     'version-remote', 'mirror', 'help')]
+                     'corepack', 'install-npm', 'install-yarn', 'install-pnpm',
+                     'reinstall-packages', 'version', 'version-remote', 'mirror',
+                     'upgrade', 'migrate', 'help')]
         [string]$Command,
 
         [Parameter(Position = 1, ValueFromRemainingArguments = $true)]
@@ -224,6 +225,9 @@ function Set-Location {
     )
 
     process {
+        # Guard for bare `cd` (no args) — original Set-Location goes to
+        # $HOME, but passing -Path $null would error.
+        if (-not $Path) { $Path = $HOME }
         # Call original Set-Location
         Microsoft.PowerShell\Set-Location -Path $Path -PassThru:$PassThru
 

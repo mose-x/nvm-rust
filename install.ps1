@@ -276,6 +276,10 @@ set NVM_DIR=%USERPROFILE%\.nvm.rust
 set CMD=%~n0
 set CURRENT=
 if exist "%NVM_DIR%\current" for /f "delims=" %%a in (%NVM_DIR%\current) do set CURRENT=%%a
+if "%CURRENT%"=="none" (
+    echo nvm: deactivated. Run 'nvm use ^<version^>' to reactivate.
+    exit /b 1
+)
 call :resolve
 if not defined BIN (
     "%NVM_DIR%\bin\nvm.exe" auto --silent 2>nul

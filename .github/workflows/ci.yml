@@ -39,6 +39,11 @@ jobs:
       - name: Clippy (warnings as errors)
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: Security audit (RustSec advisories)
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
   # Tests run on all three OSes so Windows-specific code paths
   # (extract.rs 7z handling, #[cfg(unix)] symlinks, where.exe lookup)
   # and macOS get real regression coverage instead of only building.

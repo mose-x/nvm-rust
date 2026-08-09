@@ -300,16 +300,12 @@ pub fn current_version() -> Result<()> {
 pub fn deactivate() -> Result<()> {
     let nvm_dir = get_nvm_dir();
     let current_file = nvm_dir.join("current");
-    // Remove directly and treat NotFound as success instead of `exists()` +
-    // `remove_file`: the two-step form is a TOCTOU race (a concurrent
-    // `nvm use`/`uninstall` could remove `current` between the stat and the
-    // unlink, surfacing as a confusing error), and deactivation is a no-op
-    // when nothing is active anyway.
-    if let Err(e) = fs::remove_file(&current_file) {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            return Err(e.into());
-        }
-    }
+    // Write "none" marker instead of deleting the file. This prevents shims
+    // from auto-recovering (calling `nvm auto --silent`) after deactivate —
+    // the shim reads "none" and exits with an error instead of trying to
+    // find a version. `nvm use <version>` overwrites the marker, restoring
+    // normal operation.
+    crate::utils::atomic_write(&current_file, "none").ok();
     println!("{} {}", "✓".green().bold(), T("deactivated").green());
     Ok(())
 }
@@ -317,7 +313,12 @@ pub fn deactivate() -> Result<()> {
 pub fn unload() -> Result<()> {
     let nvm_dir = get_nvm_dir();
     // Remove shims directory so node/npm/etc. stop resolving via nvm.
-    let _ = crate::shim::remove_shims();
+    // Warn on error — if shims can't be removed (permission denied, Windows
+    // file lock), the user needs to know the shell rc was cleaned but shims
+    // are still active (inconsistent state).
+    if let Err(e) = crate::shim::remove_shims() {
+        eprintln!("{} nvm: failed to remove shims: {}", "⚠".yellow().bold(), e);
+    }
     // Clear current version file.
     let current_file = nvm_dir.join("current");
     let _ = fs::remove_file(&current_file);

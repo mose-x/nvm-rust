@@ -248,11 +248,15 @@ NVM_DIR="${NVM_DIR:-$HOME/.nvm.rust}"
 CMD=$(basename "$0")
 read_current() { cat "$NVM_DIR/current" 2>/dev/null | tr -d "[:space:]"; }
 CURRENT=$(read_current)
+if [ "$CURRENT" = "none" ]; then
+    echo "nvm: deactivated. Run 'nvm use <version>' to reactivate." >&2
+    exit 1
+fi
 if [ -z "$CURRENT" ] || [ ! -x "$NVM_DIR/$CURRENT/bin/$CMD" ]; then
     "$NVM_DIR/bin/nvm" auto --silent 2>/dev/null
     CURRENT=$(read_current)
 fi
-if [ -z "$CURRENT" ] || [ ! -x "$NVM_DIR/$CURRENT/bin/$CMD" ]; then
+if [ -z "$CURRENT" ] || [ "$CURRENT" = "none" ] || [ ! -x "$NVM_DIR/$CURRENT/bin/$CMD" ]; then
     echo "nvm: $CMD not found. Run 'nvm use <version>' or 'nvm install <version>'." >&2
     exit 1
 fi
