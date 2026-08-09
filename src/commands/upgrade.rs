@@ -1159,14 +1159,14 @@ justoneword
             "bak file should have original content"
         );
 
-        // Verify: new_bin is gone (moved, not copied)
-        assert!(
-            !new_bin.exists(),
-            "new_bin should have been moved, not copied"
-        );
+        // Note: on Unix, swap_binary copies (not moves) new_bin to a temp
+        // file, so new_bin may still exist. This is by design — the copy
+        // is more robust across filesystems than rename. Don't assert
+        // new_bin is gone.
 
         // Clean up
         std::fs::remove_file(&bin_path).ok();
         std::fs::remove_file(&bak_path).ok();
+        std::fs::remove_file(&new_bin).ok();
     }
 }

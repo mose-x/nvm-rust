@@ -202,15 +202,46 @@ mod tests {
     use std::env;
     use std::fs;
 
-    /// Acquire the ENV_TESTS_MUTEX so that env::set_var("NVM_DIR") doesn't
-    /// interfere with other tests running in parallel that also read NVM_DIR.
-    fn setup_temp_nvm_dir() -> (tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
-        let guard = crate::system::ENV_TESTS_MUTEX
+    /// Guard that restores NVM_DIR to its original value when dropped,
+    /// BEFORE releasing the ENV_TESTS_MUTEX. This prevents other tests
+    /// from seeing a stale NVM_DIR pointing to a deleted temp dir.
+    struct NvmDirGuard {
+        old_value: Option<String>,
+        _dir: tempfile::TempDir,
+        _mutex: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for NvmDirGuard {
+        fn drop(&mut self) {
+            // Restore NVM_DIR BEFORE the mutex is released (fields drop
+            // after Drop::drop returns, in declaration order: _mutex first,
+            // then _dir, then old_value — but NVM_DIR is already restored
+            // here, so other tests waiting on the mutex see the right value).
+            match &self.old_value {
+                Some(v) => env::set_var("NVM_DIR", v),
+                None => env::remove_var("NVM_DIR"),
+            }
+        }
+    }
+
+    impl NvmDirGuard {
+        fn path(&self) -> &std::path::Path {
+            self._dir.path()
+        }
+    }
+
+    fn setup_temp_nvm_dir() -> NvmDirGuard {
+        let mutex = crate::system::ENV_TESTS_MUTEX
             .lock()
             .expect("ENV_TESTS_MUTEX poisoned");
+        let old_value = env::var("NVM_DIR").ok();
         let dir = tempfile::tempdir().expect("tempdir");
         env::set_var("NVM_DIR", dir.path());
-        (dir, guard)
+        NvmDirGuard {
+            old_value,
+            _dir: dir,
+            _mutex: mutex,
+        }
     }
 
     fn create_fake_version(nvm_dir: &std::path::Path, version: &str) {
@@ -225,19 +256,19 @@ mod tests {
 
     #[test]
     fn test_list_installed_versions_empty() {
-        let (_dir, _guard) = setup_temp_nvm_dir();
+        let _guard = setup_temp_nvm_dir();
         let versions = list_installed_versions().expect("list");
         assert!(versions.is_empty());
     }
 
     #[test]
     fn test_list_installed_versions_finds_versions() {
-        let (dir, _guard) = setup_temp_nvm_dir();
-        create_fake_version(dir.path(), "v18.0.0");
-        create_fake_version(dir.path(), "v20.0.0");
+        let guard = setup_temp_nvm_dir();
+        create_fake_version(guard.path(), "v18.0.0");
+        create_fake_version(guard.path(), "v20.0.0");
         // Create a non-version dir that should be skipped
-        fs::create_dir(dir.path().join("cache")).ok();
-        fs::create_dir(dir.path().join("shims")).ok();
+        fs::create_dir(guard.path().join("cache")).ok();
+        fs::create_dir(guard.path().join("shims")).ok();
 
         let versions = list_installed_versions().expect("list");
         assert!(versions.contains(&"v18.0.0".to_string()));
@@ -248,10 +279,10 @@ mod tests {
 
     #[test]
     fn test_next_available_version_picks_highest() {
-        let (dir, _guard) = setup_temp_nvm_dir();
-        create_fake_version(dir.path(), "v18.0.0");
-        create_fake_version(dir.path(), "v20.0.0");
-        create_fake_version(dir.path(), "v19.0.0");
+        let guard = setup_temp_nvm_dir();
+        create_fake_version(guard.path(), "v18.0.0");
+        create_fake_version(guard.path(), "v20.0.0");
+        create_fake_version(guard.path(), "v19.0.0");
 
         let next = next_available_version("v20.0.0");
         assert_eq!(next, Some("v19.0.0".to_string())); // 19 > 18
@@ -262,8 +293,8 @@ mod tests {
 
     #[test]
     fn test_next_available_version_none_when_no_others() {
-        let (dir, _guard) = setup_temp_nvm_dir();
-        create_fake_version(dir.path(), "v20.0.0");
+        let guard = setup_temp_nvm_dir();
+        create_fake_version(guard.path(), "v20.0.0");
 
         let next = next_available_version("v20.0.0");
         assert_eq!(next, None);
@@ -271,20 +302,20 @@ mod tests {
 
     #[test]
     fn test_next_available_version_none_when_empty() {
-        let (_dir, _guard) = setup_temp_nvm_dir();
+        let _guard = setup_temp_nvm_dir();
         let next = next_available_version("v20.0.0");
         assert_eq!(next, None);
     }
 
     #[test]
     fn test_shims_exist_false_before_creation() {
-        let (_dir, _guard) = setup_temp_nvm_dir();
+        let _guard = setup_temp_nvm_dir();
         assert!(!shims_exist());
     }
 
     #[test]
     fn test_create_shims_creates_all_commands() {
-        let (_dir, _guard) = setup_temp_nvm_dir();
+        let _guard = setup_temp_nvm_dir();
         create_shims().expect("create shims");
 
         let shims_dir = get_nvm_dir().join("shims");
@@ -315,7 +346,7 @@ mod tests {
 
     #[test]
     fn test_shims_exist_true_after_creation() {
-        let (_dir, _guard) = setup_temp_nvm_dir();
+        let _guard = setup_temp_nvm_dir();
         create_shims().expect("create shims");
         assert!(shims_exist());
     }
