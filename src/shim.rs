@@ -22,11 +22,15 @@ read_current() {
     cat "$NVM_DIR/current" 2>/dev/null | tr -d '[:space:]'
 }
 CURRENT=$(read_current)
+if [ "$CURRENT" = "none" ]; then
+    echo "nvm: deactivated. Run 'nvm use <version>' to reactivate." >&2
+    exit 1
+fi
 if [ -z "$CURRENT" ] || [ ! -x "$NVM_DIR/$CURRENT/bin/$CMD" ]; then
     "$NVM_DIR/bin/nvm" auto --silent 2>/dev/null
     CURRENT=$(read_current)
 fi
-if [ -z "$CURRENT" ] || [ ! -x "$NVM_DIR/$CURRENT/bin/$CMD" ]; then
+if [ -z "$CURRENT" ] || [ "$CURRENT" = "none" ] || [ ! -x "$NVM_DIR/$CURRENT/bin/$CMD" ]; then
     echo "nvm: $CMD not found. Run 'nvm use <version>' or 'nvm install <version>'." >&2
     exit 1
 fi
@@ -43,6 +47,10 @@ set NVM_DIR=%USERPROFILE%\.nvm.rust
 set CMD=%~n0
 set CURRENT=
 if exist "%NVM_DIR%\current" for /f "delims=" %%a in (%NVM_DIR%\current) do set CURRENT=%%a
+if "%CURRENT%"=="none" (
+    echo nvm: deactivated. Run 'nvm use ^<version^>' to reactivate.
+    exit /b 1
+)
 call :resolve
 if not defined BIN (
     "%NVM_DIR%\bin\nvm.exe" auto --silent 2>nul
@@ -186,4 +194,186 @@ pub fn next_available_version(exclude: &str) -> Option<String> {
         .into_iter()
         .filter(|v| v != exclude)
         .max_by(|a, b| crate::utils::compare_semver(a, b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::fs;
+
+    /// Guard that restores NVM_DIR to its original value when dropped,
+    /// BEFORE releasing the ENV_TESTS_MUTEX. This prevents other tests
+    /// from seeing a stale NVM_DIR pointing to a deleted temp dir.
+    struct NvmDirGuard {
+        old_value: Option<String>,
+        _dir: tempfile::TempDir,
+        _mutex: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for NvmDirGuard {
+        fn drop(&mut self) {
+            // Restore NVM_DIR BEFORE the mutex is released (fields drop
+            // after Drop::drop returns, in declaration order: _mutex first,
+            // then _dir, then old_value — but NVM_DIR is already restored
+            // here, so other tests waiting on the mutex see the right value).
+            match &self.old_value {
+                Some(v) => env::set_var("NVM_DIR", v),
+                None => env::remove_var("NVM_DIR"),
+            }
+        }
+    }
+
+    impl NvmDirGuard {
+        fn path(&self) -> &std::path::Path {
+            self._dir.path()
+        }
+    }
+
+    fn setup_temp_nvm_dir() -> NvmDirGuard {
+        let mutex = crate::system::ENV_TESTS_MUTEX
+            .lock()
+            .expect("ENV_TESTS_MUTEX poisoned");
+        let old_value = env::var("NVM_DIR").ok();
+        let dir = tempfile::tempdir().expect("tempdir");
+        env::set_var("NVM_DIR", dir.path());
+        NvmDirGuard {
+            old_value,
+            _dir: dir,
+            _mutex: mutex,
+        }
+    }
+
+    fn create_fake_version(nvm_dir: &std::path::Path, version: &str) {
+        let version_dir = nvm_dir.join(version);
+        fs::create_dir_all(&version_dir).expect("create version dir");
+        let bin_dir = version_dir.join("bin");
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+        // Create a fake node binary
+        let node_name = if cfg!(windows) { "node.exe" } else { "node" };
+        fs::write(bin_dir.join(node_name), "fake").expect("create fake node");
+    }
+
+    #[test]
+    fn test_list_installed_versions_empty() {
+        let _guard = setup_temp_nvm_dir();
+        let versions = list_installed_versions().expect("list");
+        assert!(versions.is_empty());
+    }
+
+    #[test]
+    fn test_list_installed_versions_finds_versions() {
+        let guard = setup_temp_nvm_dir();
+        create_fake_version(guard.path(), "v18.0.0");
+        create_fake_version(guard.path(), "v20.0.0");
+        // Create a non-version dir that should be skipped
+        fs::create_dir(guard.path().join("cache")).ok();
+        fs::create_dir(guard.path().join("shims")).ok();
+
+        let versions = list_installed_versions().expect("list");
+        assert!(versions.contains(&"v18.0.0".to_string()));
+        assert!(versions.contains(&"v20.0.0".to_string()));
+        assert!(!versions.contains(&"cache".to_string()));
+        assert!(!versions.contains(&"shims".to_string()));
+    }
+
+    #[test]
+    fn test_next_available_version_picks_highest() {
+        let guard = setup_temp_nvm_dir();
+        create_fake_version(guard.path(), "v18.0.0");
+        create_fake_version(guard.path(), "v20.0.0");
+        create_fake_version(guard.path(), "v19.0.0");
+
+        let next = next_available_version("v20.0.0");
+        assert_eq!(next, Some("v19.0.0".to_string())); // 19 > 18
+
+        let next = next_available_version("v18.0.0");
+        assert_eq!(next, Some("v20.0.0".to_string())); // 20 > 19
+    }
+
+    #[test]
+    fn test_next_available_version_none_when_no_others() {
+        let guard = setup_temp_nvm_dir();
+        create_fake_version(guard.path(), "v20.0.0");
+
+        let next = next_available_version("v20.0.0");
+        assert_eq!(next, None);
+    }
+
+    #[test]
+    fn test_next_available_version_none_when_empty() {
+        let _guard = setup_temp_nvm_dir();
+        let next = next_available_version("v20.0.0");
+        assert_eq!(next, None);
+    }
+
+    #[test]
+    fn test_shims_exist_false_before_creation() {
+        let _guard = setup_temp_nvm_dir();
+        assert!(!shims_exist());
+    }
+
+    #[test]
+    fn test_create_shims_creates_all_commands() {
+        let _guard = setup_temp_nvm_dir();
+        create_shims().expect("create shims");
+
+        let shims_dir = get_nvm_dir().join("shims");
+        assert!(shims_dir.exists());
+
+        if cfg!(windows) {
+            for cmd in SHIM_COMMANDS {
+                assert!(
+                    shims_dir.join(format!("{}.cmd", cmd)).exists(),
+                    "shim {}.cmd should exist",
+                    cmd
+                );
+            }
+        } else {
+            for cmd in SHIM_COMMANDS {
+                let shim = shims_dir.join(cmd);
+                assert!(shim.exists(), "shim {} should exist", cmd);
+                // Check it's executable on Unix
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let perms = fs::metadata(&shim).unwrap().permissions().mode();
+                    assert!(perms & 0o111 != 0, "shim {} should be executable", cmd);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_shims_exist_true_after_creation() {
+        let _guard = setup_temp_nvm_dir();
+        create_shims().expect("create shims");
+        assert!(shims_exist());
+    }
+
+    #[test]
+    fn test_unix_shim_script_checks_for_none_marker() {
+        let script = unix_shim_script();
+        assert!(
+            script.contains("none"),
+            "Unix shim script must check for 'none' marker"
+        );
+        assert!(
+            script.contains("deactivated"),
+            "Unix shim script must print deactivation message"
+        );
+    }
+
+    #[test]
+    fn test_windows_shim_script_checks_for_none_marker() {
+        let script = windows_shim_script();
+        assert!(
+            script.contains("none"),
+            "Windows shim script must check for 'none' marker"
+        );
+        assert!(
+            script.contains("deactivated"),
+            "Windows shim script must print deactivation message"
+        );
+    }
 }
