@@ -1,4 +1,7 @@
 checking_lts = "正在检查最新 LTS 版本..."
+root_not_supported = "nvm 不支持以 root/sudo 方式运行——会导致配置文件属主变 root。"
+root_hint = "请直接执行: nvm <command>"
+root_force_hint = "强制以 root 运行（Docker/CI）: NVM_ALLOW_ROOT=1 nvm <command>"
 checking_latest = "正在检查最新版本..."
 checking_remote = "正在检查远程版本..."
 no_installed_versions = "还没有安装任何版本。"

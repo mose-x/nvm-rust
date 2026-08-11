@@ -1,4 +1,7 @@
 checking_lts = "Checking latest LTS version..."
+root_not_supported = "nvm must not run as root/sudo — this locks config files to root ownership."
+root_hint = "Run directly without sudo: nvm <command>"
+root_force_hint = "To override (Docker/CI): NVM_ALLOW_ROOT=1 nvm <command>"
 checking_latest = "Checking latest version..."
 checking_remote = "Checking remote versions..."
 no_installed_versions = "No installed versions yet."
