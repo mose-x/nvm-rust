@@ -35,7 +35,7 @@ ARCH="${4:?Missing arch (e.g. x64, arm64)}"
 OUTPUT_DIR="${5:-.}"
 
 if [ ! -f "$BINARY" ]; then
-    echo "[ERROR] Binary not found: $BINARY"
+    echo "[ERROR] Binary not found: $BINARY" >&2
     exit 1
 fi
 
@@ -53,7 +53,7 @@ STAGE="$PROJECT_ROOT/.stage-pack-$$"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
 
-echo "[INFO] Staging friendly-pack files..."
+echo "[INFO] Staging friendly-pack files..." >&2
 
 # Binary at root
 cp "$BINARY" "$STAGE/$(basename "$BINARY")"
@@ -73,11 +73,11 @@ cp "$PROJECT_ROOT/shell/nvm.sh" "$STAGE/shell/nvm.sh"
 cp "$PROJECT_ROOT/shell/nvm.fish" "$STAGE/shell/nvm.fish"
 cp "$PROJECT_ROOT/shell/nvm.psm1" "$STAGE/shell/nvm.psm1"
 
-echo "[INFO] Staged files:"
-( cd "$STAGE" && find . -maxdepth 3 -type f | sort )
+echo "[INFO] Staged files:" >&2
+( cd "$STAGE" && find . -maxdepth 3 -type f | sort ) >&2
 
 # --- Create archive ---
-echo "[INFO] Creating $ASSET_NAME..."
+echo "[INFO] Creating $ASSET_NAME..." >&2
 mkdir -p "$OUTPUT_DIR"
 
 if [ "$EXT" = "zip" ]; then
@@ -87,15 +87,15 @@ else
     tar -czf "$OUTPUT_DIR/$ASSET_NAME" -C "$STAGE" .
 fi
 
-echo "[OK] Created: $OUTPUT_DIR/$ASSET_NAME"
+echo "[OK] Created: $OUTPUT_DIR/$ASSET_NAME" >&2
 
 # --- Verify ---
-echo "[INFO] Archive contents:"
+echo "[INFO] Archive contents:" >&2
 if [ "$EXT" = "zip" ]; then
-    7z l "$OUTPUT_DIR/$ASSET_NAME" 2>/dev/null | tail -n +20 | head -n -2 | awk '{print $NF}' | sort || \
-      unzip -l "$OUTPUT_DIR/$ASSET_NAME" 2>/dev/null | tail -n +4 | head -n -2 | awk '{print $NF}' | sort
+    7z l "$OUTPUT_DIR/$ASSET_NAME" 2>/dev/null | tail -n +20 | head -n -2 | awk '{print $NF}' | sort >&2 || \
+      unzip -l "$OUTPUT_DIR/$ASSET_NAME" 2>/dev/null | tail -n +4 | head -n -2 | awk '{print $NF}' | sort >&2
 else
-    tar -tzf "$OUTPUT_DIR/$ASSET_NAME" | sort
+    tar -tzf "$OUTPUT_DIR/$ASSET_NAME" | sort >&2
 fi
 
 # --- Cleanup staging ---
