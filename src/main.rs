@@ -1,5 +1,8 @@
 use anyhow::Result;
 
+#[cfg(unix)]
+use colored::Colorize;
+
 mod cli;
 mod commands;
 mod completions;
@@ -17,6 +20,25 @@ use clap::Parser;
 use cli::{CacheAction, Cli, Commands};
 
 fn main() -> Result<()> {
+    #[cfg(unix)]
+    {
+        // SAFETY: geteuid() is a read-only system call with no preconditions.
+        let is_root = unsafe { libc::geteuid() } == 0;
+        let allow_root = std::env::var("NVM_ALLOW_ROOT")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        if is_root && !allow_root {
+            eprintln!(
+                "{} {}",
+                "⚠".yellow().bold(),
+                crate::i18n::T("root_not_supported")
+            );
+            eprintln!("  {}", crate::i18n::T("root_hint"));
+            eprintln!("  {}", crate::i18n::T("root_force_hint"));
+            std::process::exit(1);
+        }
+    }
+
     system::os_check();
     system::ensure_nvm_dir()?;
 
