@@ -57,7 +57,7 @@ fn extract_inner(archive_path: &Path, dest_dir: &Path, label: &str) -> Result<()
         // Pure-Rust 7z decompression — reads via path, no external 7z.exe.
         // Don't `File::open` here: on Windows an AV-locked tarball would
         // fail the open even though decompress_file would have worked.
-        sevenz_rust::decompress_file(archive_path, dest_dir).map_err(|e| {
+        sevenz_rust2::decompress_file(archive_path, dest_dir).map_err(|e| {
             anyhow::anyhow!(
                 "{}",
                 crate::i18n::format_t("extraction_failed", &[e.to_string()])
