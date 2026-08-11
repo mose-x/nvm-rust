@@ -89,13 +89,13 @@ fi
 
 echo "[OK] Created: $OUTPUT_DIR/$ASSET_NAME" >&2
 
-# --- Verify ---
+# --- Verify (informational only, never fails the script) ---
 echo "[INFO] Archive contents:" >&2
 if [ "$EXT" = "zip" ]; then
-    7z l "$OUTPUT_DIR/$ASSET_NAME" 2>/dev/null | tail -n +20 | head -n -2 | awk '{print $NF}' | sort >&2 || \
-      unzip -l "$OUTPUT_DIR/$ASSET_NAME" 2>/dev/null | tail -n +4 | head -n -2 | awk '{print $NF}' | sort >&2
+    { 7z l "$OUTPUT_DIR/$ASSET_NAME" 2>/dev/null | tail -n +20 | head -n -2 | awk '{print $NF}' | sort >&2 || \
+      unzip -l "$OUTPUT_DIR/$ASSET_NAME" 2>/dev/null | tail -n +4 | head -n -2 | awk '{print $NF}' | sort >&2; } || true
 else
-    tar -tzf "$OUTPUT_DIR/$ASSET_NAME" | sort >&2
+    { tar -tzf "$OUTPUT_DIR/$ASSET_NAME" | sort >&2; } || true
 fi
 
 # --- Cleanup staging ---
