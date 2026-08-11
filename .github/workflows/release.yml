@@ -28,17 +28,15 @@ jobs:
             archive: tar.gz
             asset_os: linux
             asset_arch: arm64
-          # Linux musl (Alpine / distroless — fully static)
+          # Linux musl x86_64 (Alpine / distroless — fully static)
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             archive: tar.gz
             asset_os: linux-musl
             asset_arch: x64
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-musl
-            archive: tar.gz
-            asset_os: linux-musl
-            asset_arch: arm64
+          # NOTE: linux-musl arm64 removed — musl.cc server is unreachable
+          # from GitHub Actions. Add back when a reliable toolchain source
+          # is found (e.g. cargo-zigbuild or self-hosted mirror).
           # macOS Intel + Apple Silicon
           - os: macos-latest
             target: x86_64-apple-darwin
