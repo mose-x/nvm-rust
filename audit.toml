@@ -1,0 +1,16 @@
+# cargo-audit configuration.
+# https://github.com/rustsec/rustsec/tree/main/cargo-audit
+
+[advisories]
+# These are unmaintained-crate warnings (not security vulnerabilities).
+# They come from transitive dependencies we can't directly control:
+#   - fxhash: via selectors -> scraper (HTML parser for version listing)
+#   - number_prefix: via indicatif (progress bar)
+# Replacing the parent crates (scraper, indicatif) would be a major refactor
+# with API breaking changes. These crates are unmaintained but NOT vulnerable.
+
+ignore = [
+    "RUSTSEC-2025-0057",  # fxhash unmaintained (via scraper)
+    "RUSTSEC-2025-0119",  # number_prefix unmaintained (via indicatif)
+    "RUSTSEC-2026-0246",  # sevenz-rust unmaintained (replaced by sevenz-rust2)
+]

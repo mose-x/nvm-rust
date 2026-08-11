@@ -35,7 +35,7 @@ flate2 = "1.0"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 # Pure-Rust 7z decompression for Windows Node.js packages (.7z),
 # so users don't need to install 7-Zip separately.
-sevenz-rust = "0.6"
+sevenz-rust2 = "0.21"
 # Progress bar
 indicatif = "0.17"
 # Error handling
