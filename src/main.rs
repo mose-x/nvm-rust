@@ -22,8 +22,12 @@ use cli::{CacheAction, Cli, Commands};
 fn main() -> Result<()> {
     #[cfg(unix)]
     {
-        let euid = unsafe { libc::geteuid() };
-        if euid == 0 && std::env::var("NVM_ALLOW_ROOT").as_deref() != Ok("1") {
+        // SAFETY: geteuid() is a read-only system call with no preconditions.
+        let is_root = unsafe { libc::geteuid() } == 0;
+        let allow_root = std::env::var("NVM_ALLOW_ROOT")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        if is_root && !allow_root {
             eprintln!(
                 "{} {}",
                 "⚠".yellow().bold(),

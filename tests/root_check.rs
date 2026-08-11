@@ -25,8 +25,8 @@ fn test_main_rs_checks_euid_zero() {
     let content = fs::read_to_string(&main_rs).expect("main.rs must exist");
 
     assert!(
-        content.contains("euid == 0"),
-        "main.rs must check euid == 0 for root detection"
+        content.contains("geteuid") && content.contains("== 0"),
+        "main.rs must check geteuid() == 0 for root detection"
     );
 }
 
