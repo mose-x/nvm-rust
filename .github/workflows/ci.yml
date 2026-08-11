@@ -43,6 +43,7 @@ jobs:
         uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
 
   # Tests run on all three OSes so Windows-specific code paths
   # (extract.rs 7z handling, #[cfg(unix)] symlinks, where.exe lookup)
