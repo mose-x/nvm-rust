@@ -80,6 +80,9 @@ echo "[INFO] Staged files:" >&2
 echo "[INFO] Creating $ASSET_NAME..." >&2
 mkdir -p "$OUTPUT_DIR"
 
+# Resolve OUTPUT_DIR to absolute path (so it survives cd "$STAGE")
+OUTPUT_DIR="$(cd "$OUTPUT_DIR" 2>/dev/null && pwd)" || OUTPUT_DIR="$PROJECT_ROOT"
+
 if [ "$EXT" = "zip" ]; then
     ( cd "$STAGE" && 7z a "$OUTPUT_DIR/$ASSET_NAME" . > /dev/null 2>&1 || \
       ( cd "$STAGE" && zip -r "$OUTPUT_DIR/$ASSET_NAME" . > /dev/null 2>&1 ) )
