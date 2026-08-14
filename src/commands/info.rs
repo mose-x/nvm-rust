@@ -1036,8 +1036,7 @@ fn probe_versions(node_bin: &Path) -> Option<[String; 4]> {
         "}catch(e){return 'none'}",
         "}",
         "return [process.version,",
-        "(process.versions.npm||'none'),",
-        "v('yarn'),v('pnpm')].join('|')",
+        "v('npm'),v('yarn'),v('pnpm')].join('|')",
         "}()",
         ")"
     );
