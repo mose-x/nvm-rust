@@ -269,6 +269,12 @@ pub fn upgrade(
         );
     }
 
+    // Regenerate shell completion scripts if they're already installed.
+    // Keeps completions in sync with the new nvm version (new commands,
+    // updated descriptions, fixed bash _init_completion fallback, etc.).
+    // Only overwrites files that already exist — never creates new ones.
+    let _ = crate::completions::regenerate_completions_if_installed();
+
     println!(
         "{}  {} ({} → {})",
         "✓".green().bold(),

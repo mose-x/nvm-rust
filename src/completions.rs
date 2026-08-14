@@ -159,7 +159,16 @@ fn build_bash_script() -> String {
     r#"# nvm bash completion
 _nvm_completion() {
     local cur prev words cword
-    _init_completion -n=: || return
+    # Use _init_completion from bash-completion if available; fall back to
+    # manual COMP_WORDS parsing so the script works without bash-completion.
+    if declare -f _init_completion >/dev/null 2>&1; then
+        _init_completion -n=: || return
+    else
+        cur="${COMP_WORDS[COMP_CWORD]}"
+        prev="${COMP_WORDS[COMP_CWORD-1]}"
+        words=("${COMP_WORDS[@]}")
+        cword=$COMP_CWORD
+    fi
 
     local commands="install uninstall remove use list ls ls-remote remote current dir which run exec alias unalias mirror auto deactivate unload install-npm install-yarn install-pnpm reinstall-packages version version-remote cache language lang proxy completion corepack migrate upgrade help"
     local options="--lts --latest --lts-newer --lts-old --offline --source --no-gpg-verify --reinstall-packages-from --latest-npm --latest-yarn --latest-pnpm --install-if-missing --save --use-on-cd --filter --sort --page --check --force --from-gitee --from-mirror --rollback --silent"
