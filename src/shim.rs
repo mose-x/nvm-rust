@@ -28,6 +28,15 @@ if [ "$CURRENT" = "none" ]; then
     echo "nvm: deactivated. Run 'nvm use <version>' to reactivate." >&2
     exit 1
 fi
+# Reject path traversal: a poisoned `current` file could contain `../../tmp/evil`.
+# validate_version_name() guards the write path, but the shim reads the file
+# directly, so this is defense-in-depth.
+case "$CURRENT" in
+    *..*|*/*|*\\*)
+        echo "nvm: corrupted current file. Run 'nvm use <version>' to fix." >&2
+        exit 1
+        ;;
+esac
 if [ -z "$CURRENT" ] || [ ! -x "$NVM_DIR/$CURRENT/bin/$CMD" ]; then
     "$NVM_DIR/bin/nvm" auto --silent 2>/dev/null
     CURRENT=$(read_current)
@@ -70,8 +79,8 @@ goto :eof
 :resolve
 set BIN=
 if not "%CURRENT%"=="" (
-    if exist "%NVM_DIR%\%CURRENT%\bin\%CMD%.exe" set BIN=%NVM_DIR%\%CURRENT%\bin\%CMD%.exe
-    if not defined BIN if exist "%NVM_DIR%\%CURRENT%\bin\%CMD%.cmd" set BIN=%NVM_DIR%\%CURRENT%\bin\%CMD%.cmd
+    if exist "%NVM_DIR%\%CURRENT%\bin\%CMD%.exe" set "BIN=%NVM_DIR%\%CURRENT%\bin\%CMD%.exe"
+    if not defined BIN if exist "%NVM_DIR%\%CURRENT%\bin\%CMD%.cmd" set "BIN=%NVM_DIR%\%CURRENT%\bin\%CMD%.cmd"
 )
 goto :eof
 "#
@@ -389,6 +398,36 @@ mod tests {
         assert!(
             script.contains("deactivated"),
             "Windows shim script must print deactivation message"
+        );
+    }
+
+    #[test]
+    fn test_unix_shim_script_rejects_path_traversal() {
+        // P1-12: the Unix shim must reject ".." and "/" in CURRENT
+        // to prevent path traversal via a poisoned current file.
+        let script = unix_shim_script();
+        assert!(
+            script.contains("*..*"),
+            "Unix shim must reject '..' in CURRENT"
+        );
+        assert!(
+            script.contains("corrupted current file"),
+            "Unix shim must print a clear error when CURRENT is invalid"
+        );
+    }
+
+    #[test]
+    fn test_windows_shim_script_uses_quoted_set() {
+        // P1-13: the Windows shim must use `set "BIN=..."` (quoted)
+        // to prevent cmd.exe metacharacter injection via %CURRENT%.
+        let script = windows_shim_script();
+        assert!(
+            script.contains("set \"BIN="),
+            "Windows shim must use quoted set syntax to prevent batch injection"
+        );
+        assert!(
+            !script.contains("set BIN=%NVM_DIR%"),
+            "Windows shim must NOT use unquoted set BIN="
         );
     }
 }

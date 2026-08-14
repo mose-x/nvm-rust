@@ -183,10 +183,22 @@ pub(crate) fn get_current_version() -> Result<Option<String>> {
             // Treat it as no active version so callers don't try to use
             // "none" as a version directory path.
             if version.is_empty() || version == "none" {
-                Ok(None)
-            } else {
-                Ok(Some(version.to_string()))
+                return Ok(None);
             }
+            // Re-validate: the `current` file could have been hand-edited or
+            // poisoned by a malicious process. Without this check, the raw
+            // content flows into `nvm_dir.join(version)` and `Command::new()`,
+            // enabling path traversal (`../../tmp/evil`) and — on Windows —
+            // cmd.exe metacharacter injection. Graceful degradation: treat
+            // invalid content as "no current version" so callers don't crash.
+            if crate::utils::validate_version_name(version).is_err() {
+                eprintln!(
+                    "{} current file contains an invalid version — ignoring. Run 'nvm use <version>' to set a valid one.",
+                    "⚠".yellow().bold()
+                );
+                return Ok(None);
+            }
+            Ok(Some(version.to_string()))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.into()),
@@ -194,5 +206,13 @@ pub(crate) fn get_current_version() -> Result<Option<String>> {
 }
 
 pub(crate) fn get_base_url(config: &Config) -> &str {
-    config.mirror.as_deref().unwrap_or(URI)
+    // Re-validate mirror scheme: `normalize_mirror_url()` is only called on
+    // the write path (`nvm mirror` command). A hand-edited `config.json` can
+    // set `http://`, bypassing HTTPS enforcement and enabling MITM attacks
+    // on tarball + checksum downloads. Reject non-https mirrors and fall
+    // back to the official URI.
+    match config.mirror.as_deref() {
+        Some(m) if m.starts_with("https://") => m,
+        _ => URI,
+    }
 }

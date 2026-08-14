@@ -322,6 +322,20 @@ pub fn validate_version_name(version: &str) -> Result<()> {
             format_t("invalid_version_name", &[version.to_string()])
         );
     }
+    // Windows: reject cmd.exe metacharacters that could be used for batch
+    // injection via the unquoted `%CURRENT%` expansion in the Windows shim
+    // script (`set BIN=%NVM_DIR%\%CURRENT%\...`). On Unix the shim uses
+    // `"$CURRENT"` (double-quoted), so these are harmless.
+    #[cfg(windows)]
+    if version
+        .chars()
+        .any(|c| matches!(c, '&' | '|' | ';' | '(' | ')' | '%' | '^' | '<' | '>' | '"'))
+    {
+        anyhow::bail!(
+            "{}",
+            format_t("invalid_version_name", &[version.to_string()])
+        );
+    }
     Ok(())
 }
 
@@ -781,6 +795,25 @@ mod tests {
         assert!(validate_version_name("v1\0").is_err());
         assert!(validate_version_name("v1.0.0 ../etc").is_err());
         assert!(validate_version_name("").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn validate_version_name_rejects_cmd_metacharacters() {
+        // P1-13: cmd.exe metacharacters must be rejected to prevent
+        // batch injection via the Windows shim's %CURRENT% expansion.
+        assert!(validate_version_name("v20.0.0&calc").is_err());
+        assert!(validate_version_name("v20.0.0|evil").is_err());
+        assert!(validate_version_name("v20.0.0;cmd").is_err());
+        assert!(validate_version_name("v20.0.0(erlang").is_err());
+        assert!(validate_version_name("v20.0.0%PATH%").is_err());
+        assert!(validate_version_name("v20.0.0^echo").is_err());
+        assert!(validate_version_name("v20.0.0<x").is_err());
+        assert!(validate_version_name("v20.0.0>x").is_err());
+        assert!(validate_version_name("v20.0.0\"x").is_err());
+        // Normal version names should still pass.
+        assert!(validate_version_name("v20.0.0").is_ok());
+        assert!(validate_version_name("iojs-v3.3.1").is_ok());
     }
 
     #[test]
