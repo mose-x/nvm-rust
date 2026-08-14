@@ -1209,6 +1209,22 @@ fn install_latest_pnpm_via_corepack(version: &str) -> Result<()> {
         ))?;
 
     if status.success() {
+        // Pre-trigger corepack's lazy download so the user isn't prompted
+        // ("Corepack is about to download ... [Y/n]") on first `pnpm` use.
+        // Pipe "Y\n" to stdin to auto-confirm.
+        if let Ok(mut child) = Command::new(&corepack_path)
+            .args(["pnpm", "--version"])
+            .env("PATH", &path_env)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            if let Some(stdin) = child.stdin.as_mut() {
+                let _ = stdin.write_all(b"Y\n");
+            }
+            let _ = child.wait();
+        }
         println!("    {} {}", "✓".green().bold(), T("pnpm_upgraded").green());
         return Ok(());
     }
