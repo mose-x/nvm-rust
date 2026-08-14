@@ -23,6 +23,15 @@ fn short_version_flag() {
 }
 
 #[test]
+fn lowercase_v_flag() {
+    let out = run(&["-v"]);
+    assert!(out.status.success(), "-v should exit 0");
+    let s = stdout(&out);
+    let expected = env!("CARGO_PKG_VERSION");
+    assert!(s.contains(expected), "expected {expected} in output: {s}");
+}
+
+#[test]
 fn version_subcommand_exits_zero() {
     // `nvm version` shows current node/npm info; with no node installed it
     // should still exit 0 (it prints a status, not an error).
