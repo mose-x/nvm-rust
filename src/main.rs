@@ -48,6 +48,7 @@ fn main() -> Result<()> {
         match action {
             cli::HelpAction::Root => cli::print_root_help(),
             cli::HelpAction::Command(name) => cli::print_command_help(&name),
+            cli::HelpAction::Version => println!("nvm {}", env!("CARGO_PKG_VERSION")),
         }
         return Ok(());
     }

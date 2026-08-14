@@ -77,6 +77,7 @@ pub struct Cli {
 pub enum HelpAction {
     Root,
     Command(String),
+    Version,
 }
 
 /// Commands we recognize for help interception (incl. aliases).
@@ -114,6 +115,7 @@ const KNOWN_COMMANDS: &[&str] = &[
     "corepack",
     "migrate",
     "upgrade",
+    "update",
 ];
 
 /// Detect help requests (`-h`, `--help`, or `help` subcommand) so we can render
@@ -128,6 +130,11 @@ pub fn intercept_help(argv: &[String]) -> Option<HelpAction> {
     // `nvm -h` / `nvm --help`  (no command)
     if argv[0] == "-h" || argv[0] == "--help" {
         return Some(HelpAction::Root);
+    }
+
+    // `nvm -v` → nvm version (same as -V, for convenience)
+    if argv[0] == "-v" {
+        return Some(HelpAction::Version);
     }
 
     // `nvm help`            -> root help
@@ -361,6 +368,7 @@ pub enum Commands {
         source: String,
     },
     /// Upgrade nvm itself to the latest GitHub release
+    #[clap(alias = "update")]
     Upgrade {
         /// Only check for a newer version, do not upgrade
         #[clap(long)]
@@ -513,6 +521,7 @@ pub fn print_root_help() {
             ("corepack", "help_corepack_about"),
             ("migrate", "help_migrate_about"),
             ("upgrade", "help_upgrade_about"),
+            ("update", "help_upgrade_about"),
             ("help", "help_root_print_help"),
         ],
     );
@@ -734,7 +743,7 @@ pub fn print_command_help(cmd: &str) {
             &[],
             &[],
         ),
-        "upgrade" => {
+        "update" | "upgrade" => {
             render_cmd_help(
                 "help_upgrade_about",
                 "help_upgrade_usage",
@@ -801,6 +810,14 @@ mod tests {
     fn bare_help_flags_trigger_root_help() {
         assert!(is_root(intercept_help(&argv(&["-h"])).as_ref()));
         assert!(is_root(intercept_help(&argv(&["--help"])).as_ref()));
+    }
+
+    #[test]
+    fn lowercase_v_triggers_version() {
+        assert!(matches!(
+            intercept_help(&argv(&["-v"])),
+            Some(HelpAction::Version)
+        ));
     }
 
     #[test]
