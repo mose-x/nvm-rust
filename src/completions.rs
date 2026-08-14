@@ -444,7 +444,14 @@ fn zsh_completions() -> anyhow::Result<()> {
             lines.push("autoload -Uz _nvm".to_string());
             lines
         },
-    )
+    )?;
+    println!();
+    println!(
+        "  {} {}",
+        crate::i18n::T("tip_label").dimmed(),
+        crate::i18n::T("completion_cache_tip").dimmed()
+    );
+    Ok(())
 }
 
 fn build_fish_script() -> String {
