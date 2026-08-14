@@ -4,7 +4,7 @@
 //! They do not touch `NVM_DIR`, so no isolation is needed.
 
 mod common;
-use common::{run, stdout};
+use common::{combined_output, run, stdout};
 
 #[test]
 fn no_args_prints_help_and_exits_zero() {
@@ -52,5 +52,39 @@ fn help_subcommand_for_install_shows_install_flags() {
     assert!(
         s.contains("--lts") || s.contains("--latest") || s.contains("--source"),
         "install help missing flags: {s}"
+    );
+}
+
+#[test]
+fn unknown_command_prints_i18n_error() {
+    let out = run(&["foo"]);
+    assert!(
+        !out.status.success(),
+        "unknown command should exit non-zero"
+    );
+    let s = combined_output(&out);
+    assert!(
+        s.contains("nvm help") || s.contains("Unknown") || s.contains("未知"),
+        "should mention 'nvm help' or 'unknown' in error: {s}"
+    );
+    // Should NOT print clap's English "error:" prefix
+    assert!(
+        !s.contains("error: The subcommand"),
+        "should not print clap's English error: {s}"
+    );
+}
+
+#[test]
+fn unknown_flag_prints_i18n_error() {
+    let out = run(&["-p"]);
+    assert!(!out.status.success(), "unknown flag should exit non-zero");
+    let s = combined_output(&out);
+    assert!(
+        s.contains("nvm help") || s.contains("Unknown") || s.contains("未知"),
+        "should mention 'nvm help' or 'unknown' in error: {s}"
+    );
+    assert!(
+        !s.contains("error: Found argument"),
+        "should not print clap's English error: {s}"
     );
 }

@@ -548,7 +548,7 @@ fn run_post_install_hooks(
     }
     if cfg.latest_pnpm {
         println!();
-        install_latest_package_inner(&target.target_version, "pnpm")?;
+        install_latest_pnpm_via_corepack(&target.target_version)?;
     }
 
     // --reinstall-packages-from after install
@@ -1167,9 +1167,64 @@ pub fn install_latest_yarn(version: Option<&str>) -> Result<()> {
     install_latest_package_inner(&resolved, "yarn")
 }
 
+/// Install the latest pnpm for a version via corepack.
+///
+/// Uses `corepack prepare pnpm@latest --activate` instead of
+/// `npm install -g pnpm@latest` to avoid pnpm 10+'s
+/// `@pnpm/exe` native binary verification error. Falls back to
+/// `install_latest_package_inner` (npm install) if corepack is not
+/// bundled with the version or `corepack prepare` fails.
+fn install_latest_pnpm_via_corepack(version: &str) -> Result<()> {
+    let nvm_dir = get_nvm_dir();
+    let resolved = version.to_string();
+    let version_dir = nvm_dir.join(&resolved);
+    if !version_dir.exists() {
+        anyhow::bail!(
+            "{}",
+            format_t("not_installed", std::slice::from_ref(&resolved))
+        );
+    }
+    let bin_dir = version_bin_dir(&version_dir);
+    let corepack_path = exe_path(&bin_dir, "corepack");
+    if !corepack_path.exists() {
+        return install_latest_package_inner(version, "pnpm");
+    }
+
+    println!(
+        "  {} {}",
+        "▶".cyan().bold(),
+        format_t("upgrading_pnpm", std::slice::from_ref(&resolved)).cyan()
+    );
+
+    let path_env = prepend_to_path(&bin_dir);
+    let _ = crate::corepack::corepack_enable(Some(version));
+
+    let status = Command::new(&corepack_path)
+        .args(["prepare", "pnpm@latest", "--activate"])
+        .env("PATH", &path_env)
+        .status()
+        .context(format_t(
+            "package_upgrade_spawn_failed",
+            &["pnpm".to_string()],
+        ))?;
+
+    if status.success() {
+        println!("    {} {}", "✓".green().bold(), T("pnpm_upgraded").green());
+        return Ok(());
+    }
+
+    // Fallback to npm install if corepack prepare fails
+    eprintln!(
+        "  {} {}",
+        "↻".yellow().bold(),
+        T("pnpm_corepack_fallback").yellow()
+    );
+    install_latest_package_inner(version, "pnpm")
+}
+
 pub fn install_latest_pnpm(version: Option<&str>) -> Result<()> {
     let resolved = resolve_install_target(version)?;
-    install_latest_package_inner(&resolved, "pnpm")
+    install_latest_pnpm_via_corepack(&resolved)
 }
 
 pub fn reinstall_packages(from_version: &str) -> Result<()> {

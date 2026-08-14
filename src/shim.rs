@@ -3,12 +3,14 @@ use std::fs;
 
 use crate::system::get_nvm_dir;
 
-/// Commands that get a shim. These are the binaries that ship with every
-/// Node.js distribution (bin/ directory). yarn/pnpm are handled by corepack
-/// — they live inside the version's bin/ after `nvm corepack enable`, so the
-/// same shim script covers them automatically (basename "$0" resolves to
-/// "yarn" or "pnpm" at runtime).
-pub const SHIM_COMMANDS: &[&str] = &["node", "npm", "npx", "corepack"];
+/// Commands that get a shim. The first four ship with every Node.js
+/// distribution (bin/ directory). The remaining four are corepack-managed
+/// tools that appear in bin/ after `nvm corepack enable`. All are covered
+/// by the same shim script via `basename "$0"` at runtime, so they must
+/// be listed here to ensure the shim files are actually created on disk.
+pub const SHIM_COMMANDS: &[&str] = &[
+    "node", "npm", "npx", "corepack", "pnpm", "pnpx", "yarn", "yarnpkg",
+];
 
 /// The Unix shim script. Self-contained — does not depend on the nvm binary
 /// having "shim mode". Reads `current` file, execs the real binary.
@@ -349,6 +351,19 @@ mod tests {
         let _guard = setup_temp_nvm_dir();
         create_shims().expect("create shims");
         assert!(shims_exist());
+    }
+
+    #[test]
+    fn test_shim_commands_includes_corepack_tools() {
+        // Regression: pnpm/pnpx/yarn/yarnpkg were missing from SHIM_COMMANDS,
+        // causing "command not found" even after `nvm corepack enable`.
+        for cmd in &["pnpm", "pnpx", "yarn", "yarnpkg"] {
+            assert!(
+                SHIM_COMMANDS.contains(cmd),
+                "SHIM_COMMANDS must include '{}'",
+                cmd
+            );
+        }
     }
 
     #[test]

@@ -1,6 +1,5 @@
 use anyhow::Result;
 
-#[cfg(unix)]
 use colored::Colorize;
 
 mod cli;
@@ -53,7 +52,34 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    match Cli::parse().command {
+    // Use try_parse so we can intercept clap's English error messages and
+    // render i18n-aware ones for the most common error kinds (unknown
+    // command, unknown flag). Other errors (missing required args, invalid
+    // values) still fall through to clap's default handler.
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            use clap::error::ErrorKind;
+            match e.kind() {
+                ErrorKind::InvalidSubcommand | ErrorKind::UnknownArgument => {
+                    eprintln!(
+                        "{} {}",
+                        "⚠".yellow().bold(),
+                        crate::i18n::T("error_invalid_command")
+                    );
+                    eprintln!(
+                        "  {} {}",
+                        crate::i18n::T("tip_label"),
+                        crate::i18n::T("error_run_help")
+                    );
+                    std::process::exit(2);
+                }
+                _ => e.exit(),
+            }
+        }
+    };
+
+    match cli.command {
         None => {
             cli::print_help();
             Ok(())
