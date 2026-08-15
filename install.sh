@@ -475,4 +475,72 @@ main() {
     fi
 }
 
+uninstall_self() {
+    echo ""
+    warn "This will remove nvm itself (binary, nvm.sh, shims, shell config)."
+    info "Node versions and config will be preserved at $HOME/.nvm.rust/"
+    echo ""
+    read -p "Continue? [y/N] " confirm
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        echo "Cancelled."
+        exit 0
+    fi
+
+    local nvm_dir="$HOME/.nvm.rust"
+    rm -f "${nvm_dir}/bin/nvm" "${nvm_dir}/bin/nvm.sh" 2>/dev/null || true
+    rm -rf "${nvm_dir}/shims" 2>/dev/null || true
+    rm -f "${nvm_dir}/current" 2>/dev/null || true
+    rm -f "$BIN_LINK" 2>/dev/null || true
+    clean_shell_config
+
+    echo ""
+    success "nvm uninstalled. Node versions preserved at $nvm_dir/"
+    info "Reinstall: curl -fsSL https://raw.githubusercontent.com/mose-x/nvm-rust/main/install.sh | bash"
+}
+
+uninstall_all() {
+    echo ""
+    warn "This will remove nvm AND ALL installed Node versions."
+    info "Everything in $HOME/.nvm.rust/ will be deleted."
+    echo ""
+    read -p "Continue? [y/N] " confirm
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        echo "Cancelled."
+        exit 0
+    fi
+
+    local nvm_dir="$HOME/.nvm.rust"
+    rm -rf "$nvm_dir" 2>/dev/null || true
+    rm -f "$BIN_LINK" 2>/dev/null || true
+    clean_shell_config
+
+    echo ""
+    success "nvm and all Node versions uninstalled."
+}
+
+clean_shell_config() {
+    local profile=""
+    local current_shell="${SHELL:-}"
+    case "$(basename "$current_shell")" in
+        zsh)  profile="$HOME/.zshrc" ;;
+        fish) profile="$HOME/.config/fish/config.fish" ;;
+        bash) if [ "$(uname -s)" = "Darwin" ]; then profile="$HOME/.bash_profile"; else profile="$HOME/.bashrc"; fi ;;
+        *)    profile="$HOME/.profile" ;;
+    esac
+    [ -f "$profile" ] || return 0
+    cp "$profile" "${profile}.bak" 2>/dev/null || true
+    grep -v "nvm.rust\|nvm.sh\|NVM_HOME" "$profile" > "${profile}.tmp" 2>/dev/null && mv "${profile}.tmp" "$profile" || rm -f "${profile}.tmp"
+    info "Shell config cleaned: $profile"
+}
+
+# --uninstall support
+if [ "${1:-}" = "--uninstall" ]; then
+    if [ "${2:-}" = "--self" ]; then
+        uninstall_self
+    else
+        uninstall_all
+    fi
+    exit 0
+fi
+
 main "$@"

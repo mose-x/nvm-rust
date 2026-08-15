@@ -255,6 +255,12 @@ pub enum Commands {
         /// Uninstall the latest installed version
         #[clap(long)]
         latest: bool,
+        /// Remove nvm itself, keep Node versions and config
+        #[clap(long = "self", name = "self")]
+        self_uninstall: bool,
+        /// Remove nvm and ALL installed Node versions
+        #[clap(long)]
+        all: bool,
     },
     /// Show the currently active version
     Current,
@@ -583,7 +589,12 @@ pub fn print_command_help(cmd: &str) {
             "help_uninstall_about",
             "help_uninstall_usage",
             &[("[VERSION]", "help_uninstall_version_arg")],
-            &[("    --lts", "help_uninstall_lts")],
+            &[
+                ("    --lts", "help_uninstall_lts"),
+                ("    --latest", "help_uninstall_latest"),
+                ("    --all", "help_uninstall_all"),
+                ("    --self", "help_uninstall_self"),
+            ],
             &[],
         ),
         "current" => render_cmd_help("help_current_about", "help_current_usage", &[], &[], &[]),

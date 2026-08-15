@@ -19,6 +19,17 @@ class NvmRust < Formula
     system "cargo", "install", *std_cargo_args
   end
 
+  def caveats
+    <<~EOS
+      Before `brew uninstall nvm-rust`, run:
+        nvm uninstall --self
+      to clean up shell configuration (PATH entries in ~/.zshrc).
+
+      For full removal (nvm + all Node versions):
+        nvm uninstall --all
+    EOS
+  end
+
   test do
     assert_match "nvm", shell_output("#{bin}/nvm --version")
   end
