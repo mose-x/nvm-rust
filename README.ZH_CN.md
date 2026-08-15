@@ -24,6 +24,8 @@ nvm-rs 是一个用 Rust 编写、高性能且功能丰富的 Node.js 版本管�
 - **源码编译** — `nvm install -s`（从源码包编译安装）
 - **复合安装选项** — `--latest-npm` 和 `--reinstall-packages-from=<ver>`
 - **LTS 卸载** — `nvm uninstall --lts`
+- **自卸载** — `nvm uninstall --self`（仅删 nvm，保留 Node）/ `nvm uninstall --all`（全部删除）
+- **pnpm 走 corepack** — `nvm install-pnpm` 通过 corepack 安装（避免 pnpm 10+ @pnpm/exe 报错）
 - **国际化** — `nvm language <en|cn>`（英文 / 中文，通过 `locales/*.toml` 可插拔扩展）
 - **代理管理** — `nvm proxy on/off`（使用系统代理环境变量）
 - **Shell 补全** — `nvm completion <bash|zsh|fish|powershell>`
@@ -261,8 +263,21 @@ nvm current         # 当前使用版本
 ### 卸载
 
 ```bash
-nvm uninstall 18
-nvm remove 18        # uninstall 的别名
+nvm uninstall 18           # 卸载指定版本
+nvm remove 18              # uninstall 的别名
+nvm uninstall --lts        # 卸载最新 LTS 版本
+nvm uninstall --latest     # 卸载最新已安装版本
+nvm uninstall --self       # 仅卸载 nvm（保留 Node 版本和配置）
+nvm uninstall --all        # 卸载 nvm + 所有 Node 版本 + 配置
+```
+
+`--self` 和 `--all` 需要确认（y/N）。
+
+通过安装脚本卸载：
+
+```bash
+./install.sh --uninstall           # 同 --all
+./install.sh --uninstall --self    # 同 --self
 ```
 
 ### NVM 目录
@@ -554,6 +569,9 @@ nvm corepack disable          # 禁用当前版本
 | `nvm install [ver] --reinstall-packages-from=<ver>` | 安装后迁移全局包 |
 | `nvm uninstall <ver>` | 卸载已安装的版本 |
 | `nvm uninstall --lts` | 卸载最新 LTS 版本 |
+| `nvm uninstall --latest` | 卸载最新已安装版本 |
+| `nvm uninstall --self` | 仅卸载 nvm（保留 Node 版本和配置） |
+| `nvm uninstall --all` | 卸载 nvm + 所有 Node 版本 + 配置 |
 | `nvm remove <ver>` | uninstall 的别名 |
 | `nvm dir` | 显示 NVM 安装路径和 .nvm.rust 路径 |
 | `nvm use <ver>` | 切换到指定版本 |
@@ -582,10 +600,12 @@ nvm corepack disable          # 禁用当前版本
 | `nvm install-npm [ver]` | 升级 npm 到最新 |
 | `nvm reinstall-packages <ver>` | 迁移全局包 |
 | `nvm upgrade [--check\|--force\|--rollback]` | 从 GitHub Release 自更新 nvm |
+| `nvm update` | `nvm upgrade` 的别名 |
 | `nvm upgrade --from-gitee` | 走 Gitee 镜像自更新 |
 | `nvm upgrade --from-mirror <url>` | 走自定义 GitHub 文件镜像自更新 |
 | `nvm version` | 显示当前 node/npm |
 | `nvm version-remote` | 显示最近的远程版本 |
+| `nvm -v` / `nvm -V` / `nvm --version` | 显示 nvm 版本 |
 
 ## 支持的平台
 

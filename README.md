@@ -26,6 +26,8 @@ A fast, feature-rich Node.js version manager written in Rust — a Rust-native r
 - **Source compile** — `nvm install -s` (compile from source tarball)
 - **Compound install flags** — `--latest-npm` and `--reinstall-packages-from=<ver>`
 - **LTS uninstall** — `nvm uninstall --lts`
+- **Self-uninstall** — `nvm uninstall --self` (remove nvm, keep Node) / `nvm uninstall --all` (remove everything)
+- **pnpm via corepack** — `nvm install-pnpm` uses corepack (avoids pnpm 10+ @pnpm/exe errors)
 - **i18n** — `nvm language <en|cn>` (English / 中文, pluggable via `locales/*.toml`)
 - **Proxy management** — `nvm proxy on/off` (leverages system proxy env vars)
 - **Shell completions** — `nvm completion <bash|zsh|fish|powershell>`
@@ -266,8 +268,21 @@ nvm current         # show current version
 ### Uninstall
 
 ```bash
-nvm uninstall 18
-nvm remove 18        # alias for uninstall
+nvm uninstall 18           # remove a specific version
+nvm remove 18              # alias for uninstall
+nvm uninstall --lts        # remove latest LTS
+nvm uninstall --latest     # remove latest installed
+nvm uninstall --self       # remove nvm only (keep Node versions & config)
+nvm uninstall --all        # remove nvm + ALL Node versions + config
+```
+
+`--self` and `--all` require `y/N` confirmation.
+
+Via install script:
+
+```bash
+./install.sh --uninstall           # same as --all
+./install.sh --uninstall --self    # same as --self
 ```
 
 ### NVM directories
@@ -568,6 +583,9 @@ Config files inside `NVM_DIR`:
 | `nvm install [ver] --reinstall-packages-from=<ver>` | Migrate global packages after install |
 | `nvm uninstall <ver>` | Remove an installed version |
 | `nvm uninstall --lts` | Uninstall the latest LTS version |
+| `nvm uninstall --latest` | Uninstall the latest installed version |
+| `nvm uninstall --self` | Remove nvm only (keep Node versions & config) |
+| `nvm uninstall --all` | Remove nvm + ALL Node versions + config |
 | `nvm remove <ver>` | Alias for uninstall |
 | `nvm dir` | Show NVM installation and .nvm.rust paths |
 | `nvm use <ver>` | Switch to a version |
@@ -596,10 +614,12 @@ Config files inside `NVM_DIR`:
 | `nvm install-npm [ver]` | Upgrade npm to latest |
 | `nvm reinstall-packages <ver>` | Migrate global packages |
 | `nvm upgrade [--check\|--force\|--rollback]` | Self-update nvm from latest GitHub release |
+| `nvm update` | Alias for `nvm upgrade` |
 | `nvm upgrade --from-gitee` | Self-update via Gitee mirror |
 | `nvm upgrade --from-mirror <url>` | Self-update via custom GitHub-file mirror |
 | `nvm version` | Show current node/npm |
 | `nvm version-remote` | Show recent remote versions |
+| `nvm -v` / `nvm -V` / `nvm --version` | Show nvm version |
 
 ## Supported Platforms
 
