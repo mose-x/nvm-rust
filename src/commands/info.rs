@@ -306,7 +306,13 @@ pub fn deactivate() -> Result<()> {
     // the shim reads "none" and exits with an error instead of trying to
     // find a version. `nvm use <version>` overwrites the marker, restoring
     // normal operation.
-    crate::utils::atomic_write(&current_file, "none").ok();
+    if let Err(e) = crate::utils::atomic_write(&current_file, "none") {
+        eprintln!(
+            "{} failed to write 'none' marker: {} — shims may still resolve the old version",
+            "⚠".yellow().bold(),
+            e
+        );
+    }
     println!("{} {}", "✓".green().bold(), T("deactivated").green());
     Ok(())
 }
@@ -322,7 +328,15 @@ pub fn unload() -> Result<()> {
     }
     // Clear current version file.
     let current_file = nvm_dir.join("current");
-    let _ = fs::remove_file(&current_file);
+    if let Err(e) = fs::remove_file(&current_file) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            eprintln!(
+                "{} failed to remove current file: {} — shims may still resolve the old version",
+                "⚠".yellow().bold(),
+                e
+            );
+        }
+    }
     remove_from_shell_config()
 }
 
