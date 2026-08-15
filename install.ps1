@@ -2,7 +2,9 @@
 # Usage: irm https://raw.githubusercontent.com/mose-x/nvm-rust/main/install.ps1 | iex
 
 param(
-    [string]$Version = ""
+    [string]$Version = "",
+    [switch]$Uninstall,
+    [switch]$Self
 )
 
 $ErrorActionPreference = "Stop"
@@ -381,6 +383,64 @@ goto :eof
     if ($tmpDir) {
         Remove-Item $tmpDir -Recurse -Force
     }
+}
+
+function Uninstall-Self {
+    $nvmDir = Join-Path $env:USERPROFILE ".nvm.rust"
+
+    Write-Warn "This will remove nvm itself (binary, nvm.sh, shims, shell config)."
+    Write-Info "Node versions and config will be preserved at $nvmDir"
+    $confirm = Read-Host "Continue? [y/N]"
+    if ($confirm -ne "y" -and $confirm -ne "Y") {
+        Write-Host "Cancelled."
+        return
+    }
+
+    $binDir = Join-Path $nvmDir "bin"
+    Remove-Item (Join-Path $binDir "nvm.exe") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $binDir "nvm.sh") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $nvmDir "shims") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $nvmDir "current") -Force -ErrorAction SilentlyContinue
+    Clean-ShellConfig
+
+    Write-Success "nvm uninstalled. Node versions preserved at $nvmDir"
+    Write-Info "Reinstall: irm https://raw.githubusercontent.com/mose-x/nvm-rust/main/install.ps1 | iex"
+}
+
+function Uninstall-All {
+    $nvmDir = Join-Path $env:USERPROFILE ".nvm.rust"
+
+    Write-Warn "This will remove nvm AND ALL installed Node versions."
+    Write-Info "Everything in $nvmDir will be deleted."
+    $confirm = Read-Host "Continue? [y/N]"
+    if ($confirm -ne "y" -and $confirm -ne "Y") {
+        Write-Host "Cancelled."
+        return
+    }
+
+    Remove-Item $nvmDir -Recurse -Force -ErrorAction SilentlyContinue
+    Clean-ShellConfig
+
+    Write-Success "nvm and all Node versions uninstalled."
+}
+
+function Clean-ShellConfig {
+    $profilePath = $PROFILE.CurrentUserCurrentHost
+    if (-not (Test-Path $profilePath)) { return }
+    Copy-Item $profilePath "$profilePath.bak" -Force -ErrorAction SilentlyContinue
+    $content = Get-Content $profilePath
+    $filtered = $content | Where-Object { $_ -notmatch "nvm.rust|nvm.sh|NVM_HOME" }
+    $filtered | Set-Content $profilePath
+    Write-Info "Shell config cleaned: $profilePath"
+}
+
+if ($Uninstall) {
+    if ($Self) {
+        Uninstall-Self
+    } else {
+        Uninstall-All
+    }
+    exit 0
 }
 
 Main

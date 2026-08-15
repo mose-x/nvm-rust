@@ -129,12 +129,22 @@ fn main() -> Result<()> {
                 version,
                 lts,
                 latest,
-            } => match (version, lts, latest) {
-                (Some(v), false, false) => commands::uninstall(&v),
-                (None, true, false) => commands::uninstall_latest_lts(),
-                (None, false, true) => commands::uninstall_latest(),
-                _ => anyhow::bail!("{}", crate::i18n::T("specify_version_or_lts")),
-            },
+                self_uninstall,
+                all,
+            } => {
+                if self_uninstall {
+                    commands::uninstall_self()
+                } else if all {
+                    commands::uninstall_all()
+                } else {
+                    match (version, lts, latest) {
+                        (Some(v), false, false) => commands::uninstall(&v),
+                        (None, true, false) => commands::uninstall_latest_lts(),
+                        (None, false, true) => commands::uninstall_latest(),
+                        _ => anyhow::bail!("{}", crate::i18n::T("uninstall_hint")),
+                    }
+                }
+            }
             Commands::Current => commands::current_version(),
             Commands::Dir => commands::cmd_dir(),
             Commands::Alias { name, version } => match name {

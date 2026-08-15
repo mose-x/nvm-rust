@@ -352,3 +352,115 @@ fn use_on_cd_then_auto_silent_switches_silently() {
         "cd-hook `nvm auto --silent` must produce no stdout, got: {out_str:?}"
     );
 }
+
+// --- `nvm uninstall --all` / `--self` ---------------------------------------
+
+#[test]
+fn uninstall_no_args_shows_hint() {
+    let (out, _dir) = run_isolated(&["uninstall"]);
+    assert!(
+        !out.status.success(),
+        "bare uninstall should fail with hint"
+    );
+    let s = combined_output(&out);
+    assert!(
+        s.contains("--all") || s.contains("--self") || s.contains("版本"),
+        "should mention --all/--self in hint: {s}"
+    );
+}
+
+#[test]
+fn uninstall_all_cancelled_by_default() {
+    // No 'y' on stdin → should cancel
+    let (dir, nvm_dir) = common::isolated_nvm_dir();
+    create_fake_version(dir.path(), "v20.0.0", true);
+
+    let out = std::process::Command::new(common::nvm_bin())
+        .args(["uninstall", "--all"])
+        .env("NVM_DIR", &nvm_dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn")
+        .wait_with_output()
+        .expect("wait");
+
+    assert!(out.status.success(), "cancelled uninstall should exit 0");
+    assert!(
+        dir.path().exists(),
+        "nvm dir should still exist after cancellation"
+    );
+    let s = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        s.contains("Cancel") || s.contains("取消"),
+        "should print cancelled message: {s}"
+    );
+}
+
+#[test]
+fn uninstall_all_with_y_removes_everything() {
+    let (dir, nvm_dir) = common::isolated_nvm_dir();
+    create_fake_version(dir.path(), "v20.0.0", true);
+    create_fake_version(dir.path(), "v22.0.0", true);
+
+    let out = std::process::Command::new(common::nvm_bin())
+        .args(["uninstall", "--all"])
+        .env("NVM_DIR", &nvm_dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn");
+
+    let mut child = out;
+    use std::io::Write;
+    if let Some(stdin) = child.stdin.as_mut() {
+        let _ = stdin.write_all(b"y\n");
+    }
+    let out = child.wait_with_output().expect("wait");
+
+    assert!(
+        out.status.success(),
+        "uninstall --all with y should succeed"
+    );
+    assert!(
+        !dir.path().exists(),
+        "nvm dir should be removed after --all"
+    );
+}
+
+#[test]
+fn uninstall_self_preserves_node_versions() {
+    let (dir, nvm_dir) = common::isolated_nvm_dir();
+    create_fake_version(dir.path(), "v20.0.0", true);
+
+    let out = std::process::Command::new(common::nvm_bin())
+        .args(["uninstall", "--self"])
+        .env("NVM_DIR", &nvm_dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn");
+
+    let mut child = out;
+    use std::io::Write;
+    if let Some(stdin) = child.stdin.as_mut() {
+        let _ = stdin.write_all(b"y\n");
+    }
+    let out = child.wait_with_output().expect("wait");
+
+    assert!(
+        out.status.success(),
+        "uninstall --self with y should succeed"
+    );
+    assert!(
+        dir.path().join("v20.0.0").exists(),
+        "Node version should be preserved after --self"
+    );
+    assert!(
+        !dir.path().join("shims").exists(),
+        "shims should be removed after --self"
+    );
+}

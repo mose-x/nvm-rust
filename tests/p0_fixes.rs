@@ -156,3 +156,57 @@ fn p0_3_deactivate_and_unload_strip_shims_from_path() {
         "unload must strip NVM_RUST_SHIMS from PATH, not just NVM_RUST_BIN"
     );
 }
+
+/// install.sh must support --uninstall and --uninstall --self
+#[test]
+fn install_sh_supports_uninstall() {
+    let install_sh = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
+    let content = fs::read_to_string(&install_sh).expect("install.sh must exist");
+    assert!(
+        content.contains("--uninstall"),
+        "install.sh must detect --uninstall flag"
+    );
+    assert!(
+        content.contains("uninstall_self"),
+        "install.sh must have uninstall_self function"
+    );
+    assert!(
+        content.contains("uninstall_all"),
+        "install.sh must have uninstall_all function"
+    );
+    assert!(
+        content.contains("--self"),
+        "install.sh must support --uninstall --self"
+    );
+    assert!(
+        content.contains("clean_shell_config"),
+        "install.sh must clean shell config during uninstall"
+    );
+    assert!(
+        content.contains("[y/N]"),
+        "install.sh uninstall must require y/N confirmation"
+    );
+}
+
+/// install.ps1 must support -Uninstall and -Self
+#[test]
+fn install_ps1_supports_uninstall() {
+    let install_ps1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.ps1");
+    let content = fs::read_to_string(&install_ps1).expect("install.ps1 must exist");
+    assert!(
+        content.contains("Uninstall"),
+        "install.ps1 must have -Uninstall parameter"
+    );
+    assert!(
+        content.contains("Self"),
+        "install.ps1 must have -Self parameter"
+    );
+    assert!(
+        content.contains("Uninstall-Self") || content.contains("Uninstall_Self"),
+        "install.ps1 must have Uninstall-Self function"
+    );
+    assert!(
+        content.contains("Uninstall-All") || content.contains("Uninstall_All"),
+        "install.ps1 must have Uninstall-All function"
+    );
+}

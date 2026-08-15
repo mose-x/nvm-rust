@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -323,6 +324,102 @@ pub fn unload() -> Result<()> {
     let current_file = nvm_dir.join("current");
     let _ = fs::remove_file(&current_file);
     remove_from_shell_config()
+}
+
+/// Remove nvm itself: binary, nvm.sh, shims, shell config.
+/// Keeps all installed Node versions, config.json, alias.json, cache, completions.
+/// Requires y/N confirmation from stdin.
+pub fn uninstall_self() -> Result<()> {
+    let nvm_dir = get_nvm_dir();
+    let nvm_dir_str = nvm_dir.display().to_string();
+
+    // Confirmation
+    print!("{} ", crate::i18n::T("uninstall_self_confirm"));
+    std::io::stdout().flush().ok();
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    if !input.trim().eq_ignore_ascii_case("y") {
+        println!("{}", crate::i18n::T("uninstall_cancelled"));
+        return Ok(());
+    }
+
+    // Remove shims
+    if let Err(e) = crate::shim::remove_shims() {
+        eprintln!("{} failed to remove shims: {}", "⚠".yellow().bold(), e);
+    }
+
+    // Remove current file
+    let current_file = nvm_dir.join("current");
+    let _ = fs::remove_file(&current_file);
+
+    // Clean shell config
+    crate::config::remove_from_shell_config()?;
+
+    // Remove nvm.sh
+    let nvm_sh = nvm_dir.join("bin").join("nvm.sh");
+    let _ = fs::remove_file(&nvm_sh);
+
+    // Remove nvm binary
+    let bin_name = if cfg!(windows) { "nvm.exe" } else { "nvm" };
+    let nvm_bin = nvm_dir.join("bin").join(bin_name);
+    let _ = fs::remove_file(&nvm_bin);
+
+    // Remove /usr/local/bin/nvm symlink if exists
+    #[cfg(unix)]
+    {
+        let symlink = std::path::Path::new("/usr/local/bin/nvm");
+        let _ = fs::remove_file(symlink);
+    }
+
+    println!(
+        "{} {}",
+        "✓".green().bold(),
+        crate::i18n::format_t("uninstall_self_done", std::slice::from_ref(&nvm_dir_str))
+    );
+    println!("  {} reinstall: curl -fsSL https://raw.githubusercontent.com/mose-x/nvm-rust/main/install.sh | bash", crate::i18n::T("tip_label").dimmed());
+    Ok(())
+}
+
+/// Remove everything: nvm binary, nvm.sh, shims, all Node versions,
+/// config.json, alias.json, cache, completions, shell config.
+/// Requires y/N confirmation from stdin.
+pub fn uninstall_all() -> Result<()> {
+    let nvm_dir = get_nvm_dir();
+
+    // Confirmation
+    print!("{} ", crate::i18n::T("uninstall_all_confirm"));
+    std::io::stdout().flush().ok();
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    if !input.trim().eq_ignore_ascii_case("y") {
+        println!("{}", crate::i18n::T("uninstall_cancelled"));
+        return Ok(());
+    }
+
+    // Clean shell config first (before removing nvm dir, so remove_from_shell_config
+    // can still read the nvm dir path for stripping)
+    crate::config::remove_from_shell_config()?;
+
+    // Remove the entire ~/.nvm.rust/ directory
+    // This removes: binary, nvm.sh, shims, all v* version dirs, config.json,
+    // alias.json, cache/, completions/, current, .nvm.lock
+    if nvm_dir.exists() {
+        fs::remove_dir_all(&nvm_dir).context("failed to remove nvm directory")?;
+    }
+
+    // Remove /usr/local/bin/nvm symlink if exists
+    #[cfg(unix)]
+    {
+        let symlink = std::path::Path::new("/usr/local/bin/nvm");
+        let _ = fs::remove_file(symlink);
+    }
+
+    println!(
+        "{} {}",
+        "✓".green().bold(),
+        crate::i18n::T("uninstall_all_done")
+    );
+    Ok(())
 }
 
 pub fn run_version(version: &str, args: &[String]) -> Result<()> {
