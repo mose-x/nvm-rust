@@ -41,6 +41,11 @@ fn main() -> Result<()> {
     system::os_check();
     system::ensure_nvm_dir()?;
 
+    // Recover from interrupted upgrade (crash during swap_binary).
+    // If .swap-pending exists in the nvm bin dir, a previous upgrade was
+    // killed mid-swap. Try to finish the swap or restore the .bak.
+    commands::check_swap_recovery();
+
     // Intercept -h/--help/help so clap's compile-time (English) help is bypassed
     // and we render i18n-aware help instead.
     let argv: Vec<String> = std::env::args().skip(1).collect();

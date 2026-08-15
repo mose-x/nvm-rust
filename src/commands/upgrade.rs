@@ -818,6 +818,14 @@ fn swap_binary(bin_path: &Path, new_bin: &Path) -> Result<()> {
             .unwrap_or_default(),
         BAK_SUFFIX
     ));
+    // Crash recovery marker: written before the risky step 2 (rename old→bak),
+    // removed after step 3 (rename tmp→bin) completes. If nvm crashes or is
+    // killed between steps 2 and 3, the marker survives and the next nvm
+    // invocation (or install.sh) can detect the interrupted swap and recover.
+    let pending = bin_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join(".swap-pending");
 
     println!(
         "  {} {} → {}",
@@ -831,12 +839,11 @@ fn swap_binary(bin_path: &Path, new_bin: &Path) -> Result<()> {
         // Three-step atomic swap that survives both cross-device (EXDEV) and
         // mid-swap crashes:
         //   1. copy new_bin → bin_path.tmp  (same dir as bin_path → same fs)
-        //   2. rename bin_path → bak        (atomic, same fs)
-        //   3. rename bin_path.tmp → bin_path (atomic, same fs)
-        // Step 1 uses copy (not rename) so it works even if new_bin lives on
-        // a different mount (e.g. /tmp tmpfs vs ~/.nvm.rust/bin on ext4).
-        // Steps 2/3 are same-directory renames → never EXDEV, always atomic.
-        // If we crash between 2 and 3, bin_path.tmp is still on disk and a
+        //   2. write .swap-pending marker
+        //   3. rename bin_path → bak        (atomic, same fs)
+        //   4. rename bin_path.tmp → bin_path (atomic, same fs)
+        //   5. remove .swap-pending marker
+        // If we crash between 3 and 4, bin_path.tmp is still on disk and a
         // retry (or the user) can finish the swap; bin_path is gone but the
         // .bak holds the previous version.
         use std::os::unix::fs::PermissionsExt;
@@ -847,16 +854,21 @@ fn swap_binary(bin_path: &Path, new_bin: &Path) -> Result<()> {
         // a 0o644 source never yields a non-executable nvm.
         fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755))
             .with_context(|| format!("{}: {}", T("upgrade_swap_failed"), tmp.display()))?;
+        // Write marker BEFORE step 3 so a crash between 3 and 4 is detectable.
+        let _ = fs::write(&pending, b"pending");
         if bin_path.exists() {
             fs::rename(bin_path, &bak)
                 .with_context(|| format!("{}: {}", T("upgrade_backup_failed"), bak.display()))?;
         }
         fs::rename(&tmp, bin_path)
             .with_context(|| format!("{}: {}", T("upgrade_swap_failed"), bin_path.display()))?;
+        // Swap completed — remove marker.
+        let _ = fs::remove_file(&pending);
     }
     #[cfg(windows)]
     {
         // Windows: rename the locked exe to .bak (allowed), then move new in.
+        let _ = fs::write(&pending, b"pending");
         if bin_path.exists() {
             // If a previous .bak exists, remove it first (rename won't overwrite).
             let _ = fs::remove_file(&bak);
@@ -870,9 +882,80 @@ fn swap_binary(bin_path: &Path, new_bin: &Path) -> Result<()> {
                 .with_context(|| format!("{}: {}", T("upgrade_swap_failed"), bin_path.display()))?;
             let _ = fs::remove_file(new_bin);
         }
+        // Swap completed — remove marker.
+        let _ = fs::remove_file(&pending);
     }
 
     Ok(())
+}
+
+/// Check for and recover an interrupted swap_binary() operation.
+/// Called from main() on startup. If `.swap-pending` exists in the nvm bin
+/// directory, a previous upgrade crashed mid-swap. Try to recover:
+/// - If `nvm.tmp` exists → rename it to `nvm` (finish step 4)
+/// - If `nvm.bak` exists and `nvm` doesn't → rename `bak` back to `nvm`
+/// - Clean up the marker
+pub fn check_swap_recovery() {
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let bin_dir = match exe.parent() {
+        Some(d) => d,
+        None => return,
+    };
+    let pending = bin_dir.join(".swap-pending");
+    if !pending.exists() {
+        return;
+    }
+
+    eprintln!(
+        "{} Detected interrupted upgrade, attempting recovery...",
+        "⚠".yellow().bold()
+    );
+
+    let bin_name = if cfg!(windows) { "nvm.exe" } else { "nvm" };
+    let bin_path = bin_dir.join(bin_name);
+    let tmp_path = bin_dir.join("nvm.tmp");
+    let bak_path = bin_dir.join(format!("{}{}", bin_name, BAK_SUFFIX));
+
+    // Case 1: nvm.tmp exists → swap was interrupted at step 4, finish it
+    if tmp_path.exists() && !bin_path.exists() {
+        match fs::rename(&tmp_path, &bin_path) {
+            Ok(()) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = fs::set_permissions(&bin_path, fs::Permissions::from_mode(0o755));
+                }
+                eprintln!("{} Recovered: renamed nvm.tmp → nvm", "✓".green().bold());
+            }
+            Err(e) => {
+                eprintln!("{} Failed to recover from nvm.tmp: {}", "✗".red().bold(), e);
+            }
+        }
+    }
+    // Case 2: nvm.bak exists, nvm doesn't → swap was interrupted at step 3, restore old
+    else if bak_path.exists() && !bin_path.exists() {
+        match fs::rename(&bak_path, &bin_path) {
+            Ok(()) => {
+                eprintln!("{} Recovered: restored nvm from .bak", "✓".green().bold());
+            }
+            Err(e) => {
+                eprintln!("{} Failed to recover from .bak: {}", "✗".red().bold(), e);
+            }
+        }
+    }
+    // Case 3: nvm exists → swap actually completed, marker was just left behind
+    else if bin_path.exists() {
+        eprintln!(
+            "{} Binary exists, swap was completed — cleaning up marker",
+            "✓".green().bold()
+        );
+    }
+
+    // Clean up marker regardless
+    let _ = fs::remove_file(&pending);
 }
 
 /// Restore `nvm.bak` over the live binary.
@@ -919,7 +1002,13 @@ fn rollback_binary(bin_path: &Path) -> Result<()> {
     {
         // On Windows the running exe is locked; rename it out of the way first.
         if bin_path.exists() {
-            let _ = fs::remove_file(bin_path);
+            if let Err(e) = fs::remove_file(bin_path) {
+                eprintln!(
+                    "  {} failed to remove current binary: {} — attempting rename anyway",
+                    "⚠".yellow().bold(),
+                    e
+                );
+            }
         }
         fs::rename(&bak, bin_path)
             .with_context(|| format!("{}: {}", T("upgrade_swap_failed"), bin_path.display()))?;
