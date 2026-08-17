@@ -1040,6 +1040,70 @@ pub fn remove_from_shell_config() -> Result<()> {
     Ok(())
 }
 
+/// Rewrite the shell rc file from version-specific PATH format
+/// (e.g. `export PATH="shims:v24.18.0/bin:$PATH"`) to the fixed
+/// `active/bin` format (`export PATH="shims:active/bin:$PATH"`).
+/// This is the core of the Full Shim mode migration.
+pub fn migrate_rc_to_shim_mode() -> Result<()> {
+    let shell_config = match detect_shell_config() {
+        Some(p) => p,
+        None => return Ok(()), // No rc file, nothing to migrate
+    };
+
+    let config_path = Path::new(&shell_config);
+    let nvm_dir = get_nvm_dir();
+    let nvm_dir_str = nvm_dir.display().to_string();
+
+    let content = match fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).context(T("shell_config_read_failed")),
+    };
+
+    backup_file(config_path).context(T("shell_config_backup_failed"))?;
+
+    let stripped = strip_nvm_lines(&content, &nvm_dir_str);
+
+    let shims = nvm_dir.join("shims").display().to_string();
+    let active_bin = nvm_dir.join("active").join("bin").display().to_string();
+
+    let shell_type = detect_shell_type(&shell_config);
+    let (nvm_export, path_export) = if shell_type == "powershell" {
+        (
+            format!(r#"$env:NVM_HOME = "{}""#, nvm_dir_str),
+            format!(r#"$env:PATH = "{};{};" + $env:PATH"#, shims, active_bin),
+        )
+    } else {
+        (
+            format!(r#"export NVM_HOME="{}""#, nvm_dir_str),
+            format!(r#"export PATH="{}:{}:$PATH""#, shims, active_bin),
+        )
+    };
+
+    let new_config = format!(
+        "{}\n# NVM Rust\n{}\n{}\n",
+        stripped, nvm_export, path_export
+    );
+
+    crate::utils::atomic_write(config_path, &new_config)?;
+    Ok(())
+}
+
+/// Check if the rc file contains version-specific PATH (old format)
+/// rather than the fixed `active/bin` (new/shim format).
+/// Returns true if migration is needed.
+pub fn rc_has_version_specific_path() -> Result<bool> {
+    let shell_config = match detect_shell_config() {
+        Some(p) => p,
+        None => return Ok(false),
+    };
+
+    let content = fs::read_to_string(&shell_config).unwrap_or_default();
+    let has_nvm_path = content.contains("shims") && content.contains("bin");
+    let has_active = content.contains("active");
+    Ok(has_nvm_path && !has_active)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

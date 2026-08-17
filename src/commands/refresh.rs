@@ -69,10 +69,17 @@ pub fn refresh() -> Result<()> {
         }
     }
 
-    // 4. Download latest nvm.sh (release archive doesn't include it)
+    // 4. Migrate to Full Shim mode (create active symlink + migrate rc)
+    match crate::shim::migrate_to_full_shim(&nvm_dir) {
+        Ok(true) => println!("  {} {}", "✓".green().bold(), T("shim_migrated")),
+        Ok(false) => {} // already migrated or no active version
+        Err(e) => eprintln!("  {} shim migration failed: {}", "⚠".yellow().bold(), e),
+    }
+
+    // 5. Download latest nvm.sh (release archive doesn't include it)
     refresh_nvm_sh(&nvm_dir)?;
 
-    // 5. zsh cache tip
+    // 6. zsh cache tip
     if std::env::var("SHELL")
         .map(|s| s.ends_with("zsh"))
         .unwrap_or(false)
