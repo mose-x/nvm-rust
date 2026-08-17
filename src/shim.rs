@@ -1,5 +1,9 @@
 use anyhow::{Context, Result};
 use std::fs;
+use std::path::Path;
+
+#[cfg(windows)]
+use std::process::Command;
 
 use crate::system::get_nvm_dir;
 
@@ -205,6 +209,122 @@ pub fn next_available_version(exclude: &str) -> Option<String> {
         .into_iter()
         .filter(|v| v != exclude)
         .max_by(|a, b| crate::utils::compare_semver(a, b))
+}
+
+// ---------------------------------------------------------------------------
+// Full Shim mode: active symlink management + migration
+// ---------------------------------------------------------------------------
+
+/// Create `~/.nvm.rust/active` symlink → version directory.
+/// On Unix: atomic temp-symlink-then-rename. On Windows: junction (no admin).
+pub fn create_active_symlink(nvm_dir: &Path, version: &str) -> Result<()> {
+    let target = nvm_dir.join(version);
+    let link = nvm_dir.join("active");
+
+    #[cfg(unix)]
+    {
+        // Atomic: create temp symlink, rename over existing.
+        let tmp = nvm_dir.join("active.tmp");
+        let _ = fs::remove_file(&tmp);
+        std::os::unix::fs::symlink(&target, &tmp)
+            .with_context(|| format!("failed to create active symlink: {}", tmp.display()))?;
+        fs::rename(&tmp, &link)
+            .with_context(|| format!("failed to rename active symlink: {}", link.display()))?;
+    }
+
+    #[cfg(windows)]
+    {
+        // Junction: remove old, create new. `mklink /J` doesn't need admin.
+        let _ = fs::remove_dir(&link); // junction uses remove_dir
+        let status = Command::new("cmd")
+            .args([
+                "/C",
+                "mklink",
+                "/J",
+                &link.display().to_string(),
+                &target.display().to_string(),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .with_context(|| format!("failed to create junction: {}", link.display()))?;
+        if !status.success() {
+            anyhow::bail!("mklink /J failed for active junction");
+        }
+    }
+
+    Ok(())
+}
+
+/// Update `active` symlink to point to a new version (idempotent overwrite).
+pub fn update_active_symlink(nvm_dir: &Path, version: &str) -> Result<()> {
+    create_active_symlink(nvm_dir, version)
+}
+
+/// Remove the `active` symlink (used by `nvm deactivate`).
+/// Step 6 (deactivate/uninstall) will use this.
+#[allow(dead_code)]
+pub fn remove_active_symlink(nvm_dir: &Path) -> Result<()> {
+    let link = nvm_dir.join("active");
+    if link.exists() {
+        #[cfg(unix)]
+        fs::remove_file(&link)?;
+        #[cfg(windows)]
+        fs::remove_dir(&link)?; // junction uses remove_dir
+    }
+    Ok(())
+}
+
+/// Check if the `active` symlink/junction exists.
+pub fn active_exists(nvm_dir: &Path) -> bool {
+    nvm_dir.join("active").exists()
+}
+
+/// Read the `current` file and return the version string (without validation).
+/// Returns None if file is missing, empty, or "none".
+fn read_current_version(nvm_dir: &Path) -> Option<String> {
+    let current_file = nvm_dir.join("current");
+    match fs::read_to_string(&current_file) {
+        Ok(content) => {
+            let v = content.trim();
+            if v.is_empty() || v == "none" {
+                None
+            } else {
+                Some(v.to_string())
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+/// Migrate to Full Shim mode. Idempotent and self-healing.
+///
+/// - First call (active doesn't exist): create symlink + migrate rc → returns Ok(true)
+/// - Subsequent calls (active exists): fix stale symlink + re-migrate rc if needed → returns Ok(false)
+/// - No active version (current = "none" or missing): skip → returns Ok(false)
+pub fn migrate_to_full_shim(nvm_dir: &Path) -> Result<bool> {
+    // 1. Read current version
+    let current = match read_current_version(nvm_dir) {
+        Some(v) if nvm_dir.join(&v).is_dir() => v,
+        _ => return Ok(false), // No active version, skip
+    };
+
+    // 2. First migration: active doesn't exist
+    if !active_exists(nvm_dir) {
+        create_active_symlink(nvm_dir, &current)?;
+        crate::config::migrate_rc_to_shim_mode()?;
+        return Ok(true);
+    }
+
+    // 3. active exists: fix stale symlink (always update to match current)
+    update_active_symlink(nvm_dir, &current)?;
+
+    // 4. Check if rc was reverted to old format (e.g. by old nvm version)
+    if crate::config::rc_has_version_specific_path()? {
+        crate::config::migrate_rc_to_shim_mode()?;
+    }
+
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -429,5 +549,102 @@ mod tests {
             !script.contains("set BIN=%NVM_DIR%"),
             "Windows shim must NOT use unquoted set BIN="
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_active_symlink_create_and_update() {
+        let _guard = setup_temp_nvm_dir();
+        let nvm_dir = crate::system::get_nvm_dir();
+        create_fake_version(&nvm_dir, "v20.0.0");
+
+        // Create
+        create_active_symlink(&nvm_dir, "v20.0.0").expect("create symlink");
+        assert!(active_exists(&nvm_dir), "active should exist after create");
+
+        // Verify it points to v20.0.0
+        let target = fs::read_link(nvm_dir.join("active")).expect("read link");
+        assert!(
+            target.ends_with("v20.0.0"),
+            "should point to v20.0.0, got {:?}",
+            target
+        );
+
+        // Update to different version
+        create_fake_version(&nvm_dir, "v22.0.0");
+        update_active_symlink(&nvm_dir, "v22.0.0").expect("update symlink");
+        let target = fs::read_link(nvm_dir.join("active")).expect("read link after update");
+        assert!(
+            target.ends_with("v22.0.0"),
+            "should point to v22.0.0, got {:?}",
+            target
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_active_symlink_remove() {
+        let _guard = setup_temp_nvm_dir();
+        let nvm_dir = crate::system::get_nvm_dir();
+        create_fake_version(&nvm_dir, "v20.0.0");
+        create_active_symlink(&nvm_dir, "v20.0.0").expect("create");
+        assert!(active_exists(&nvm_dir));
+
+        remove_active_symlink(&nvm_dir).expect("remove");
+        assert!(
+            !active_exists(&nvm_dir),
+            "active should not exist after remove"
+        );
+    }
+
+    #[test]
+    fn test_migrate_to_full_shim_no_current() {
+        let _guard = setup_temp_nvm_dir();
+        let nvm_dir = crate::system::get_nvm_dir();
+        // No current file → should return Ok(false)
+        let migrated = migrate_to_full_shim(&nvm_dir).expect("migrate");
+        assert!(!migrated, "should not migrate when no current version");
+        assert!(!active_exists(&nvm_dir), "active should not exist");
+    }
+
+    #[test]
+    fn test_migrate_to_full_shim_current_none() {
+        let _guard = setup_temp_nvm_dir();
+        let nvm_dir = crate::system::get_nvm_dir();
+        crate::utils::atomic_write(&nvm_dir.join("current"), "none").unwrap();
+        let migrated = migrate_to_full_shim(&nvm_dir).expect("migrate");
+        assert!(!migrated, "should not migrate when current is 'none'");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_migrate_to_full_shim_first_migration() {
+        let _guard = setup_temp_nvm_dir();
+        let nvm_dir = crate::system::get_nvm_dir();
+        create_fake_version(&nvm_dir, "v20.0.0");
+        crate::utils::atomic_write(&nvm_dir.join("current"), "v20.0.0").unwrap();
+
+        let migrated = migrate_to_full_shim(&nvm_dir).expect("migrate");
+        assert!(migrated, "should return true on first migration");
+        assert!(
+            active_exists(&nvm_dir),
+            "active should exist after migration"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_migrate_to_full_shim_already_migrated() {
+        let _guard = setup_temp_nvm_dir();
+        let nvm_dir = crate::system::get_nvm_dir();
+        create_fake_version(&nvm_dir, "v20.0.0");
+        crate::utils::atomic_write(&nvm_dir.join("current"), "v20.0.0").unwrap();
+
+        // First migration
+        migrate_to_full_shim(&nvm_dir).expect("first migrate");
+
+        // Second call should return false (already migrated)
+        let migrated = migrate_to_full_shim(&nvm_dir).expect("second migrate");
+        assert!(!migrated, "should return false on subsequent calls");
     }
 }
