@@ -2,6 +2,34 @@
 
 nvm-rs 是一个用 Rust 编写、高性能且功能丰富的 Node.js 版本管理器 —— [nvm](https://github.com/nvm-sh/nvm) 的 Rust 原生重写。以单一静态二进制交付，亚毫秒级启动，中英双语界面，并具备 15 项 nvm 和 fnm 都没有的独有功能：GPG 签名校验、断点续传、源码编译、离线安装，以及内置 yarn/pnpm/corepack 集成。为现代工作流而生。
 
+## 快速开始
+
+**macOS / Linux：**
+
+```bash
+# 1. 安装 nvm-rust
+curl -fsSL https://raw.githubusercontent.com/mose-x/nvm-rust/main/install.sh | bash
+source ~/.zshrc   # 或 ~/.bashrc
+
+# 2. 安装 Node.js
+nvm install 22
+
+# 3. 切换并验证
+nvm use 22
+node --version
+
+# 4. 卸载（需要确认）
+nvm uninstall --all
+```
+
+**Windows（PowerShell）：**
+
+```powershell
+irm https://raw.githubusercontent.com/mose-x/nvm-rust/main/install.ps1 | iex
+nvm install 22
+nvm use 22
+```
+
 ## 特性
 
 - 安装、卸载、切换多个 Node.js 版本
@@ -169,6 +197,23 @@ sudo cp target/release/nvm /usr/local/bin/
 - macOS: `macos-x64`（Intel）, `macos-arm64`（Apple Silicon）
 - Windows: `windows-x64`, `windows-arm64`
 
+### 安装选项
+
+| 场景 | 命令 |
+|------|------|
+| 指定版本（跳过 API 查询） | `curl -fsSL ... \| NVM_VERSION=v2.1.2 bash` |
+| 代理环境 | `export https_proxy=http://127.0.0.1:7890` 后执行 |
+| 中国镜像加速下载 | `curl -fsSL ... \| GITHUB_MIRROR=ghproxy bash` |
+| 离线安装（从 Release 归档） | 下载、解压、运行 `./install.sh` |
+
+### 安装排错
+
+| 错误 | 原因 | 解决方案 |
+|------|------|---------|
+| `Failed to get latest version` | GitHub API 限频（60次/小时） | `NVM_VERSION=v2.1.2 ... \| bash` |
+| 下载慢/超时 | 到 GitHub 网络慢 | `GITHUB_MIRROR=ghproxy` 或 `export https_proxy=...` |
+| `curl: command not found` | 未安装 curl | 用 `wget` 或 `brew install curl` |
+
 ## Shell 集成
 
 安装后，根据你的 Shell 选择对应的脚本：
@@ -204,7 +249,7 @@ Import-Module "$env:USERPROFILE\.nvm.rust\shell\nvm.psm1"
 
 当存在 `.nvmrc` 文件时，nvm-rs 会在进入该目录时自动切换到指定的 Node.js 版本。
 
-## 快速开始
+## 基础用法
 
 ```bash
 nvm install 20        # 安装 Node.js 20
