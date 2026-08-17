@@ -117,6 +117,8 @@ const KNOWN_COMMANDS: &[&str] = &[
     "upgrade",
     "update",
     "refresh",
+    "init",
+    "doctor",
 ];
 
 /// Detect help requests (`-h`, `--help`, or `help` subcommand) so we can render
@@ -395,6 +397,21 @@ pub enum Commands {
     },
     /// Refresh shims, completions, and validate state after upgrade
     Refresh,
+    /// Initialize shims, completions, and shell config for the current shell
+    Init {
+        /// Shell type (auto-detect from $SHELL if omitted)
+        #[clap(long, value_name = "shell")]
+        shell: Option<String>,
+    },
+    /// Diagnose nvm installation and optionally fix issues
+    Doctor {
+        /// Automatically fix fixable issues
+        #[clap(long)]
+        fix: bool,
+        /// Run network connectivity checks
+        #[clap(long)]
+        network: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -532,6 +549,8 @@ pub fn print_root_help() {
             ("upgrade", "help_upgrade_about"),
             ("update", "help_upgrade_about"),
             ("refresh", "help_refresh_about"),
+            ("init", "help_init_about"),
+            ("doctor", "help_doctor_about"),
             ("help", "help_root_print_help"),
         ],
     );
@@ -786,6 +805,23 @@ pub fn print_command_help(cmd: &str) {
             println!("{}", T("help_upgrade_token_alt"));
         }
         "refresh" => render_cmd_help("help_refresh_about", "help_refresh_usage", &[], &[], &[]),
+        "init" => render_cmd_help(
+            "help_init_about",
+            "help_init_usage",
+            &[],
+            &[("    --shell <shell>", "help_init_shell")],
+            &[],
+        ),
+        "doctor" => render_cmd_help(
+            "help_doctor_about",
+            "help_doctor_usage",
+            &[],
+            &[
+                ("    --fix", "help_doctor_fix"),
+                ("    --network", "help_doctor_network"),
+            ],
+            &[],
+        ),
         _ => {
             // Unknown command: fall back to root help
             print_root_help();

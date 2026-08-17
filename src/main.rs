@@ -190,6 +190,8 @@ fn main() -> Result<()> {
                 rollback,
             } => commands::upgrade(check, force, from_gitee, from_mirror, rollback),
             Commands::Refresh => commands::refresh(),
+            Commands::Init { shell } => commands::init(shell.as_deref()),
+            Commands::Doctor { fix, network } => commands::doctor(fix, network),
         },
     }
 }

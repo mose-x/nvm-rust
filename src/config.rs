@@ -740,7 +740,7 @@ fn normalize_mirror_url(url: &str) -> Result<String> {
     Ok(upgraded)
 }
 
-fn detect_shell_config() -> Option<String> {
+pub fn detect_shell_config() -> Option<String> {
     let home = crate::system::get_home_dir();
     if home == "." {
         return None;
