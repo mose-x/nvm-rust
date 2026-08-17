@@ -4,6 +4,34 @@
 
 A fast, feature-rich Node.js version manager written in Rust — a Rust-native reimagining of [nvm](https://github.com/nvm-sh/nvm). Delivered as a single static binary with sub-millisecond startup, bilingual UI, and 15 features nvm and fnm don't offer: GPG-verified downloads, resumable transfers, source builds, offline installs, and built-in yarn/pnpm/corepack integration. Built for modern workflows.
 
+## Quick Start
+
+**macOS / Linux:**
+
+```bash
+# 1. Install nvm-rust
+curl -fsSL https://raw.githubusercontent.com/mose-x/nvm-rust/main/install.sh | bash
+source ~/.zshrc   # or ~/.bashrc
+
+# 2. Install Node.js
+nvm install 22
+
+# 3. Use it
+nvm use 22
+node --version
+
+# 4. Uninstall (requires confirmation)
+nvm uninstall --all
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/mose-x/nvm-rust/main/install.ps1 | iex
+nvm install 22
+nvm use 22
+```
+
 ## Features
 
 - Install, uninstall, switch between multiple Node.js versions
@@ -173,6 +201,23 @@ Supported platforms:
 - macOS: `macos-x64` (Intel), `macos-arm64` (Apple Silicon)
 - Windows: `windows-x64`, `windows-arm64`
 
+### Installation options
+
+| Scenario | Command |
+|----------|---------|
+| Specify version (skip API query) | `curl -fsSL ... \| NVM_VERSION=v2.1.2 bash` |
+| Behind a proxy | `export https_proxy=http://127.0.0.1:7890` then run |
+| China mirror (faster download) | `curl -fsSL ... \| GITHUB_MIRROR=ghproxy bash` |
+| Offline (from release archive) | Download, extract, run `./install.sh` |
+
+### Troubleshooting
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `Failed to get latest version` | GitHub API rate-limited (60/hour) | `NVM_VERSION=v2.1.2 ... \| bash` |
+| Download slow / timeout | Network to GitHub slow | `GITHUB_MIRROR=ghproxy` or `export https_proxy=...` |
+| `curl: command not found` | curl not installed | Use `wget` or install via `brew install curl` |
+
 ## Shell Integration
 
 After installation, source the appropriate script for your shell:
@@ -208,7 +253,7 @@ Import-Module "$env:USERPROFILE\.nvm.rust\shell\nvm.psm1"
 
 When an `.nvmrc` file is present, nvm-rs will automatically switch to the specified Node.js version when you enter that directory.
 
-## Quick Start
+## Basic Usage
 
 ```bash
 nvm install 20        # Install Node.js 20
