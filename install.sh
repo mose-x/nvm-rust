@@ -374,6 +374,10 @@ main() {
         cp -f "${bundled_shell}/nvm.sh"   "${shell_dir}/nvm.sh"
         cp -f "${bundled_shell}/nvm.fish" "${shell_dir}/nvm.fish"
         cp -f "${bundled_shell}/nvm.psm1" "${shell_dir}/nvm.psm1"
+        # Also copy nvm.sh to bin/ — all Rust code references bin/nvm.sh,
+        # and nvm.sh itself has NVM_RUST_SH="${NVM_RUST_DIR}/bin/nvm.sh".
+        mkdir -p "${INSTALL_DIR}"
+        cp -f "${bundled_shell}/nvm.sh"   "${INSTALL_DIR}/nvm.sh"
         success "Shell integration scripts installed (bundled)"
     elif [ "$offline" = "1" ]; then
         # Offline bundle has no shell/ dir — can't download, just warn.
@@ -387,6 +391,9 @@ main() {
         fi
         download_file "${raw_base}/${version}/shell/nvm.sh"   "${shell_dir}/nvm.sh"   2>/dev/null || \
             download_file "${raw_base}/main/shell/nvm.sh"    "${shell_dir}/nvm.sh"   2>/dev/null || true
+        # Also copy/download to bin/ for code that references bin/nvm.sh
+        cp -f "${shell_dir}/nvm.sh" "${INSTALL_DIR}/nvm.sh" 2>/dev/null || \
+            download_file "${raw_base}/main/shell/nvm.sh" "${INSTALL_DIR}/nvm.sh" 2>/dev/null || true
         download_file "${raw_base}/${version}/shell/nvm.fish" "${shell_dir}/nvm.fish" 2>/dev/null || \
             download_file "${raw_base}/main/shell/nvm.fish"  "${shell_dir}/nvm.fish" 2>/dev/null || true
         download_file "${raw_base}/${version}/shell/nvm.psm1" "${shell_dir}/nvm.psm1" 2>/dev/null || \
