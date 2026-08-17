@@ -358,6 +358,14 @@ pub fn deactivate() -> Result<()> {
             e
         );
     }
+    // Remove active symlink so global packages stop resolving via active/bin
+    if let Err(e) = crate::shim::remove_active_symlink(&nvm_dir) {
+        eprintln!(
+            "  {} failed to remove active symlink: {}",
+            "⚠".yellow().bold(),
+            e
+        );
+    }
     println!("{} {}", "✓".green().bold(), T("deactivated").green());
     Ok(())
 }
@@ -405,6 +413,15 @@ pub fn uninstall_self() -> Result<()> {
     // Remove shims
     if let Err(e) = crate::shim::remove_shims() {
         eprintln!("{} failed to remove shims: {}", "⚠".yellow().bold(), e);
+    }
+
+    // Remove active symlink (Full Shim mode)
+    if let Err(e) = crate::shim::remove_active_symlink(&nvm_dir) {
+        eprintln!(
+            "{} failed to remove active symlink: {}",
+            "⚠".yellow().bold(),
+            e
+        );
     }
 
     // Remove current file
