@@ -275,6 +275,25 @@ pub fn upgrade(
     // Only overwrites files that already exist — never creates new ones.
     let _ = crate::completions::regenerate_completions_if_installed();
 
+    // Exec the NEW binary with "refresh" to run Full Shim migration.
+    // The old binary (still in memory) can't call v2 functions like
+    // migrate_to_full_shim — the new binary on disk can. Suppress
+    // stdout/stderr so clap errors don't confuse the user if the new
+    // binary doesn't support "refresh" (too old).
+    let refresh_ok = std::process::Command::new(&bin_path)
+        .arg("refresh")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if refresh_ok {
+        println!("  {} {}", "✓".green().bold(), T("shim_migrated"));
+    } else {
+        eprintln!("  {} {}", "⚠".yellow().bold(), T("upgrade_refresh_hint"));
+    }
+
     println!(
         "{}  {} ({} → {})",
         "✓".green().bold(),
