@@ -282,8 +282,8 @@ pub fn upgrade(
     // binary doesn't support "refresh" (too old).
     let refresh_ok = std::process::Command::new(&bin_path)
         .arg("refresh")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false);

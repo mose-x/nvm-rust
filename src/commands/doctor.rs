@@ -164,13 +164,14 @@ fn check_shim_mode(nvm_dir: &Path) {
 }
 
 fn check_shell_config(_nvm_dir: &Path) {
-    // Read the rc file directly — check common paths.
+    // Read the rc file directly — check common paths including fish.
     let home = crate::system::get_home_dir();
     let candidates = [
         format!("{}/.zshrc", home),
         format!("{}/.bashrc", home),
         format!("{}/.bash_profile", home),
         format!("{}/.profile", home),
+        format!("{}/.config/fish/config.fish", home),
     ];
 
     for rc_path in &candidates {
@@ -178,10 +179,15 @@ fn check_shell_config(_nvm_dir: &Path) {
         if !path.exists() {
             continue;
         }
-        let content = std::fs::read_to_string(path).unwrap_or_default();
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
         let has_nvm = content.contains("nvm.rust") || content.contains("nvm.sh");
-        let has_active = content.contains("active");
-        if has_nvm && has_active {
+        // Check for "active/bin" specifically, not just "active" which could
+        // appear in unrelated comments or variable names.
+        let has_active_bin = content.contains("active/bin") || content.contains("active\\bin");
+        if has_nvm && has_active_bin {
             println!(
                 "  {} shell config {} (full shim format)",
                 "✓".green().bold(),
