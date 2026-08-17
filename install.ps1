@@ -69,15 +69,34 @@ function Get-Arch {
 }
 
 function Get-LatestVersion {
-    $url = "$GithubPrefix$GithubApi/releases/latest"
+    $apiUrl = "$GithubPrefix$GithubApi/releases/latest"
+    $htmlUrl = "$GithubPrefix$GithubDownload/../releases/latest"
+
+    # Try GitHub API first
     try {
-        $response = Invoke-WebRequest -Uri $url -UseBasicParsing
+        $response = Invoke-WebRequest -Uri $apiUrl -UseBasicParsing
         $json = $response.Content | ConvertFrom-Json
         return $json.tag_name
     } catch {
-        Write-Error "Failed to get latest version: $_"
-        exit 1
+        Write-Info "GitHub API unavailable, trying HTML fallback..."
     }
+
+    # Fallback: GitHub API rate-limited.
+    # The releases/latest HTML page 302-redirects to releases/tag/<tag>.
+    try {
+        $response = Invoke-WebRequest -Uri $htmlUrl -UseBasicParsing -MaximumRedirection 0 -ErrorAction SilentlyContinue
+        # If no redirect, try following redirects
+        $tag = $response.BaseResponse.ResponseUri.AbsolutePath -replace '.*/', ''
+        if ($tag) { return $tag }
+    } catch {}
+    try {
+        $response = Invoke-WebRequest -Uri $htmlUrl -UseBasicParsing
+        $tag = $response.BaseResponse.ResponseUri.AbsolutePath -replace '.*/', ''
+        if ($tag) { return $tag }
+    } catch {}
+
+    Write-Error "Failed to get latest version (GitHub API rate-limited?). Try: ./install.ps1 -Version v2.1.2"
+    exit 1
 }
 
 function Download-File($url, $dest) {
