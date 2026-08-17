@@ -6,7 +6,9 @@ use crate::config::Config;
 use crate::system::{get_nvm_dir, URI};
 use crate::utils::{display_width, lts_codename_to_major, pad_left, pad_right, parse_major};
 
+mod doctor;
 mod info;
+mod init;
 mod install;
 mod listing;
 mod migrate;
@@ -14,7 +16,7 @@ mod refresh;
 mod upgrade;
 mod version_resolve;
 
-pub use {info::*, install::*, listing::*, migrate::*, refresh::*, upgrade::*};
+pub use {doctor::*, info::*, init::*, install::*, listing::*, migrate::*, refresh::*, upgrade::*};
 
 // Compiled-once regexes used in version resolution. `Regex::new` is not free
 // (~microseconds each); the `node-...` pattern is reused in 4 resolution
