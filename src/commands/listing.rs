@@ -80,6 +80,12 @@ pub fn uninstall(version: &str) -> Result<()> {
                         e
                     );
                 }
+                // Update active symlink to point to the new version (Full Shim mode)
+                if crate::shim::active_exists(&nvm_dir) {
+                    if let Err(e) = crate::shim::update_active_symlink(&nvm_dir, &next) {
+                        eprintln!("  {} active symlink: {}", "⚠".yellow().bold(), e);
+                    }
+                }
                 println!(
                     "{} {} {} {}",
                     "ℹ".cyan().bold(),
@@ -99,6 +105,10 @@ pub fn uninstall(version: &str) -> Result<()> {
                             e
                         );
                     }
+                }
+                // Remove active symlink (no versions left)
+                if let Err(e) = crate::shim::remove_active_symlink(&nvm_dir) {
+                    eprintln!("  {} active symlink: {}", "⚠".yellow().bold(), e);
                 }
             }
         }
