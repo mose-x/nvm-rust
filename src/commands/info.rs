@@ -221,7 +221,47 @@ pub fn use_version_silent(
     // and rewriting it on every `cd` would read+backup+filter+write the
     // entire rc file each time — a visible stall on directory changes.
     if !silent {
-        update_shell_config(&resolved, cd_hook)?;
+        // Full Shim mode: if active symlink exists, just update it.
+        // The rc file has a fixed PATH (shims:active/bin:$PATH) that never
+        // changes — no rc rewrite needed, no "source" prompt.
+        let nvm_dir = crate::system::get_nvm_dir();
+        if crate::shim::active_exists(&nvm_dir) {
+            // Update symlink to new version (instant, no rc rewrite)
+            if let Err(e) = crate::shim::update_active_symlink(&nvm_dir, &resolved) {
+                eprintln!(
+                    "  {} failed to update active symlink: {}",
+                    "⚠".yellow().bold(),
+                    e
+                );
+            }
+            // Check if rc was reverted to old format by an old nvm version
+            if let Ok(true) = crate::config::rc_has_version_specific_path() {
+                if let Err(e) = crate::config::migrate_rc_to_shim_mode() {
+                    eprintln!("  {} failed to re-migrate rc: {}", "⚠".yellow().bold(), e);
+                }
+            }
+            // No update_shell_config call, no "source" prompt
+        } else {
+            // Legacy mode: try lazy migration first
+            match crate::shim::migrate_to_full_shim(&nvm_dir) {
+                Ok(true) => {
+                    // First migration succeeded — print notice
+                    println!("  {} {}", "✓".green().bold(), T("shim_migrated"));
+                    if !silent {
+                        println!(
+                            "  {} {}",
+                            T("tip_label").dimmed(),
+                            T("shim_migrate_restart").dimmed()
+                        );
+                    }
+                }
+                _ => {
+                    // Migration not applicable (no active version, or already migrated)
+                    // Fall back to old behavior: rewrite rc + source prompt
+                    update_shell_config(&resolved, cd_hook)?;
+                }
+            }
+        }
     }
 
     // --save: report the persisted default.
@@ -256,11 +296,16 @@ pub fn use_version_silent(
             product_msg.green().bold(),
             resolved.white().bold()
         );
-        println!(
-            "  {} {}",
-            T("tip_label").dimmed(),
-            T("tip_apply_shell").dimmed()
-        );
+        // Only show "source" prompt in legacy mode (no active symlink).
+        // In Full Shim mode, the active symlink routes global packages instantly.
+        let nvm_dir = crate::system::get_nvm_dir();
+        if !crate::shim::active_exists(&nvm_dir) {
+            println!(
+                "  {} {}",
+                T("tip_label").dimmed(),
+                T("tip_apply_shell").dimmed()
+            );
+        }
     }
 
     Ok(())
