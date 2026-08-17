@@ -261,16 +261,38 @@ pub fn update_active_symlink(nvm_dir: &Path, version: &str) -> Result<()> {
     create_active_symlink(nvm_dir, version)
 }
 
-/// Remove the `active` symlink (used by `nvm deactivate`).
-/// Step 6 (deactivate/uninstall) will use this.
-#[allow(dead_code)]
+/// Remove the `active` symlink (used by `nvm deactivate` and `nvm use system`).
 pub fn remove_active_symlink(nvm_dir: &Path) -> Result<()> {
     let link = nvm_dir.join("active");
-    if link.exists() {
-        #[cfg(unix)]
-        fs::remove_file(&link)?;
-        #[cfg(windows)]
-        fs::remove_dir(&link)?; // junction uses remove_dir
+    // Use symlink_metadata to avoid following the symlink/junction.
+    // This confirms the entry is a link, not a real directory that
+    // a user might have created accidentally.
+    match fs::symlink_metadata(&link) {
+        Ok(meta) => {
+            #[cfg(unix)]
+            {
+                if meta.file_type().is_symlink() {
+                    fs::remove_file(&link)?;
+                } else {
+                    // Not a symlink — could be a real file or dir.
+                    // Only remove if it's a file; don't touch real dirs.
+                    if meta.file_type().is_file() {
+                        fs::remove_file(&link)?;
+                    }
+                }
+            }
+            #[cfg(windows)]
+            {
+                // On Windows, junctions are reparse points. remove_file
+                // correctly removes junctions (and symlinks) without
+                // following them. Never use remove_dir — it could delete
+                // a real directory's contents if the entry is not a junction.
+                let _ = meta;
+                let _ = fs::remove_file(&link);
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).context("failed to stat active symlink"),
     }
     Ok(())
 }

@@ -3,7 +3,7 @@
 //! Run after install.sh or `nvm upgrade` to ensure everything is configured.
 //! Idempotent — safe to run anytime.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
 use std::path::Path;
 
@@ -86,7 +86,11 @@ fn ensure_shell_config(nvm_dir: &Path) -> Result<()> {
 
     let config_path = Path::new(&shell_config);
     let nvm_dir_str = nvm_dir.display().to_string();
-    let content = std::fs::read_to_string(config_path).unwrap_or_default();
+    let content = match std::fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).context(T("shell_config_read_failed")),
+    };
 
     // Check if rc already has nvm lines
     let has_nvm = content.contains("nvm.rust") || content.contains("nvm.sh");
@@ -102,11 +106,15 @@ fn ensure_shell_config(nvm_dir: &Path) -> Result<()> {
     }
 
     // Add nvm lines with active/bin format
-    crate::utils::backup_file(config_path).ok();
+    crate::utils::backup_file(config_path).context(T("shell_config_backup_failed"))?;
     let shims = nvm_dir.join("shims").display().to_string();
     let active_bin = nvm_dir.join("active").join("bin").display().to_string();
+    let nvm_bin = nvm_dir.join("bin").display().to_string();
     let nvm_export = format!(r#"export NVM_HOME="{}""#, nvm_dir_str);
-    let path_export = format!(r#"export PATH="{}:{}:$PATH""#, shims, active_bin);
+    let path_export = format!(
+        r#"export PATH="{}:{}:{}:$PATH""#,
+        shims, active_bin, nvm_bin
+    );
     let source_line = format!(r#"source "{}/bin/nvm.sh""#, nvm_dir_str);
 
     let new_line = format!(

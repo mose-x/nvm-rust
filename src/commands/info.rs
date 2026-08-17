@@ -125,6 +125,16 @@ pub fn use_version_silent(
     if resolved.starts_with("system:") {
         let current_file = nvm_dir.join("current");
         atomic_write(&current_file, &resolved).context(T("cannot_write_current"))?;
+        // Remove active symlink so active/bin stops resolving to the old version.
+        // Without this, current says "system:vX" but active/bin still serves
+        // the previous version — inconsistent state.
+        if let Err(e) = crate::shim::remove_active_symlink(&nvm_dir) {
+            eprintln!(
+                "  {} failed to remove active symlink: {}",
+                "⚠".yellow().bold(),
+                e
+            );
+        }
         if !silent {
             println!(
                 "{} {} {}",
@@ -207,14 +217,16 @@ pub fn use_version_silent(
     }
 
     // The lock guards the version-dir existence check, the optional install,
-    // the `current` file write, AND the config read-modify-write above — all
-    // the nvm-state mutations. Everything below (shell rc rewrite, success
-    // messages) touches files outside nvm's own state or uses its own
-    // atomic_write, so holding the lock through it only serializes
-    // concurrent `nvm use`/`nvm install` callers during the slow shell-rc
-    // rewrite (backup + read + filter + write). Drop the guard explicitly
-    // to release contention early — AFTER config save, BEFORE shell rc.
-    drop(_nvm_lock);
+    // Drop the guard explicitly to release contention early — but ONLY in
+    // legacy mode where update_shell_config does the slow shell-rc rewrite.
+    // In Full Shim mode (active symlink exists), the symlink update is instant
+    // and must be protected by the lock to prevent races with concurrent
+    // nvm use (current file and active symlink must stay consistent).
+    let nvm_dir = crate::system::get_nvm_dir();
+    let is_full_shim = crate::shim::active_exists(&nvm_dir);
+    if !is_full_shim {
+        drop(_nvm_lock);
+    }
 
     // Skip rewriting the shell rc on cd-hook-triggered runs (silent=true):
     // the hook is already installed from the first `nvm use --use-on-cd`,
@@ -224,8 +236,7 @@ pub fn use_version_silent(
         // Full Shim mode: if active symlink exists, just update it.
         // The rc file has a fixed PATH (shims:active/bin:$PATH) that never
         // changes — no rc rewrite needed, no "source" prompt.
-        let nvm_dir = crate::system::get_nvm_dir();
-        if crate::shim::active_exists(&nvm_dir) {
+        if is_full_shim {
             // Update symlink to new version (instant, no rc rewrite)
             if let Err(e) = crate::shim::update_active_symlink(&nvm_dir, &resolved) {
                 eprintln!(

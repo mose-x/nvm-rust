@@ -17,6 +17,11 @@ use crate::utils::atomic_write;
 pub fn refresh() -> Result<()> {
     let nvm_dir = get_nvm_dir();
 
+    // Acquire lock to prevent races with concurrent nvm use/uninstall.
+    // Re-entrant: if refresh is called from nvm upgrade (which already holds
+    // no lock), this is the only lock. If called standalone, this serializes.
+    let _nvm_lock = crate::utils::acquire_nvm_lock(&nvm_dir)?;
+
     // 1. Re-create shim scripts (overwrite with latest content)
     crate::shim::create_shims()?;
     println!(
