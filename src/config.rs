@@ -1066,23 +1066,33 @@ pub fn migrate_rc_to_shim_mode() -> Result<()> {
 
     let shims = nvm_dir.join("shims").display().to_string();
     let active_bin = nvm_dir.join("active").join("bin").display().to_string();
+    let nvm_bin = nvm_dir.join("bin").display().to_string();
+    let nvm_sh_path = nvm_dir.join("bin").join("nvm.sh").display().to_string();
 
     let shell_type = detect_shell_type(&shell_config);
-    let (nvm_export, path_export) = if shell_type == "powershell" {
+    let (nvm_export, path_export, source_line) = if shell_type == "powershell" {
         (
             format!(r#"$env:NVM_HOME = "{}""#, nvm_dir_str),
-            format!(r#"$env:PATH = "{};{};" + $env:PATH"#, shims, active_bin),
+            format!(
+                r#"$env:PATH = "{};{};{};" + $env:PATH"#,
+                shims, active_bin, nvm_bin
+            ),
+            format!(". \"{}\"", nvm_sh_path),
         )
     } else {
         (
             format!(r#"export NVM_HOME="{}""#, nvm_dir_str),
-            format!(r#"export PATH="{}:{}:$PATH""#, shims, active_bin),
+            format!(
+                r#"export PATH="{}:{}:{}:$PATH""#,
+                shims, active_bin, nvm_bin
+            ),
+            format!(r#"source "{}""#, nvm_sh_path),
         )
     };
 
     let new_config = format!(
-        "{}\n# NVM Rust\n{}\n{}\n",
-        stripped, nvm_export, path_export
+        "{}\n# NVM Rust\n{}\n{}\n{}\n",
+        stripped, nvm_export, path_export, source_line
     );
 
     crate::utils::atomic_write(config_path, &new_config)?;
@@ -1544,6 +1554,90 @@ mod tests {
         assert!(
             msg.to_lowercase().contains("directory") || msg.to_lowercase().contains("create"),
             "expected create_dir_all error context, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn migrate_rc_to_shim_mode_includes_nvm_bin_and_source_line() {
+        // P0-1: After migration, PATH must include ~/.nvm.rust/bin
+        // P0-2: After migration, rc must include a source nvm.sh line
+        let _guard = ENV_TESTS_MUTEX.lock().expect("ENV_TESTS_MUTEX poisoned");
+        let home = tempfile::TempDir::new().expect("tempdir for HOME");
+        let nvm_tmp = tempfile::TempDir::new().expect("tempdir for NVM_DIR");
+        let old_home = std::env::var_os("HOME");
+        let old_nvm_dir = std::env::var_os("NVM_DIR");
+        let old_userprofile = std::env::var_os("USERPROFILE");
+        std::env::set_var("HOME", home.path());
+        if cfg!(windows) {
+            std::env::set_var("USERPROFILE", home.path());
+        }
+        std::env::set_var("NVM_DIR", nvm_tmp.path());
+        struct Guard {
+            old_home: Option<std::ffi::OsString>,
+            old_nvm_dir: Option<std::ffi::OsString>,
+            old_userprofile: Option<std::ffi::OsString>,
+        }
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                match &self.old_home {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
+                match &self.old_nvm_dir {
+                    Some(v) => std::env::set_var("NVM_DIR", v),
+                    None => std::env::remove_var("NVM_DIR"),
+                }
+                if cfg!(windows) {
+                    if let Some(v) = &self.old_userprofile {
+                        std::env::set_var("USERPROFILE", v);
+                    }
+                }
+            }
+        }
+        let _g = Guard {
+            old_home,
+            old_nvm_dir,
+            old_userprofile,
+        };
+        // Find what rc file detect_shell_config will look for
+        let rc_path = detect_shell_config().expect("detect_shell_config should find a path");
+        let rc = std::path::Path::new(&rc_path);
+        if let Some(parent) = rc.parent() {
+            std::fs::create_dir_all(parent).expect("create rc parent");
+        }
+        // Write old-format nvm lines
+        let nvm_dir_str = nvm_tmp.path().display().to_string();
+        let old_content = format!(
+            r#"alias ll='ls -l'
+# NVM Rust
+export NVM_HOME="{nvm}"
+export PATH="{nvm}/shims:{nvm}/v22.0.0/bin:$PATH"
+"#,
+            nvm = nvm_dir_str
+        );
+        std::fs::write(rc, &old_content).expect("write rc");
+        migrate_rc_to_shim_mode().expect("migrate should succeed");
+        let content = std::fs::read_to_string(rc).expect("read rc");
+        // P0-1: nvm_bin must be in PATH
+        assert!(
+            content.contains(&format!("{nvm_dir_str}/bin"))
+                || content.contains(&format!("{}\\bin", nvm_dir_str)),
+            "migrated rc must include nvm/bin in PATH: {content}"
+        );
+        // P0-1: active must be in PATH
+        assert!(
+            content.contains("active"),
+            "migrated rc must include active in PATH: {content}"
+        );
+        // P0-2: nvm.sh reference must be present
+        assert!(
+            content.contains("nvm.sh"),
+            "migrated rc must include nvm.sh reference: {content}"
+        );
+        // Old version-specific path must be gone
+        assert!(
+            !content.contains("v22.0.0/bin"),
+            "migrated rc must NOT contain version-specific path: {content}"
         );
     }
 }
