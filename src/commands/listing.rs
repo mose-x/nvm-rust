@@ -62,15 +62,14 @@ pub fn uninstall(version: &str) -> Result<()> {
         T("uninstalling_label").red().bold()
     );
     print!("{}", resolved.white().bold());
-    fs::remove_dir_all(&version_dir).context(T("uninstall_failed"))?;
-    println!(" {}", "✓".green().bold());
 
-    // If we just removed the active version, auto-switch to the next
-    // available version (highest semver). This prevents shims from pointing
-    // at a deleted directory. Only clear `current` if no other versions exist.
+    // If removing the active version, find the replacement and update
+    // current + active symlink BEFORE removing the directory. This avoids
+    // a dangling symlink window where active/bin points to a deleted dir.
     if is_current_active {
         match crate::shim::next_available_version(&resolved) {
             Some(next) => {
+                // Update current file first
                 let current_file = nvm_dir.join("current");
                 if let Err(e) = crate::utils::atomic_write(&current_file, &next) {
                     eprintln!(
@@ -80,12 +79,15 @@ pub fn uninstall(version: &str) -> Result<()> {
                         e
                     );
                 }
-                // Update active symlink to point to the new version (Full Shim mode)
+                // Update active symlink to point to the new version
                 if crate::shim::active_exists(&nvm_dir) {
                     if let Err(e) = crate::shim::update_active_symlink(&nvm_dir, &next) {
                         eprintln!("  {} active symlink: {}", "⚠".yellow().bold(), e);
                     }
                 }
+                // Now safe to remove the old version directory
+                fs::remove_dir_all(&version_dir).context(T("uninstall_failed"))?;
+                println!(" {}", "✓".green().bold());
                 println!(
                     "{} {} {} {}",
                     "ℹ".cyan().bold(),
@@ -95,6 +97,12 @@ pub fn uninstall(version: &str) -> Result<()> {
                 );
             }
             None => {
+                // No other versions — remove active symlink first, then dir
+                if let Err(e) = crate::shim::remove_active_symlink(&nvm_dir) {
+                    eprintln!("  {} active symlink: {}", "⚠".yellow().bold(), e);
+                }
+                fs::remove_dir_all(&version_dir).context(T("uninstall_failed"))?;
+                println!(" {}", "✓".green().bold());
                 let current_file = nvm_dir.join("current");
                 if let Err(e) = fs::remove_file(&current_file) {
                     if e.kind() != std::io::ErrorKind::NotFound {
@@ -106,12 +114,12 @@ pub fn uninstall(version: &str) -> Result<()> {
                         );
                     }
                 }
-                // Remove active symlink (no versions left)
-                if let Err(e) = crate::shim::remove_active_symlink(&nvm_dir) {
-                    eprintln!("  {} active symlink: {}", "⚠".yellow().bold(), e);
-                }
             }
         }
+    } else {
+        // Not the active version — just remove it
+        fs::remove_dir_all(&version_dir).context(T("uninstall_failed"))?;
+        println!(" {}", "✓".green().bold());
     }
 
     Ok(())
