@@ -10,10 +10,11 @@ mod info;
 mod install;
 mod listing;
 mod migrate;
+mod refresh;
 mod upgrade;
 mod version_resolve;
 
-pub use {info::*, install::*, listing::*, migrate::*, upgrade::*};
+pub use {info::*, install::*, listing::*, migrate::*, refresh::*, upgrade::*};
 
 // Compiled-once regexes used in version resolution. `Regex::new` is not free
 // (~microseconds each); the `node-...` pattern is reused in 4 resolution
