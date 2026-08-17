@@ -254,6 +254,18 @@ install_completion() {
 
 create_shims() {
     local nvm_dir="${NVM_INSTALL_DIR:-$HOME/.nvm.rust}"
+    local nvm_bin="${nvm_dir}/bin/nvm"
+
+    # If nvm binary exists, delegate to it — it creates all 8 shims
+    # (node/npm/npx/corepack/pnpm/pnpx/yarn/yarnpkg) with path traversal
+    # protection and Windows cmd.exe metacharacter rejection.
+    if [ -x "$nvm_bin" ]; then
+        "$nvm_bin" refresh >/dev/null 2>&1 || true
+        return
+    fi
+
+    # Fallback: inline shim creation (only 4 commands, no security guards).
+    # The nvm binary will overwrite these on first `nvm use` / `nvm install`.
     local shims_dir="${nvm_dir}/shims"
     mkdir -p "$shims_dir"
 
