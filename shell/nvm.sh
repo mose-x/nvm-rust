@@ -33,7 +33,9 @@ _nvm_prepend_path() {
         *) export PATH="${NVM_RUST_SHIMS}:${PATH}" ;;
     esac
     # Full shim mode: active/bin resolves to current version's bin via symlink
-    if [ -e "${NVM_RUST_ACTIVE}" ]; then
+    # On Git Bash for Windows, [ -e ] may not detect junctions, so also
+    # check [ -L ] (symlink/reparse point) and [ -d ] (dir through link).
+    if [ -e "${NVM_RUST_ACTIVE}" ] || [ -L "${NVM_RUST_ACTIVE}" ] || [ -d "${NVM_RUST_ACTIVE}/bin" ]; then
         case ":${PATH}:" in
             *":${NVM_RUST_ACTIVE}/bin:"*) ;;
             *) export PATH="${NVM_RUST_ACTIVE}/bin:${PATH}" ;;

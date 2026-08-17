@@ -1108,10 +1108,16 @@ pub fn rc_has_version_specific_path() -> Result<bool> {
         None => return Ok(false),
     };
 
-    let content = fs::read_to_string(&shell_config).unwrap_or_default();
+    let content = match fs::read_to_string(&shell_config) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Ok(false), // Can't read — can't determine, skip migration
+    };
     let has_nvm_path = content.contains("shims") && content.contains("bin");
-    let has_active = content.contains("active");
-    Ok(has_nvm_path && !has_active)
+    // Check for "active/bin" specifically — not just "active" which could
+    // appear in unrelated comments, variable names, or aliases.
+    let has_active_bin = content.contains("active/bin") || content.contains("active\\bin");
+    Ok(has_nvm_path && !has_active_bin)
 }
 
 // ---------------------------------------------------------------------------

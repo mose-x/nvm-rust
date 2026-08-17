@@ -302,14 +302,20 @@ pub fn active_exists(nvm_dir: &Path) -> bool {
     nvm_dir.join("active").exists()
 }
 
-/// Read the `current` file and return the version string (without validation).
-/// Returns None if file is missing, empty, or "none".
+/// Read the `current` file and return the version string.
+/// Returns None if file is missing, empty, "none", or fails validation.
+/// Validation prevents path escape (`../../tmp/evil`) and Windows cmd.exe
+/// metacharacter injection — consistent with the shell shim's `case` guard.
 fn read_current_version(nvm_dir: &Path) -> Option<String> {
     let current_file = nvm_dir.join("current");
     match fs::read_to_string(&current_file) {
         Ok(content) => {
             let v = content.trim();
             if v.is_empty() || v == "none" {
+                None
+            } else if crate::utils::validate_version_name(v).is_err() {
+                // Poisoned current file — don't create a symlink to a
+                // traversed/injected path. Treat as no active version.
                 None
             } else {
                 Some(v.to_string())

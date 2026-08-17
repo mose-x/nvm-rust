@@ -80,12 +80,19 @@ fn check_shims(nvm_dir: &Path, fix: bool) {
             SHIM_COMMANDS.len()
         );
     } else if fix {
-        let _ = crate::shim::create_shims();
-        println!(
-            "  {} shims        {} missing, fixed",
-            "⚠".yellow().bold(),
-            missing.len()
-        );
+        match crate::shim::create_shims() {
+            Ok(()) => println!(
+                "  {} shims        {} missing, fixed",
+                "⚠".yellow().bold(),
+                missing.len()
+            ),
+            Err(e) => println!(
+                "  {} shims        {} missing, fix FAILED: {}",
+                "✗".red().bold(),
+                missing.len(),
+                e
+            ),
+        }
     } else {
         println!(
             "  {} shims        {} missing — run 'nvm refresh'",
@@ -106,13 +113,15 @@ fn check_current(nvm_dir: &Path, fix: bool) {
                 println!("  {} current      {}", "✓".green().bold(), v);
             } else if fix {
                 if let Some(latest) = crate::shim::next_available_version("") {
-                    let _ = crate::utils::atomic_write(&current_file, &latest);
-                    println!(
-                        "  {} current      {} → {} (fixed)",
-                        "⚠".yellow().bold(),
-                        v,
-                        latest
-                    );
+                    match crate::utils::atomic_write(&current_file, &latest) {
+                        Ok(()) => println!(
+                            "  {} current      {} → {} (fixed)",
+                            "⚠".yellow().bold(),
+                            v,
+                            latest
+                        ),
+                        Err(e) => println!("  {} current      fix FAILED: {}", "✗".red().bold(), e),
+                    }
                 } else {
                     println!("  {} current      no installed versions", "✗".red().bold());
                 }
@@ -123,8 +132,12 @@ fn check_current(nvm_dir: &Path, fix: bool) {
         Err(_) if !current_file.exists() => {
             if fix {
                 if let Some(latest) = crate::shim::next_available_version("") {
-                    let _ = crate::utils::atomic_write(&current_file, &latest);
-                    println!("  {} current      set to {}", "⚠".yellow().bold(), latest);
+                    match crate::utils::atomic_write(&current_file, &latest) {
+                        Ok(()) => {
+                            println!("  {} current      set to {}", "⚠".yellow().bold(), latest)
+                        }
+                        Err(e) => println!("  {} current      fix FAILED: {}", "✗".red().bold(), e),
+                    }
                 } else {
                     println!("  {} current      not set", "ℹ".cyan().bold());
                 }
@@ -206,8 +219,10 @@ fn check_completions(nvm_dir: &Path, fix: bool) {
     if has_any {
         println!("  {} completions  installed", "✓".green().bold());
     } else if fix {
-        let _ = crate::completions::regenerate_completions_if_installed();
-        println!("  {} completions  regenerated", "⚠".yellow().bold());
+        match crate::completions::regenerate_completions_if_installed() {
+            Ok(_) => println!("  {} completions  regenerated", "⚠".yellow().bold()),
+            Err(e) => println!("  {} completions  fix FAILED: {}", "✗".red().bold(), e),
+        }
     } else {
         println!(
             "  {} completions  empty — run 'nvm completion <shell>'",
@@ -232,12 +247,14 @@ fn check_corepack(nvm_dir: &Path, fix: bool) {
             if has_pnpm || has_yarn {
                 println!("  {} corepack     enabled for {}", "✓".green().bold(), v);
             } else if fix {
-                let _ = crate::corepack::corepack_enable(Some(&v));
-                println!(
-                    "  {} corepack     enabled for {} (fixed)",
-                    "⚠".yellow().bold(),
-                    v
-                );
+                match crate::corepack::corepack_enable(Some(&v)) {
+                    Ok(()) => println!(
+                        "  {} corepack     enabled for {} (fixed)",
+                        "⚠".yellow().bold(),
+                        v
+                    ),
+                    Err(e) => println!("  {} corepack     fix FAILED: {}", "✗".red().bold(), e),
+                }
             } else {
                 println!(
                     "  {} corepack     not enabled — run 'nvm corepack enable'",
