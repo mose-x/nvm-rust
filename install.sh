@@ -100,18 +100,34 @@ detect_arch() {
 }
 
 get_latest_version() {
+    local api_url="${GITHUB_PREFIX}https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
+    local html_url="${GITHUB_PREFIX}https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest"
     local latest=""
+
+    # Try GitHub API first
     if command -v curl >/dev/null 2>&1; then
-        latest=$(curl -fsSL "${GITHUB_PREFIX}https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest" 2>/dev/null | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+        latest=$(curl -fsSL "$api_url" 2>/dev/null | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
     elif command -v wget >/dev/null 2>&1; then
-        latest=$(wget -qO- "${GITHUB_PREFIX}https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest" 2>/dev/null | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+        latest=$(wget -qO- "$api_url" 2>/dev/null | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
     else
         error "Neither curl nor wget is installed"
         exit 1
     fi
 
+    # Fallback: GitHub API rate-limited (60/hour for anonymous).
+    # The releases/latest HTML page 302-redirects to releases/tag/<tag>,
+    # which is served by github.com (not api.github.com) and is NOT rate-limited.
     if [ -z "$latest" ]; then
-        error "Failed to get latest version"
+        info "GitHub API unavailable, trying HTML fallback..."
+        if command -v curl >/dev/null 2>&1; then
+            latest=$(curl -fsSL -o /dev/null -w '%{url_effective}' "$html_url" 2>/dev/null | grep -o '[^/]*$')
+        elif command -v wget >/dev/null 2>&1; then
+            latest=$(wget -q -O /dev/null --server-response "$html_url" 2>&1 | grep -i 'location:' | tail -1 | grep -o '[^/]*$' | tr -d '[:space:]')
+        fi
+    fi
+
+    if [ -z "$latest" ]; then
+        error "Failed to get latest version (GitHub API rate-limited?). Try: NVM_VERSION=v2.1.2 ./install.sh"
         exit 1
     fi
 
