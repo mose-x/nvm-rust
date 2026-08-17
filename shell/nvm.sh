@@ -10,17 +10,19 @@ NVM_RUST_DIR="${NVM_DIR:-$HOME/.nvm.rust}"
 NVM_RUST_SH="${NVM_RUST_DIR}/bin/nvm.sh"
 NVM_RUST_BIN="${NVM_RUST_DIR}/bin"
 NVM_RUST_SHIMS="${NVM_RUST_DIR}/shims"
+NVM_RUST_ACTIVE="${NVM_RUST_DIR}/active"
 
 # Check if nvm binary exists
 _nvm_binary_exists() {
     [ -f "${NVM_RUST_BIN}/nvm" ] || [ -f "${NVM_RUST_BIN}/nvm.exe" ]
 }
 
-# Add nvm shims + bin to PATH if not already there.
-# Prepend bin first, then shims, so the final order is:
-#   shims:bin:<rest>
-# This ensures shims (node/npm/npx/corepack) take precedence over
-# any legacy binaries in bin/.
+# Add nvm shims + bin + active/bin to PATH if not already there.
+# Prepend bin first, then shims, then active/bin, so the final order is:
+#   active/bin:shims:bin:<rest>
+# active/bin resolves to the current version's bin via symlink,
+# so global npm packages (tsc/eslint/codex) work immediately
+# after `nvm use` — no `source` needed.
 _nvm_prepend_path() {
     case ":${PATH}:" in
         *":${NVM_RUST_BIN}:"*) ;;
@@ -30,6 +32,13 @@ _nvm_prepend_path() {
         *":${NVM_RUST_SHIMS}:"*) ;;
         *) export PATH="${NVM_RUST_SHIMS}:${PATH}" ;;
     esac
+    # Full shim mode: active/bin resolves to current version's bin via symlink
+    if [ -e "${NVM_RUST_ACTIVE}" ]; then
+        case ":${PATH}:" in
+            *":${NVM_RUST_ACTIVE}/bin:"*) ;;
+            *) export PATH="${NVM_RUST_ACTIVE}/bin:${PATH}" ;;
+        esac
+    fi
 }
 
 # Initialize
@@ -116,20 +125,33 @@ nvm() {
             ;;
         deactivate)
             "${NVM_RUST_BIN}/nvm" deactivate 2>/dev/null
+            export PATH="${PATH#${NVM_RUST_ACTIVE}/bin:}"
             export PATH="${PATH#${NVM_RUST_SHIMS}:}"
             export PATH="${PATH#${NVM_RUST_BIN}:}"
             echo "nvm-rust deactivated (PATH updated)"
             ;;
         unload)
             "${NVM_RUST_BIN}/nvm" unload 2>/dev/null
+            export PATH="${PATH#${NVM_RUST_ACTIVE}/bin:}"
             export PATH="${PATH#${NVM_RUST_SHIMS}:}"
             export PATH="${PATH#${NVM_RUST_BIN}:}"
             unset -f nvm _nvm_auto_switch
             echo "nvm-rust unloaded from shell"
             ;;
+        upgrade|update)
+            "${NVM_RUST_BIN}/nvm" "$@"
+            # Re-source updated nvm.sh + _nvm_prepend_path (with active/bin)
+            _nvm_init
+            ;;
+        refresh)
+            "${NVM_RUST_BIN}/nvm" "$@"
+            # Re-source updated nvm.sh + _nvm_prepend_path (with active/bin)
+            _nvm_init
+            ;;
         shell)
             echo "NVM_RUST_DIR: $NVM_RUST_DIR"
             echo "NVM_RUST_BIN: $NVM_RUST_BIN"
+            echo "NVM_RUST_ACTIVE: $NVM_RUST_ACTIVE"
             ;;
         *)
             "${NVM_RUST_BIN}/nvm" "$@"
