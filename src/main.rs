@@ -189,6 +189,7 @@ fn main() -> Result<()> {
                 from_mirror,
                 rollback,
             } => commands::upgrade(check, force, from_gitee, from_mirror, rollback),
+            Commands::Refresh => commands::refresh(),
         },
     }
 }
