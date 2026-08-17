@@ -437,6 +437,7 @@ refresh_current_none = "NVM 已停用 — 运行 'nvm use <version>' 重新激�
 refresh_no_versions = "没有已安装的版本 — 运行 'nvm install <version>'"
 refresh_complete = "刷新完成"
 shim_migrated = "已迁移到 full shim 模式"
+shim_migrate_restart = "重启 shell 使 PATH 更改生效"
 help_upgrade_check = "仅检查是否有新版本，不执行升级"
 help_upgrade_force = "即使版本相同也强制重装"
 help_upgrade_from_gitee = "从 Gitee 镜像下载而非 GitHub"

@@ -437,6 +437,7 @@ refresh_current_none = "NVM is deactivated — run 'nvm use <version>' to activa
 refresh_no_versions = "No installed versions — run 'nvm install <version>'"
 refresh_complete = "Refresh complete"
 shim_migrated = "Migrated to full shim mode"
+shim_migrate_restart = "Restart your shell for PATH changes to take effect"
 help_upgrade_check = "Only check for a newer version, do not upgrade"
 help_upgrade_force = "Force reinstall even if the version is the same"
 help_upgrade_from_gitee = "Download from Gitee mirror instead of GitHub"
