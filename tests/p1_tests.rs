@@ -3,8 +3,9 @@ use std::fs;
 /// P1-1: unload() must warn on shim removal errors, not silently swallow them.
 #[test]
 fn p1_1_unload_warns_on_shim_removal_error() {
-    let info_rs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/info.rs");
-    let content = fs::read_to_string(&info_rs).expect("info.rs must exist");
+    let lifecycle_rs =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/lifecycle.rs");
+    let content = fs::read_to_string(&lifecycle_rs).expect("lifecycle.rs must exist");
 
     // The unload function should use if-let-Err instead of let _ =
     let unload_start = content.find("pub fn unload()").unwrap_or(0);
@@ -28,8 +29,9 @@ fn p1_1_unload_warns_on_shim_removal_error() {
 /// P1-2: deactivate() must write "none" marker instead of deleting current file.
 #[test]
 fn p1_2_deactivate_writes_none_marker() {
-    let info_rs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/info.rs");
-    let content = fs::read_to_string(&info_rs).expect("info.rs must exist");
+    let lifecycle_rs =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/lifecycle.rs");
+    let content = fs::read_to_string(&lifecycle_rs).expect("lifecycle.rs must exist");
 
     let deactivate_start = content.find("pub fn deactivate()").unwrap_or(0);
     let deactivate_section = &content[deactivate_start..];

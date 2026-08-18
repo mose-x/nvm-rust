@@ -10,9 +10,12 @@ mod doctor;
 mod info;
 mod init;
 mod install;
+mod lifecycle;
 mod listing;
 mod migrate;
+mod proxy_cmd;
 mod refresh;
+mod run;
 mod upgrade;
 mod version_resolve;
 

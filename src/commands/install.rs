@@ -30,7 +30,7 @@ const IOJS_FINAL_VERSION: &str = "3.3.1";
 /// the source-install / npm-upgrade paths. `code()` is `None` when the
 /// process was killed by a signal; we report `-1` there to match the
 /// previous behaviour (callers that need signal-accurate exit codes use
-/// `exit_with_status` in `info.rs` instead).
+/// `exit_with_status` in `run.rs` instead).
 fn command_failed(key: &str, status: std::process::ExitStatus) -> anyhow::Error {
     anyhow::anyhow!("{} ({})", T(key), status.code().unwrap_or(-1))
 }
