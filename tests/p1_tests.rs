@@ -527,3 +527,93 @@ fn p2_16_nvm_fish_nvm_dir_empty_guard() {
         "nvm.fish must use test -n (not set -q) to guard against empty NVM_DIR"
     );
 }
+
+/// P1-1: nvm.fish unload must erase __nvm_auto_switch to prevent zombie hook
+/// firing on every cd after unload.
+#[test]
+fn p1_1_fish_unload_erases_auto_switch() {
+    let nvm_fish = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.fish");
+    let content = fs::read_to_string(&nvm_fish).expect("nvm.fish must exist");
+    let unload_pos = content.find("case unload").expect("must have unload case");
+    let unload_section = &content[unload_pos..];
+    assert!(
+        unload_section.contains("functions -e __nvm_auto_switch"),
+        "nvm.fish unload must erase __nvm_auto_switch (zombie hook prevention)"
+    );
+}
+
+/// P2-1: nvm.fish .nvmrc parsing must extract first token (using awk),
+/// not read the entire file. Handles comments and multi-line .nvmrc.
+#[test]
+fn p2_1_fish_nvmrc_uses_awk() {
+    let nvm_fish = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.fish");
+    let content = fs::read_to_string(&nvm_fish).expect("nvm.fish must exist");
+    assert!(
+        content.contains("head -1 .nvmrc | awk"),
+        "nvm.fish must use head -1 + awk to parse .nvmrc (handles comments)"
+    );
+}
+
+/// P2-2: nvm.psm1 Initialize-NvmPath must use element comparison (-notcontains),
+/// not substring match (-notlike which falsely matches "bin-old" etc.).
+#[test]
+fn p2_2_psm1_init_path_uses_element_comparison() {
+    let nvm_psm1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.psm1");
+    let content = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
+    assert!(
+        content.contains("-notcontains $NvmBin"),
+        "nvm.psm1 Initialize-NvmPath must use -notcontains (element comparison)"
+    );
+}
+
+/// P2-3: nvm.psm1 auto case must call Initialize-NvmPath after binary,
+/// matching nvm.sh's _nvm_prepend_path call after auto.
+#[test]
+fn p2_3_psm1_auto_calls_init_path() {
+    let nvm_psm1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.psm1");
+    let content = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
+    let auto_pos = content.find("'auto' {").expect("must have auto case");
+    let auto_section = &content[auto_pos..];
+    let auto_end = auto_section.find('}').unwrap_or(50);
+    let auto_body = &auto_section[..auto_end + 1];
+    assert!(
+        auto_body.contains("Initialize-NvmPath"),
+        "nvm.psm1 auto case must call Initialize-NvmPath"
+    );
+}
+
+/// P2-4: nvm.psm1 upgrade/refresh must re-import the module so updated
+/// function definitions take effect (matches nvm.sh's re-source behavior).
+#[test]
+fn p2_4_psm1_upgrade_reimports_module() {
+    let nvm_psm1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.psm1");
+    let content = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
+    assert!(
+        content.contains("Import-Module") && content.contains("Remove-Module"),
+        "nvm.psm1 upgrade/refresh must re-import module (Remove+Import)"
+    );
+}
+
+/// P2-8: nvm.psm1 must not have dead $script:OriginalPath variable
+/// (was only used by the old Remove-NvmFromPath which now filters current PATH).
+#[test]
+fn p2_8_psm1_no_dead_original_path() {
+    let nvm_psm1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.psm1");
+    let content = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
+    assert!(
+        !content.contains("$script:OriginalPath"),
+        "nvm.psm1 must not have dead $script:OriginalPath variable"
+    );
+}

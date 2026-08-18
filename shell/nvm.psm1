@@ -11,12 +11,11 @@ $NvmBin = Join-Path $NvmDir 'bin'
 $NvmExe = Join-Path $NvmBin 'nvm.exe'
 $NvmShims = Join-Path $NvmDir 'shims'
 
-# Module-scoped PATH for unload
-$script:OriginalPath = $env:Path
-
-# Ensure nvm bin is in PATH
+# Ensure nvm bin is in PATH — use element comparison (not -notlike substring
+# match which falsely matches "bin-old" etc.)
 function Initialize-NvmPath {
-    if ($env:Path -notlike "*$NvmBin*") {
+    $pathElements = if ($env:Path) { $env:Path -split ';' } else { @() }
+    if ($pathElements -notcontains $NvmBin) {
         $env:Path = "$NvmBin;$env:Path"
     }
 }
@@ -120,6 +119,7 @@ function nvm {
         }
         'auto' {
             & $NvmExe auto $Arguments
+            Initialize-NvmPath
         }
         'deactivate' {
             & $NvmExe deactivate
@@ -128,6 +128,22 @@ function nvm {
         'unload' {
             Remove-NvmFromPath
             Remove-Module -Name 'nvm' -Force -ErrorAction SilentlyContinue
+        }
+        { $_ -in 'upgrade', 'update' } {
+            & $NvmExe $Command $Arguments
+            # Re-import the module so updated function definitions take effect
+            # (matches nvm.sh's re-source behavior after upgrade)
+            if (Test-Path "$NvmDir\shell\nvm.psm1") {
+                Remove-Module -Name 'nvm' -Force -ErrorAction SilentlyContinue
+                Import-Module "$NvmDir\shell\nvm.psm1" -Force
+            }
+        }
+        'refresh' {
+            & $NvmExe refresh $Arguments
+            if (Test-Path "$NvmDir\shell\nvm.psm1") {
+                Remove-Module -Name 'nvm' -Force -ErrorAction SilentlyContinue
+                Import-Module "$NvmDir\shell\nvm.psm1" -Force
+            }
         }
         'cache' {
             & $NvmExe cache $Arguments

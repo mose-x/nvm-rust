@@ -366,7 +366,13 @@ pub(crate) fn install_latest_pnpm_via_corepack(version: &str) -> Result<()> {
     );
 
     let path_env = prepend_to_path(&bin_dir);
-    let _ = crate::corepack::corepack_enable(Some(version));
+    if let Err(e) = crate::corepack::corepack_enable(Some(version)) {
+        eprintln!(
+            "  {} corepack enable failed: {} — continuing with prepare",
+            "⚠".yellow().bold(),
+            e
+        );
+    }
 
     let status = Command::new(&corepack_path)
         .args(["prepare", "pnpm@latest", "--activate"])
