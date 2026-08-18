@@ -298,3 +298,60 @@ fn install_ps1_warns_before_exec_policy_change() {
         "install.ps1 must warn before changing execution policy"
     );
 }
+
+/// P2-10: install.sh "already configured" check must use "# nvm-rs" marker
+/// (not loose "nvm.sh" grep that matches comments about the old nvm-sh project).
+#[test]
+fn install_sh_already_configured_uses_precise_marker() {
+    let install_sh = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
+    let content = fs::read_to_string(&install_sh).expect("install.sh must exist");
+    assert!(
+        content.contains("grep -qF \"# nvm-rs\""),
+        "install.sh must use '# nvm-rs' marker for already-configured check"
+    );
+}
+
+/// P2-11: install.sh uninstall functions must respect NVM_INSTALL_DIR
+/// instead of hardcoding $HOME/.nvm.rust.
+#[test]
+fn install_sh_uninstall_respects_install_dir() {
+    let install_sh = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
+    let content = fs::read_to_string(&install_sh).expect("install.sh must exist");
+    // Both uninstall_self and uninstall_all should use NVM_INSTALL_DIR
+    let uninstall_self_pos = content.find("uninstall_self()").unwrap_or(0);
+    let uninstall_all_pos = content.find("uninstall_all()").unwrap_or(0);
+    let self_section = &content[uninstall_self_pos..uninstall_all_pos];
+    let all_section = &content[uninstall_all_pos..];
+    assert!(
+        self_section.contains("NVM_INSTALL_DIR"),
+        "install.sh uninstall_self must respect NVM_INSTALL_DIR"
+    );
+    assert!(
+        all_section.contains("NVM_INSTALL_DIR"),
+        "install.sh uninstall_all must respect NVM_INSTALL_DIR"
+    );
+}
+
+/// P2-13: install.ps1 must respect $env:NVM_DIR instead of hardcoding the path.
+#[test]
+fn install_ps1_respects_nvm_dir() {
+    let install_ps1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.ps1");
+    let content = fs::read_to_string(&install_ps1).expect("install.ps1 must exist");
+    assert!(
+        content.contains("$env:NVM_DIR"),
+        "install.ps1 must respect $env:NVM_DIR"
+    );
+}
+
+/// P2-15: install.ps1 shell script download must not use -ErrorAction SilentlyContinue
+/// (which silently swallows download failures and prints false success).
+/// Other uses (cleanup, file reads) are acceptable.
+#[test]
+fn install_ps1_no_silently_continue_on_download() {
+    let install_ps1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.ps1");
+    let content = fs::read_to_string(&install_ps1).expect("install.ps1 must exist");
+    assert!(
+        !content.contains("OutFile $shellDest -UseBasicParsing -ErrorAction SilentlyContinue"),
+        "install.ps1 shell script download must not use -ErrorAction SilentlyContinue"
+    );
+}

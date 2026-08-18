@@ -121,7 +121,10 @@ _nvm_init() {
             fi
         }
 
-        case "$OSTYPE" in
+        # Install auto-switch hook on Unix (bash/zsh).
+        # Fall back to uname if OSTYPE is unset (plain sh / some non-bash shells).
+        local _ostype="${OSTYPE:-$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')}"
+        case "$_ostype" in
             darwin*|linux*)
                 if [ -n "$BASH_VERSION" ]; then
                     PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND;}_nvm_auto_switch"
@@ -143,6 +146,12 @@ _nvm_load_completions() {
             if [ -n "$BASH_VERSION" ] && [ -f "${completions_dir}/nvm.bash" ]; then
                 . "${completions_dir}/nvm.bash"
             elif [ -n "$ZSH_VERSION" ] && [ -f "${completions_dir}/_nvm" ]; then
+                # Bootstrap compinit if not already loaded — without it,
+                # autoload -Uz _nvm silently does nothing.
+                if ! typeset -f compinit >/dev/null 2>&1; then
+                    autoload -Uz compinit
+                    compinit -u 2>/dev/null
+                fi
                 # Guard against duplicate fpath entries on re-source
                 case " ${fpath[*]} " in
                     *" ${completions_dir} "*) ;;
@@ -174,12 +183,17 @@ nvm() {
             _nvm_prepend_path
             ;;
         deactivate)
-            "${NVM_RUST_BIN}/nvm" deactivate 2>/dev/null
-            _nvm_strip_path
-            # Disarm auto-switch so cd into .nvmrc dir doesn't re-activate
-            _nvm_remove_auto_switch_hook
-            unset NVM_RUST_AUTO_SWITCH_DONE
-            echo "nvm-rust deactivated (PATH updated)"
+            if "${NVM_RUST_BIN}/nvm" deactivate; then
+                _nvm_strip_path
+                _nvm_remove_auto_switch_hook
+                unset NVM_RUST_AUTO_SWITCH_DONE
+                echo "nvm-rust deactivated (PATH updated)"
+            else
+                _nvm_strip_path
+                _nvm_remove_auto_switch_hook
+                unset NVM_RUST_AUTO_SWITCH_DONE
+                echo "nvm-rust deactivated (with warnings)" >&2
+            fi
             ;;
         unload)
             "${NVM_RUST_BIN}/nvm" unload 2>/dev/null
@@ -189,6 +203,8 @@ nvm() {
             unset -f _nvm_path_remove _nvm_remove_auto_switch_hook _nvm_init
             unset -f _nvm_binary_exists _nvm_load_completions
             unset NVM_RUST_SOURCED NVM_RUST_AUTO_SWITCH_DONE
+            unset NVM_RUST_DIR NVM_RUST_BIN NVM_RUST_SHIMS
+            unset NVM_RUST_ACTIVE NVM_RUST_ACTIVE_BIN NVM_RUST_SH
             echo "nvm-rust unloaded from shell"
             ;;
         upgrade|update)

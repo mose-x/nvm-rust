@@ -443,7 +443,7 @@ main() {
     local fish_path_line="set -gx PATH ${nvm_dir}/shims ${INSTALL_DIR} \$PATH"
 
     if [ -f "$shell_profile" ]; then
-        if grep -qF "nvm.sh" "$shell_profile" 2>/dev/null || grep -qF "nvm.rust" "$shell_profile" 2>/dev/null; then
+        if grep -qF "# nvm-rs" "$shell_profile" 2>/dev/null; then
             info "Shell integration already configured in $shell_profile"
         else
             echo "" >> "$shell_profile"
@@ -524,7 +524,7 @@ uninstall_self() {
         exit 0
     fi
 
-    local nvm_dir="$HOME/.nvm.rust"
+    local nvm_dir="${NVM_INSTALL_DIR:-$HOME/.nvm.rust}"
     rm -f "${nvm_dir}/bin/nvm" "${nvm_dir}/bin/nvm.sh" 2>/dev/null || true
     rm -rf "${nvm_dir}/shims" 2>/dev/null || true
     rm -f "${nvm_dir}/current" 2>/dev/null || true
@@ -547,7 +547,7 @@ uninstall_all() {
         exit 0
     fi
 
-    local nvm_dir="$HOME/.nvm.rust"
+    local nvm_dir="${NVM_INSTALL_DIR:-$HOME/.nvm.rust}"
     rm -rf "$nvm_dir" 2>/dev/null || true
     rm -f "$BIN_LINK" 2>/dev/null || true
     clean_shell_config

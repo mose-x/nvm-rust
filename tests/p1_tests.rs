@@ -102,8 +102,8 @@ fn p1_8_nvm_fish_respects_nvm_dir() {
     let content = fs::read_to_string(&nvm_fish).expect("nvm.fish must exist");
 
     assert!(
-        content.contains("set -q NVM_DIR"),
-        "nvm.fish must check if NVM_DIR is set (set -q NVM_DIR)"
+        content.contains("test -n \"$NVM_DIR\""),
+        "nvm.fish must check if NVM_DIR is set and non-empty (test -n)"
     );
     assert!(
         !content.contains(r#"set -g NVM_RUST_DIR "$HOME/.nvm.rust""#),
@@ -444,5 +444,86 @@ fn p1_9_psm1_remove_from_path_uses_current() {
     assert!(
         content.contains("Where-Object"),
         "nvm.psm1 Remove-NvmFromPath must filter current PATH elements"
+    );
+}
+
+/// P2-5: nvm.sh deactivate must not blindly swallow all stderr with 2>/dev/null.
+/// Should check the exit code and report warnings to the user.
+#[test]
+fn p2_5_nvm_sh_deactivate_checks_exit_code() {
+    let nvm_sh = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.sh");
+    let content = fs::read_to_string(&nvm_sh).expect("nvm.sh must exist");
+    // The old code had `deactivate 2>/dev/null` which swallowed all errors.
+    // The fix uses an if/else to check the exit code.
+    assert!(
+        !content.contains("deactivate 2>/dev/null"),
+        "nvm.sh deactivate must not swallow all stderr with 2>/dev/null"
+    );
+}
+
+/// P2-6: nvm.sh unload must unset ALL NVM_RUST_* variables, not just
+/// NVM_RUST_SOURCED and NVM_RUST_AUTO_SWITCH_DONE.
+#[test]
+fn p2_6_nvm_sh_unload_unsets_all_vars() {
+    let nvm_sh = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.sh");
+    let content = fs::read_to_string(&nvm_sh).expect("nvm.sh must exist");
+    // Check each variable appears on an `unset` line (bash allows multiple
+    // vars per unset: `unset VAR1 VAR2 VAR3`).
+    for var in &[
+        "NVM_RUST_DIR",
+        "NVM_RUST_BIN",
+        "NVM_RUST_SHIMS",
+        "NVM_RUST_ACTIVE",
+    ] {
+        let found = content
+            .lines()
+            .any(|line| line.contains("unset") && line.contains(var));
+        assert!(found, "nvm.sh unload must unset {}", var);
+    }
+}
+
+/// P2-8: nvm.sh must bootstrap compinit for zsh so completions actually load
+/// even if the user's zshrc hasn't called compinit.
+#[test]
+fn p2_8_nvm_sh_bootstraps_compinit() {
+    let nvm_sh = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.sh");
+    let content = fs::read_to_string(&nvm_sh).expect("nvm.sh must exist");
+    assert!(
+        content.contains("compinit"),
+        "nvm.sh must bootstrap compinit for zsh completions"
+    );
+}
+
+/// P2-9: nvm.sh auto-switch hook must fall back to `uname` when OSTYPE is
+/// unset (plain sh / some non-bash shells), matching the PATH setup pattern.
+#[test]
+fn p2_9_nvm_sh_auto_switch_has_uname_fallback() {
+    let nvm_sh = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.sh");
+    let content = fs::read_to_string(&nvm_sh).expect("nvm.sh must exist");
+    assert!(
+        content.contains("uname -s") && content.contains("_ostype"),
+        "nvm.sh auto-switch hook must fall back to uname when OSTYPE is unset"
+    );
+}
+
+/// P2-16: nvm.fish must use `test -n` (not `set -q`) for NVM_DIR so an
+/// empty-string NVM_DIR doesn't break all paths.
+#[test]
+fn p2_16_nvm_fish_nvm_dir_empty_guard() {
+    let nvm_fish = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.fish");
+    let content = fs::read_to_string(&nvm_fish).expect("nvm.fish must exist");
+    assert!(
+        content.contains("test -n \"$NVM_DIR\""),
+        "nvm.fish must use test -n (not set -q) to guard against empty NVM_DIR"
     );
 }
