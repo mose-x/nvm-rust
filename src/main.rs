@@ -2,6 +2,7 @@ use anyhow::Result;
 
 use colored::Colorize;
 
+mod alias;
 mod cli;
 mod commands;
 mod completions;
@@ -13,7 +14,9 @@ mod fs_util;
 mod i18n;
 mod lock;
 mod lts;
+mod mirror;
 mod proxy;
+mod shell_config;
 mod shim;
 mod system;
 mod term;
