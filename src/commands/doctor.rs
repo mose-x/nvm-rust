@@ -228,14 +228,14 @@ fn check_shell_config(_nvm_dir: &Path) {
             println!(
                 "  {} {}",
                 "✓".green().bold(),
-                format_t("doctor_shell_config_ok", &[rc_path.to_string()])
+                format_t("doctor_shell_config_ok", std::slice::from_ref(rc_path))
             );
             return;
         } else if has_nvm {
             println!(
                 "  {} {}",
                 "⚠".yellow().bold(),
-                format_t("doctor_shell_config_legacy", &[rc_path.to_string()])
+                format_t("doctor_shell_config_legacy", std::slice::from_ref(rc_path))
             );
             return;
         }
