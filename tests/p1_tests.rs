@@ -215,20 +215,31 @@ fn p1_5_uninstall_has_auto_switch_logic() {
     );
 }
 
-/// P1-6: upgrade.rs must have swap_binary function (used by rollback).
+/// P1-6: swap_binary function and BAK_SUFFIX constant must exist for rollback.
+/// After P1-7 refactoring these moved from upgrade.rs to binary_swap.rs,
+/// re-exported through upgrade::* so `commands::swap_binary` still works.
 #[test]
 fn p1_6_upgrade_has_swap_binary() {
-    let upgrade_rs =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/upgrade.rs");
-    let content = fs::read_to_string(&upgrade_rs).expect("upgrade.rs must exist");
+    let binary_swap_rs =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/binary_swap.rs");
+    let content = fs::read_to_string(&binary_swap_rs).expect("binary_swap.rs must exist");
 
     assert!(
         content.contains("fn swap_binary"),
-        "upgrade.rs must have swap_binary function for rollback"
+        "binary_swap.rs must have swap_binary function for rollback"
     );
     assert!(
         content.contains("BAK_SUFFIX"),
-        "upgrade.rs must have BAK_SUFFIX constant for backup file naming"
+        "binary_swap.rs must have BAK_SUFFIX constant for backup file naming"
+    );
+
+    // Verify upgrade.rs re-exports binary_swap so callers are unaffected.
+    let upgrade_rs =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/upgrade.rs");
+    let upgrade_content = fs::read_to_string(&upgrade_rs).expect("upgrade.rs must exist");
+    assert!(
+        upgrade_content.contains("binary_swap::*"),
+        "upgrade.rs must re-export binary_swap module"
     );
 }
 

@@ -6,7 +6,9 @@ use crate::config::Config;
 use crate::system::{get_nvm_dir, URI};
 use crate::utils::{display_width, lts_codename_to_major, pad_left, pad_right, parse_major};
 
+mod binary_swap;
 mod doctor;
+mod download_verify;
 mod info;
 mod init;
 mod install;
@@ -18,15 +20,16 @@ mod package_upgrade;
 mod proxy_cmd;
 mod refresh;
 mod reinstall;
+mod release_api;
 mod run;
 mod upgrade;
 mod version_resolve;
 
 // `install_source`, `package_upgrade`, and `reinstall` are sub-modules of the
-// install concern. Their public items are re-exported through `install::*`
-// (install.rs has `pub(crate) use super::{install_source::*, package_upgrade::*, reinstall::*}`),
-// so callers reach them as `commands::install_latest_npm`,
-// `commands::reinstall_packages`, etc. — the same paths used before the split.
+// install concern (re-exported through `install::*`); `binary_swap`,
+// `download_verify`, and `release_api` are sub-modules of the upgrade concern
+// (re-exported through `upgrade::*`). Callers reach all of them as
+// `commands::function_name` via the `pub use` below.
 pub use {doctor::*, info::*, init::*, install::*, listing::*, migrate::*, refresh::*, upgrade::*};
 
 // Compiled-once regexes used in version resolution. `Regex::new` is not free
