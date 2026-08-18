@@ -9,6 +9,10 @@ REPO_OWNER="mose-x"
 REPO_NAME="nvm-rust"
 BINARY_NAME="nvm"
 INSTALL_DIR="${NVM_INSTALL_DIR:-$HOME/.nvm.rust/bin}"
+# Derive NVM_DIR (root) from INSTALL_DIR (bin) so all functions agree on the
+# root path. Previously create_shims/uninstall used ${NVM_INSTALL_DIR:-…/}
+# while INSTALL_DIR used ${NVM_INSTALL_DIR:-…/bin} — inconsistent when set.
+NVM_DIR="$(dirname "$INSTALL_DIR")"
 BIN_LINK="/usr/local/bin/nvm"
 
 # Directory the script itself lives in. When the release archive is extracted
@@ -256,7 +260,7 @@ install_completion() {
 }
 
 create_shims() {
-    local nvm_dir="${NVM_INSTALL_DIR:-$HOME/.nvm.rust}"
+    local nvm_dir="$NVM_DIR"
     local nvm_bin="${nvm_dir}/bin/nvm"
 
     # If nvm binary exists, delegate to it — it creates all 8 shims
@@ -379,7 +383,7 @@ main() {
     # offline machines, or for users who deleted the repo's `main` branch
     # tag). Fall back to a raw download only if the bundled files are
     # missing (e.g. an older / hand-rolled tarball).
-    local nvm_dir="${NVM_INSTALL_DIR:-$HOME/.nvm.rust}"
+    local nvm_dir="$NVM_DIR"
     local shell_dir="${nvm_dir}/shell"
     mkdir -p "$shell_dir"
 
@@ -524,7 +528,7 @@ uninstall_self() {
         exit 0
     fi
 
-    local nvm_dir="${NVM_INSTALL_DIR:-$HOME/.nvm.rust}"
+    local nvm_dir="$NVM_DIR"
     rm -f "${nvm_dir}/bin/nvm" "${nvm_dir}/bin/nvm.sh" 2>/dev/null || true
     rm -rf "${nvm_dir}/shims" 2>/dev/null || true
     rm -f "${nvm_dir}/current" 2>/dev/null || true
@@ -547,7 +551,7 @@ uninstall_all() {
         exit 0
     fi
 
-    local nvm_dir="${NVM_INSTALL_DIR:-$HOME/.nvm.rust}"
+    local nvm_dir="$NVM_DIR"
     rm -rf "$nvm_dir" 2>/dev/null || true
     rm -f "$BIN_LINK" 2>/dev/null || true
     clean_shell_config
@@ -567,7 +571,7 @@ clean_shell_config() {
     esac
     [ -f "$profile" ] || return 0
     cp "$profile" "${profile}.bak" 2>/dev/null || true
-    grep -Ev "nvm.rust|nvm.sh|NVM_HOME" "$profile" > "${profile}.tmp" 2>/dev/null && mv "${profile}.tmp" "$profile" || rm -f "${profile}.tmp"
+    grep -Ev "nvm\.rust|nvm\.sh|NVM_HOME" "$profile" > "${profile}.tmp" 2>/dev/null && mv "${profile}.tmp" "$profile" || rm -f "${profile}.tmp"
     info "Shell config cleaned: $profile"
 }
 

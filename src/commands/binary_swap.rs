@@ -10,7 +10,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::i18n::{format_t, T};
-use crate::system::{get_home_dir, R_NVM_PATH};
 
 /// Backup file written next to the live binary before each swap. `--rollback`
 /// restores from this. Overwritten on every upgrade, so it always holds the
@@ -304,20 +303,6 @@ pub(crate) fn rollback_binary(bin_path: &Path) -> Result<()> {
     );
 
     Ok(())
-}
-
-/// Resolve the install dir from `NVM_INSTALL_DIR` or default to
-/// `~/.nvm.rust/bin`. Currently only used for the README/help text; the
-/// actual swap uses `current_binary_path()` so upgrades work even if the
-/// user installed to a non-default location.
-#[allow(dead_code)]
-pub(crate) fn install_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("NVM_INSTALL_DIR") {
-        if !dir.is_empty() {
-            return PathBuf::from(dir);
-        }
-    }
-    PathBuf::from(get_home_dir()).join(R_NVM_PATH).join("bin")
 }
 
 #[cfg(test)]

@@ -311,24 +311,30 @@ fn install_sh_already_configured_uses_precise_marker() {
     );
 }
 
-/// P2-11: install.sh uninstall functions must respect NVM_INSTALL_DIR
-/// instead of hardcoding $HOME/.nvm.rust.
+/// P2-11/P1-2: install.sh uninstall functions must use the consistent $NVM_DIR
+/// variable (derived from NVM_INSTALL_DIR at top of script) instead of
+/// hardcoding $HOME/.nvm.rust.
 #[test]
-fn install_sh_uninstall_respects_install_dir() {
+fn install_sh_uninstall_uses_nvm_dir() {
     let install_sh = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
     let content = fs::read_to_string(&install_sh).expect("install.sh must exist");
-    // Both uninstall_self and uninstall_all should use NVM_INSTALL_DIR
+    // Verify NVM_DIR is defined at the top
+    assert!(
+        content.contains("NVM_DIR=\"$(dirname \"$INSTALL_DIR\")\""),
+        "install.sh must define NVM_DIR derived from INSTALL_DIR"
+    );
+    // Both uninstall functions should use $NVM_DIR
     let uninstall_self_pos = content.find("uninstall_self()").unwrap_or(0);
     let uninstall_all_pos = content.find("uninstall_all()").unwrap_or(0);
     let self_section = &content[uninstall_self_pos..uninstall_all_pos];
     let all_section = &content[uninstall_all_pos..];
     assert!(
-        self_section.contains("NVM_INSTALL_DIR"),
-        "install.sh uninstall_self must respect NVM_INSTALL_DIR"
+        self_section.contains("$NVM_DIR"),
+        "install.sh uninstall_self must use $NVM_DIR"
     );
     assert!(
-        all_section.contains("NVM_INSTALL_DIR"),
-        "install.sh uninstall_all must respect NVM_INSTALL_DIR"
+        all_section.contains("$NVM_DIR"),
+        "install.sh uninstall_all must use $NVM_DIR"
     );
 }
 
@@ -353,5 +359,28 @@ fn install_ps1_no_silently_continue_on_download() {
     assert!(
         !content.contains("OutFile $shellDest -UseBasicParsing -ErrorAction SilentlyContinue"),
         "install.ps1 shell script download must not use -ErrorAction SilentlyContinue"
+    );
+}
+
+/// P1-3: Windows shim script must have path traversal defense-in-depth
+/// (findstr ".." guard), matching the Unix shim's case guard.
+#[test]
+fn windows_shim_has_path_traversal_guard() {
+    let shim_rs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shim.rs");
+    let content = fs::read_to_string(&shim_rs).expect("shim.rs must exist");
+    assert!(
+        content.contains("findstr \"..\""),
+        "Windows shim script must have findstr \"..\" path traversal guard"
+    );
+}
+
+/// P3-2: install.sh grep pattern must escape dots (in ERE, . matches any char).
+#[test]
+fn install_sh_grep_escapes_dots() {
+    let install_sh = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
+    let content = fs::read_to_string(&install_sh).expect("install.sh must exist");
+    assert!(
+        content.contains("nvm\\.rust"),
+        "install.sh grep pattern must escape dots (nvm\\.rust)"
     );
 }

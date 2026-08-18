@@ -108,6 +108,7 @@ function nvm --description "Node version manager (nvm-rust)"
             functions -e nvm
             functions -e __nvm_resolve
             functions -e __nvm_strip_path
+            functions -e __nvm_auto_switch
 
         case help ''
             echo "nvm-rs — Node.js version manager (Fish shell)"
@@ -157,7 +158,8 @@ end
 # Auto-switch when entering a directory with .nvmrc
 function __nvm_auto_switch --on-variable PWD --description "Auto-switch Node.js version when changing directories"
     if test -f ".nvmrc"
-        set -l ver (cat .nvmrc | string trim)
+        # Extract first token only — handles "18 # comment" correctly (matches nvm.sh)
+        set -l ver (head -1 .nvmrc | awk '{print $1}')
         if test -n "$ver"
             # Only switch if different from current
             set -l current ($NVM_RUST_BIN/nvm current 2>/dev/null | string trim)

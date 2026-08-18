@@ -69,6 +69,13 @@ if "%CURRENT%"=="none" (
     echo nvm: deactivated. Run 'nvm use ^<version^>' to reactivate.
     exit /b 1
 )
+REM Defense-in-depth: reject path traversal in CURRENT (matches Unix shim guard)
+if not "%CURRENT%"=="" (
+    echo %CURRENT% | findstr ".." >nul && (
+        echo nvm: invalid current version
+        exit /b 1
+    )
+)
 call :resolve
 if not defined BIN (
     "%NVM_DIR%\bin\nvm.exe" auto --silent 2>nul
