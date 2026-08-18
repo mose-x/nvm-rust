@@ -14,18 +14,21 @@ NVM_RUST_ACTIVE="${NVM_RUST_DIR}/active"
 
 # On Windows (Git Bash/MSYS), Node.js executables are in the version root,
 # not in a bin/ subdirectory. Use active directly instead of active/bin.
-case "$(uname -s 2>/dev/null)" in
-    MINGW*|MSYS*|CYGWIN*)
-        NVM_RUST_ACTIVE_BIN="${NVM_RUST_ACTIVE}"
-        ;;
-    *)
-        NVM_RUST_ACTIVE_BIN="${NVM_RUST_ACTIVE}/bin"
-        ;;
-esac
+# Fall back to OSTYPE if uname is unavailable.
+if [ -n "${OSTYPE:-}" ]; then
+    case "$OSTYPE" in
+        msys*|cygwin*) NVM_RUST_ACTIVE_BIN="${NVM_RUST_ACTIVE}" ;;
+        *) NVM_RUST_ACTIVE_BIN="${NVM_RUST_ACTIVE}/bin" ;;
+    esac
+else
+    case "$(uname -s 2>/dev/null)" in
+        MINGW*|MSYS*|CYGWIN*) NVM_RUST_ACTIVE_BIN="${NVM_RUST_ACTIVE}" ;;
+        *) NVM_RUST_ACTIVE_BIN="${NVM_RUST_ACTIVE}/bin" ;;
+    esac
+fi
 
-# Guard against infinite recursion: _nvm_init sources this file, which
-# calls _nvm_init at the bottom. Without this guard, each source triggers
-# another _nvm_init → another source → stack overflow.
+# Guard against double-init: the upgrade/refresh cases below re-source this
+# file; without a guard, the re-source would call _nvm_init again.
 NVM_RUST_SOURCED="${NVM_RUST_SOURCED:-0}"
 
 # Check if nvm binary exists
@@ -33,12 +36,24 @@ _nvm_binary_exists() {
     [ -f "${NVM_RUST_BIN}/nvm" ] || [ -f "${NVM_RUST_BIN}/nvm.exe" ]
 }
 
+# Remove all occurrences of an entry from PATH (not just prefix).
+_nvm_path_remove() {
+    local entry="$1"
+    local newpath=""
+    local IFS_OLD="$IFS"
+    IFS=":"
+    for d in $PATH; do
+        if [ "$d" != "$entry" ]; then
+            newpath="${newpath:+$newpath:}$d"
+        fi
+    done
+    IFS="$IFS_OLD"
+    export PATH="$newpath"
+}
+
 # Add nvm shims + bin + active/bin to PATH if not already there.
 # Prepend bin first, then shims, then active/bin, so the final order is:
 #   active/bin:shims:bin:<rest>
-# active/bin resolves to the current version's bin via symlink,
-# so global npm packages (tsc/eslint/codex) work immediately
-# after `nvm use` — no `source` needed.
 _nvm_prepend_path() {
     case ":${PATH}:" in
         *":${NVM_RUST_BIN}:"*) ;;
@@ -48,9 +63,7 @@ _nvm_prepend_path() {
         *":${NVM_RUST_SHIMS}:"*) ;;
         *) export PATH="${NVM_RUST_SHIMS}:${PATH}" ;;
     esac
-    # Full shim mode: active/bin resolves to current version's bin via symlink
-    # On Git Bash for Windows, [ -e ] may not detect junctions, so also
-    # check [ -L ] (symlink/reparse point) and [ -d ] (dir through link).
+    # Full shim mode: active/bin resolves to current version's bin via symlink.
     if [ -e "${NVM_RUST_ACTIVE}" ] || [ -L "${NVM_RUST_ACTIVE}" ] || [ -d "${NVM_RUST_ACTIVE_BIN}" ]; then
         case ":${PATH}:" in
             *":${NVM_RUST_ACTIVE_BIN}:"*) ;;
@@ -59,9 +72,30 @@ _nvm_prepend_path() {
     fi
 }
 
-# Initialize — called on first source and after upgrade/refresh.
-# Does NOT re-source nvm.sh (that caused infinite recursion).
-# The upgrade/refresh cases below handle re-sourcing explicitly.
+# Remove nvm entries from PATH.
+_nvm_strip_path() {
+    _nvm_path_remove "${NVM_RUST_ACTIVE_BIN}"
+    _nvm_path_remove "${NVM_RUST_SHIMS}"
+    _nvm_path_remove "${NVM_RUST_BIN}"
+}
+
+# Remove the auto-switch hook from PROMPT_COMMAND (bash) or precmd (zsh).
+_nvm_remove_auto_switch_hook() {
+    if [ -n "$BASH_VERSION" ]; then
+        case "$PROMPT_COMMAND" in
+            *_nvm_auto_switch*) PROMPT_COMMAND="${PROMPT_COMMAND//_nvm_auto_switch/}"
+                PROMPT_COMMAND="${PROMPT_COMMAND//;;/;}"
+                PROMPT_COMMAND="${PROMPT_COMMAND#;}"
+                PROMPT_COMMAND="${PROMPT_COMMAND%;}"
+                ;;
+        esac
+    elif [ -n "$ZSH_VERSION" ]; then
+        autoload -Uz add-zsh-hook 2>/dev/null
+        add-zsh-hook -d precmd _nvm_auto_switch 2>/dev/null
+    fi
+}
+
+# Initialize — called on first source and after upgrade/refresh re-source.
 _nvm_init() {
     if ! _nvm_binary_exists; then
         return 0
@@ -69,13 +103,14 @@ _nvm_init() {
 
     _nvm_prepend_path
 
-    # Auto-switch on cd (bash/zsh)
+    # Auto-switch on cd (bash/zsh, Unix only)
     if [ -z "$NVM_RUST_AUTO_SWITCH_DONE" ]; then
-        export NVM_RUST_AUTO_SWITCH_DONE=1
+        NVM_RUST_AUTO_SWITCH_DONE=1
         _nvm_auto_switch() {
             if [ -f ".nvmrc" ]; then
+                # Read first token only — handles "18 # comment" correctly
                 local ver
-                ver=$(cat .nvmrc | tr -d '[:space:]')
+                ver=$(head -1 .nvmrc | awk '{print $1}')
                 if [ -n "$ver" ]; then
                     local current
                     current=$("${NVM_RUST_BIN}/nvm" current 2>/dev/null | tr -d '[:space:]')
@@ -86,7 +121,6 @@ _nvm_init() {
             fi
         }
 
-        # Hook into PROMPT_COMMAND (bash) or precmd (zsh)
         case "$OSTYPE" in
             darwin*|linux*)
                 if [ -n "$BASH_VERSION" ]; then
@@ -109,7 +143,11 @@ _nvm_load_completions() {
             if [ -n "$BASH_VERSION" ] && [ -f "${completions_dir}/nvm.bash" ]; then
                 . "${completions_dir}/nvm.bash"
             elif [ -n "$ZSH_VERSION" ] && [ -f "${completions_dir}/_nvm" ]; then
-                fpath=( "${completions_dir}" $fpath )
+                # Guard against duplicate fpath entries on re-source
+                case " ${fpath[*]} " in
+                    *" ${completions_dir} "*) ;;
+                    *) fpath=( "${completions_dir}" $fpath ) ;;
+                esac
                 autoload -Uz _nvm
             fi
             ;;
@@ -137,45 +175,45 @@ nvm() {
             ;;
         auto)
             "${NVM_RUST_BIN}/nvm" auto
+            _nvm_prepend_path
             ;;
         deactivate)
             "${NVM_RUST_BIN}/nvm" deactivate 2>/dev/null
-            export PATH="${PATH#${NVM_RUST_ACTIVE_BIN}:}"
-            export PATH="${PATH#${NVM_RUST_SHIMS}:}"
-            export PATH="${PATH#${NVM_RUST_BIN}:}"
+            _nvm_strip_path
+            # Disarm auto-switch so cd into .nvmrc dir doesn't re-activate
+            _nvm_remove_auto_switch_hook
+            unset NVM_RUST_AUTO_SWITCH_DONE
             echo "nvm-rust deactivated (PATH updated)"
             ;;
         unload)
             "${NVM_RUST_BIN}/nvm" unload 2>/dev/null
-            export PATH="${PATH#${NVM_RUST_ACTIVE_BIN}:}"
-            export PATH="${PATH#${NVM_RUST_SHIMS}:}"
-            export PATH="${PATH#${NVM_RUST_BIN}:}"
-            unset -f nvm _nvm_auto_switch
+            _nvm_strip_path
+            _nvm_remove_auto_switch_hook
+            unset -f nvm _nvm_auto_switch _nvm_prepend_path _nvm_strip_path
+            unset -f _nvm_path_remove _nvm_remove_auto_switch_hook _nvm_init
+            unset -f _nvm_binary_exists _nvm_load_completions
+            unset NVM_RUST_SOURCED NVM_RUST_AUTO_SWITCH_DONE
             echo "nvm-rust unloaded from shell"
             ;;
         upgrade|update)
             "${NVM_RUST_BIN}/nvm" "$@"
-            # Re-source updated nvm.sh so new shell function logic takes effect.
-            # Use the guard to prevent recursion during re-source.
             if [ -f "${NVM_RUST_SH}" ]; then
                 unset NVM_RUST_SOURCED
                 . "${NVM_RUST_SH}"
             fi
-            _nvm_prepend_path
             ;;
         refresh)
             "${NVM_RUST_BIN}/nvm" "$@"
-            # Re-source updated nvm.sh so new shell function logic takes effect.
             if [ -f "${NVM_RUST_SH}" ]; then
                 unset NVM_RUST_SOURCED
                 . "${NVM_RUST_SH}"
             fi
-            _nvm_prepend_path
             ;;
         shell)
             echo "NVM_RUST_DIR: $NVM_RUST_DIR"
             echo "NVM_RUST_BIN: $NVM_RUST_BIN"
             echo "NVM_RUST_ACTIVE: $NVM_RUST_ACTIVE"
+            echo "NVM_RUST_ACTIVE_BIN: $NVM_RUST_ACTIVE_BIN"
             ;;
         *)
             "${NVM_RUST_BIN}/nvm" "$@"
@@ -185,11 +223,11 @@ nvm() {
 
 # Auto-initialize — only on first source (guarded against recursion)
 if [ "$NVM_RUST_SOURCED" = "0" ]; then
-    export NVM_RUST_SOURCED=1
+    NVM_RUST_SOURCED=1
     _nvm_init
 fi
 
 # Load completions if shell is interactive
-if [[ $- == *i* ]] || [ -z "$PS1" ]; then
+if [[ $- == *i* ]]; then
     _nvm_load_completions
 fi

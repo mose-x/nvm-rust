@@ -192,10 +192,13 @@ fn check_shell_config(_nvm_dir: &Path) {
             Err(_) => continue,
         };
         let has_nvm = content.contains("nvm.rust") || content.contains("nvm.sh");
-        // Check for "active/bin" specifically, not just "active" which could
-        // appear in unrelated comments or variable names.
-        let has_active_bin = content.contains("active/bin") || content.contains("active\\bin");
-        if has_nvm && has_active_bin {
+        // Check for "active" in a PATH context — Unix uses active/bin,
+        // PowerShell uses active; (semicolon separator) or active" (end of string).
+        let has_active = content.contains("active/bin")
+            || content.contains("active\\bin")
+            || content.contains("active;")
+            || content.contains("active\"");
+        if has_nvm && has_active {
             println!(
                 "  {} shell config {} (full shim format)",
                 "✓".green().bold(),
