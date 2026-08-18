@@ -8,8 +8,9 @@ use colored::Colorize;
 use std::path::Path;
 
 use crate::config::load_config;
+use crate::i18n::{format_t, T};
 use crate::shim::SHIM_COMMANDS;
-use crate::system::{exe_path, get_nvm_dir, version_bin_dir, URI};
+use crate::system::{exe_path, get_nvm_dir, version_bin_dir};
 
 /// Entry point: run all checks, print results, optionally fix.
 pub fn doctor(fix: bool, network: bool) -> Result<()> {
@@ -34,10 +35,7 @@ pub fn doctor(fix: bool, network: bool) -> Result<()> {
 
     if fix {
         println!();
-        println!(
-            "  {} Run 'nvm doctor' again to verify fixes, or restart your shell.",
-            "ℹ".cyan().bold()
-        );
+        println!("  {} {}", "ℹ".cyan().bold(), T("doctor_fix_summary"));
     }
 
     Ok(())
@@ -48,12 +46,14 @@ fn check_binary() {
     let ver = env!("CARGO_PKG_VERSION");
     match exe {
         Some(path) => println!(
-            "  {} binary       v{} at {}",
+            "  {} {}",
             "✓".green().bold(),
-            ver,
-            path.display()
+            format_t(
+                "doctor_binary_ok",
+                &[ver.to_string(), path.display().to_string()]
+            )
         ),
-        None => println!("  {} binary       cannot find executable", "✗".red().bold()),
+        None => println!("  {} {}", "✗".red().bold(), T("doctor_binary_fail")),
     }
 }
 
@@ -74,30 +74,37 @@ fn check_shims(nvm_dir: &Path, fix: bool) {
 
     if missing.is_empty() {
         println!(
-            "  {} shims        {}/{} present",
+            "  {} {}",
             "✓".green().bold(),
-            SHIM_COMMANDS.len(),
-            SHIM_COMMANDS.len()
+            format_t(
+                "doctor_shims_ok",
+                &[
+                    SHIM_COMMANDS.len().to_string(),
+                    SHIM_COMMANDS.len().to_string()
+                ]
+            )
         );
     } else if fix {
         match crate::shim::create_shims() {
             Ok(()) => println!(
-                "  {} shims        {} missing, fixed",
+                "  {} {}",
                 "⚠".yellow().bold(),
-                missing.len()
+                format_t("doctor_shims_fixed", &[missing.len().to_string()])
             ),
             Err(e) => println!(
-                "  {} shims        {} missing, fix FAILED: {}",
+                "  {} {}",
                 "✗".red().bold(),
-                missing.len(),
-                e
+                format_t(
+                    "doctor_shims_fix_failed",
+                    &[missing.len().to_string(), e.to_string()]
+                )
             ),
         }
     } else {
         println!(
-            "  {} shims        {} missing — run 'nvm refresh'",
+            "  {} {}",
             "✗".red().bold(),
-            missing.len()
+            format_t("doctor_shims_missing", &[missing.len().to_string()])
         );
     }
 }
@@ -108,58 +115,77 @@ fn check_current(nvm_dir: &Path, fix: bool) {
         Ok(content) => {
             let v = content.trim();
             if v.is_empty() || v == "none" {
-                println!("  {} current      deactivated", "ℹ".cyan().bold());
+                println!(
+                    "  {} {}",
+                    "ℹ".cyan().bold(),
+                    T("doctor_current_deactivated")
+                );
             } else if nvm_dir.join(v).is_dir() {
-                println!("  {} current      {}", "✓".green().bold(), v);
+                println!(
+                    "  {} {}",
+                    "✓".green().bold(),
+                    format_t("doctor_current_ok", &[v.to_string()])
+                );
             } else if fix {
                 if let Some(latest) = crate::shim::next_available_version("") {
                     match crate::utils::atomic_write(&current_file, &latest) {
                         Ok(()) => println!(
-                            "  {} current      {} → {} (fixed)",
+                            "  {} {}",
                             "⚠".yellow().bold(),
-                            v,
-                            latest
+                            format_t("doctor_current_fixed", &[v.to_string(), latest])
                         ),
-                        Err(e) => println!("  {} current      fix FAILED: {}", "✗".red().bold(), e),
+                        Err(e) => println!(
+                            "  {} {}",
+                            "✗".red().bold(),
+                            format_t("doctor_current_fix_failed", &[e.to_string()])
+                        ),
                     }
                 } else {
-                    println!("  {} current      no installed versions", "✗".red().bold());
+                    println!("  {} {}", "✗".red().bold(), T("doctor_current_no_versions"));
                 }
             } else {
-                println!("  {} current      {} not installed", "✗".red().bold(), v);
+                println!(
+                    "  {} {}",
+                    "✗".red().bold(),
+                    format_t("doctor_current_not_installed", &[v.to_string()])
+                );
             }
         }
         Err(_) if !current_file.exists() => {
             if fix {
                 if let Some(latest) = crate::shim::next_available_version("") {
                     match crate::utils::atomic_write(&current_file, &latest) {
-                        Ok(()) => {
-                            println!("  {} current      set to {}", "⚠".yellow().bold(), latest)
-                        }
-                        Err(e) => println!("  {} current      fix FAILED: {}", "✗".red().bold(), e),
+                        Ok(()) => println!(
+                            "  {} {}",
+                            "⚠".yellow().bold(),
+                            format_t("doctor_current_set", &[latest])
+                        ),
+                        Err(e) => println!(
+                            "  {} {}",
+                            "✗".red().bold(),
+                            format_t("doctor_current_fix_failed", &[e.to_string()])
+                        ),
                     }
                 } else {
-                    println!("  {} current      not set", "ℹ".cyan().bold());
+                    println!("  {} {}", "ℹ".cyan().bold(), T("doctor_current_not_set"));
                 }
             } else {
                 println!(
-                    "  {} current      not set — run 'nvm use <version>'",
-                    "ℹ".cyan().bold()
+                    "  {} {}",
+                    "ℹ".cyan().bold(),
+                    T("doctor_current_not_set_hint")
                 );
             }
         }
-        Err(_) => println!("  {} current      unreadable", "✗".red().bold()),
+        Err(_) => println!("  {} {}", "✗".red().bold(), T("doctor_current_unreadable")),
     }
 }
 
 fn check_shim_mode(nvm_dir: &Path) {
     if crate::shim::active_exists(nvm_dir) {
-        println!("  {} shim mode    active (full shim)", "✓".green().bold());
+        println!("  {} {}", "✓".green().bold(), T("doctor_shim_mode_active"));
     } else {
-        println!(
-            "  {} shim mode    legacy — run 'nvm refresh' to migrate",
-            "ℹ".cyan().bold()
-        );
+        println!("  {} {}", "ℹ".cyan().bold(), T("doctor_shim_mode_legacy"));
     }
 }
 
@@ -200,23 +226,24 @@ fn check_shell_config(_nvm_dir: &Path) {
             || content.contains("active\"");
         if has_nvm && has_active {
             println!(
-                "  {} shell config {} (full shim format)",
+                "  {} {}",
                 "✓".green().bold(),
-                rc_path
+                format_t("doctor_shell_config_ok", std::slice::from_ref(rc_path))
             );
             return;
         } else if has_nvm {
             println!(
-                "  {} shell config {} (legacy format — run 'nvm refresh')",
+                "  {} {}",
                 "⚠".yellow().bold(),
-                rc_path
+                format_t("doctor_shell_config_legacy", std::slice::from_ref(rc_path))
             );
             return;
         }
     }
     println!(
-        "  {} shell config not configured — run 'nvm init'",
-        "⚠".yellow().bold()
+        "  {} {}",
+        "⚠".yellow().bold(),
+        T("doctor_shell_config_not_configured")
     );
 }
 
@@ -224,8 +251,9 @@ fn check_completions(nvm_dir: &Path, fix: bool) {
     let comp_dir = nvm_dir.join("completions");
     if !comp_dir.exists() {
         println!(
-            "  {} completions  not installed — run 'nvm completion <shell>'",
-            "ℹ".cyan().bold()
+            "  {} {}",
+            "ℹ".cyan().bold(),
+            T("doctor_completions_not_installed")
         );
         return;
     }
@@ -234,16 +262,25 @@ fn check_completions(nvm_dir: &Path, fix: bool) {
         .map(|mut d| d.next().is_some())
         .unwrap_or(false);
     if has_any {
-        println!("  {} completions  installed", "✓".green().bold());
+        println!("  {} {}", "✓".green().bold(), T("doctor_completions_ok"));
     } else if fix {
         match crate::completions::regenerate_completions_if_installed() {
-            Ok(_) => println!("  {} completions  regenerated", "⚠".yellow().bold()),
-            Err(e) => println!("  {} completions  fix FAILED: {}", "✗".red().bold(), e),
+            Ok(_) => println!(
+                "  {} {}",
+                "⚠".yellow().bold(),
+                T("doctor_completions_regenerated")
+            ),
+            Err(e) => println!(
+                "  {} {}",
+                "✗".red().bold(),
+                format_t("doctor_completions_fix_failed", &[e.to_string()])
+            ),
         }
     } else {
         println!(
-            "  {} completions  empty — run 'nvm completion <shell>'",
-            "⚠".yellow().bold()
+            "  {} {}",
+            "⚠".yellow().bold(),
+            T("doctor_completions_empty")
         );
     }
 }
@@ -262,24 +299,37 @@ fn check_corepack(nvm_dir: &Path, fix: bool) {
             let has_pnpm = exe_path(&bin, "pnpm").exists();
             let has_yarn = exe_path(&bin, "yarn").exists();
             if has_pnpm || has_yarn {
-                println!("  {} corepack     enabled for {}", "✓".green().bold(), v);
+                println!(
+                    "  {} {}",
+                    "✓".green().bold(),
+                    format_t("doctor_corepack_ok", &[v])
+                );
             } else if fix {
                 match crate::corepack::corepack_enable(Some(&v)) {
                     Ok(()) => println!(
-                        "  {} corepack     enabled for {} (fixed)",
+                        "  {} {}",
                         "⚠".yellow().bold(),
-                        v
+                        format_t("doctor_corepack_fixed", &[v])
                     ),
-                    Err(e) => println!("  {} corepack     fix FAILED: {}", "✗".red().bold(), e),
+                    Err(e) => println!(
+                        "  {} {}",
+                        "✗".red().bold(),
+                        format_t("doctor_corepack_fix_failed", &[e.to_string()])
+                    ),
                 }
             } else {
                 println!(
-                    "  {} corepack     not enabled — run 'nvm corepack enable'",
-                    "ℹ".cyan().bold()
+                    "  {} {}",
+                    "ℹ".cyan().bold(),
+                    T("doctor_corepack_not_enabled")
                 );
             }
         }
-        _ => println!("  {} corepack     no current version", "ℹ".cyan().bold()),
+        _ => println!(
+            "  {} {}",
+            "ℹ".cyan().bold(),
+            T("doctor_corepack_no_current")
+        ),
     }
 }
 
@@ -294,20 +344,17 @@ fn check_pnpm_source(nvm_dir: &Path) {
         Some(v) if nvm_dir.join(&v).is_dir() => {
             let pnpm_path = exe_path(&version_bin_dir(&nvm_dir.join(&v)), "pnpm");
             if !pnpm_path.exists() {
-                println!("  {} pnpm         not installed", "ℹ".cyan().bold());
+                println!("  {} {}", "ℹ".cyan().bold(), T("doctor_pnpm_not_installed"));
             } else {
                 let content = std::fs::read_to_string(&pnpm_path).unwrap_or_default();
                 if content.contains("corepack") {
-                    println!("  {} pnpm         managed by corepack", "✓".green().bold());
+                    println!("  {} {}", "✓".green().bold(), T("doctor_pnpm_corepack"));
                 } else {
-                    println!(
-                        "  {} pnpm         installed via npm — run 'nvm install-pnpm'",
-                        "⚠".yellow().bold()
-                    );
+                    println!("  {} {}", "⚠".yellow().bold(), T("doctor_pnpm_via_npm"));
                 }
             }
         }
-        _ => println!("  {} pnpm         no current version", "ℹ".cyan().bold()),
+        _ => println!("  {} {}", "ℹ".cyan().bold(), T("doctor_pnpm_no_current")),
     }
 }
 
@@ -328,22 +375,22 @@ fn check_path_conflicts(nvm_dir: &Path) {
 
     match first_node {
         Some(p) if p.starts_with(&shims_dir) || p.starts_with(nvm_dir) => {
-            println!("  {} PATH         nvm's node is first", "✓".green().bold());
+            println!("  {} {}", "✓".green().bold(), T("doctor_path_ok"));
         }
         Some(p) => {
             println!(
-                "  {} PATH         system node at {} shadows nvm",
+                "  {} {}",
                 "⚠".yellow().bold(),
-                p.display()
+                format_t("doctor_path_conflict", &[p.display().to_string()])
             );
         }
-        None => println!("  {} PATH         no node found", "ℹ".cyan().bold()),
+        None => println!("  {} {}", "ℹ".cyan().bold(), T("doctor_path_no_node")),
     }
 }
 
 fn check_network() {
     let config = load_config().unwrap_or_default();
-    let base_url = config.mirror.as_deref().unwrap_or(URI);
+    let base_url = super::get_base_url(&config);
     let client = crate::proxy::build_http_client();
     let start = std::time::Instant::now();
     match client
@@ -354,23 +401,26 @@ fn check_network() {
         Ok(resp) if resp.status().is_success() => {
             let ms = start.elapsed().as_millis();
             println!(
-                "  {} network      {} reachable ({}ms)",
+                "  {} {}",
                 "✓".green().bold(),
-                base_url,
-                ms
+                format_t("doctor_network_ok", &[base_url.to_string(), ms.to_string()])
             );
         }
         Ok(resp) => println!(
-            "  {} network      {} HTTP {}",
+            "  {} {}",
             "✗".red().bold(),
-            base_url,
-            resp.status()
+            format_t(
+                "doctor_network_http_error",
+                &[base_url.to_string(), resp.status().to_string()]
+            )
         ),
         Err(e) => println!(
-            "  {} network      {} unreachable: {}",
+            "  {} {}",
             "✗".red().bold(),
-            base_url,
-            e
+            format_t(
+                "doctor_network_unreachable",
+                &[base_url.to_string(), e.to_string()]
+            )
         ),
     }
 }

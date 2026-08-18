@@ -12,7 +12,9 @@ $ErrorActionPreference = "Stop"
 $RepoOwner = "mose-x"
 $RepoName = "nvm-rust"
 $BinaryName = "nvm"
-$InstallDir = Join-Path $env:USERPROFILE ".nvm.rust\bin"
+# Respect NVM_DIR if set (consistent with nvm.sh, nvm.fish, nvm.psm1)
+$NvmBaseDir = if ($env:NVM_DIR) { $env:NVM_DIR } else { Join-Path $env:USERPROFILE ".nvm.rust" }
+$InstallDir = Join-Path $NvmBaseDir "bin"
 
 # GitHub mirror for China users
 $GithubPrefix = ""
@@ -249,7 +251,7 @@ function Main {
     # (which would fail behind proxies, on offline machines, or for users who
     # deleted the repo's `main` branch tag). Fall back to a raw download only
     # if the bundled file is missing (e.g. an older / hand-rolled zip).
-    $nvmDir = Join-Path $env:USERPROFILE ".nvm.rust"
+    $nvmDir = $NvmBaseDir
     $shellDir = Join-Path $nvmDir "shell"
 
     if (-not (Test-Path $shellDir)) {
@@ -278,8 +280,12 @@ function Main {
         }
         try {
             $shellDest = Join-Path $shellDir "nvm.psm1"
-            Invoke-WebRequest -Uri $ps1Url -OutFile $shellDest -UseBasicParsing -ErrorAction SilentlyContinue
-            Write-Success "Shell integration scripts installed (downloaded)"
+            Invoke-WebRequest -Uri $ps1Url -OutFile $shellDest -UseBasicParsing
+            if (Test-Path $shellDest) {
+                Write-Success "Shell integration scripts installed (downloaded)"
+            } else {
+                Write-Warn "Could not download shell scripts, but nvm binary is installed"
+            }
         } catch {
             Write-Warn "Could not download shell scripts, but nvm binary is installed"
         }
@@ -414,7 +420,7 @@ goto :eof
 }
 
 function Uninstall-Self {
-    $nvmDir = Join-Path $env:USERPROFILE ".nvm.rust"
+    $nvmDir = $NvmBaseDir
 
     Write-Warn "This will remove nvm itself (binary, nvm.sh, shims, shell config)."
     Write-Info "Node versions and config will be preserved at $nvmDir"
@@ -436,7 +442,7 @@ function Uninstall-Self {
 }
 
 function Uninstall-All {
-    $nvmDir = Join-Path $env:USERPROFILE ".nvm.rust"
+    $nvmDir = $NvmBaseDir
 
     Write-Warn "This will remove nvm AND ALL installed Node versions."
     Write-Info "Everything in $nvmDir will be deleted."

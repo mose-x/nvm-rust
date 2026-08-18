@@ -2,7 +2,7 @@
 # Place this file in ~/.config/fish/functions/nvm.fish
 # Or add: source /path/to/nvm.fish in ~/.config/fish/config.fish
 
-set -g NVM_RUST_DIR (set -q NVM_DIR; and echo $NVM_DIR; or echo "$HOME/.nvm.rust")
+set -g NVM_RUST_DIR (test -n "$NVM_DIR"; and echo "$NVM_DIR"; or echo "$HOME/.nvm.rust")
 set -g NVM_RUST_BIN "$NVM_RUST_DIR/bin"
 set -g NVM_RUST_SHIMS "$NVM_RUST_DIR/shims"
 
