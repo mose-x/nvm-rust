@@ -10,15 +10,23 @@ mod doctor;
 mod info;
 mod init;
 mod install;
+mod install_source;
 mod lifecycle;
 mod listing;
 mod migrate;
+mod package_upgrade;
 mod proxy_cmd;
 mod refresh;
+mod reinstall;
 mod run;
 mod upgrade;
 mod version_resolve;
 
+// `install_source`, `package_upgrade`, and `reinstall` are sub-modules of the
+// install concern. Their public items are re-exported through `install::*`
+// (install.rs has `pub(crate) use super::{install_source::*, package_upgrade::*, reinstall::*}`),
+// so callers reach them as `commands::install_latest_npm`,
+// `commands::reinstall_packages`, etc. — the same paths used before the split.
 pub use {doctor::*, info::*, init::*, install::*, listing::*, migrate::*, refresh::*, upgrade::*};
 
 // Compiled-once regexes used in version resolution. `Regex::new` is not free
