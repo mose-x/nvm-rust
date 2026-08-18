@@ -478,6 +478,10 @@ fn p2_6_nvm_sh_unload_unsets_all_vars() {
         "NVM_RUST_BIN",
         "NVM_RUST_SHIMS",
         "NVM_RUST_ACTIVE",
+        "NVM_RUST_SOURCED",
+        "NVM_RUST_AUTO_SWITCH_DONE",
+        "NVM_RUST_ACTIVE_BIN",
+        "NVM_RUST_SH",
     ] {
         let found = content
             .lines()
@@ -615,5 +619,110 @@ fn p2_8_psm1_no_dead_original_path() {
     assert!(
         !content.contains("$script:OriginalPath"),
         "nvm.psm1 must not have dead $script:OriginalPath variable"
+    );
+}
+
+/// P1-1: nvm.fish deactivate must also erase __nvm_auto_switch (not just unload).
+/// Without this, the zombie hook re-activates nvm on the next cd into .nvmrc.
+#[test]
+fn p1_1_fish_deactivate_erases_auto_switch() {
+    let nvm_fish = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.fish");
+    let content = fs::read_to_string(&nvm_fish).expect("nvm.fish must exist");
+    let deact_pos = content
+        .find("case deactivate")
+        .expect("must have deactivate case");
+    let unload_pos = content.find("case unload").expect("must have unload case");
+    let deact_section = &content[deact_pos..unload_pos];
+    assert!(
+        deact_section.contains("functions -e __nvm_auto_switch"),
+        "nvm.fish deactivate must erase __nvm_auto_switch (zombie hook prevention)"
+    );
+}
+
+/// P1-2: nvm.psm1 .nvmrc must extract first token from first line,
+/// not read the entire file. Handles comments like "20 # comment".
+#[test]
+fn p1_2_psm1_nvmrc_first_token() {
+    let nvm_psm1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.psm1");
+    let content = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
+    assert!(
+        content.contains("TotalCount 1") && content.contains("-split"),
+        "nvm.psm1 .nvmrc must extract first token from first line (handles comments)"
+    );
+}
+
+/// P1-3: nvm.psm1 deactivate must disable auto-switch via $script:AutoSwitchEnabled.
+#[test]
+fn p1_3_psm1_deactivate_disables_auto_switch() {
+    let nvm_psm1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.psm1");
+    let content = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
+    assert!(
+        content.contains("AutoSwitchEnabled"),
+        "nvm.psm1 must have $script:AutoSwitchEnabled flag"
+    );
+    let deact_pos = content
+        .find("'deactivate' {")
+        .expect("must have deactivate switch case");
+    let deact_section = &content[deact_pos..deact_pos + 300];
+    assert!(
+        deact_section.contains("AutoSwitchEnabled = $false"),
+        "nvm.psm1 deactivate must set AutoSwitchEnabled = $false"
+    );
+    let set_loc_pos = content.find("function Set-Location").unwrap_or(0);
+    let set_loc_section = &content[set_loc_pos..];
+    assert!(
+        set_loc_section.contains("AutoSwitchEnabled"),
+        "nvm.psm1 Set-Location must check AutoSwitchEnabled flag"
+    );
+}
+
+/// P2-1: nvm.fish must not have dead __nvm_resolve function.
+#[test]
+fn p2_1_fish_no_dead_resolve() {
+    let nvm_fish = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.fish");
+    let content = fs::read_to_string(&nvm_fish).expect("nvm.fish must exist");
+    assert!(
+        !content.contains("__nvm_resolve"),
+        "nvm.fish must not have dead __nvm_resolve function"
+    );
+}
+
+/// P2-2: nvm.psm1 must not have dead Get-NvmVersion function.
+#[test]
+fn p2_2_psm1_no_dead_get_version() {
+    let nvm_psm1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.psm1");
+    let content = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
+    assert!(
+        !content.contains("function Get-NvmVersion"),
+        "nvm.psm1 must not have dead Get-NvmVersion function"
+    );
+}
+
+/// P2-3: nvm.psm1 Initialize-NvmPath must add both bin AND shims to PATH.
+#[test]
+fn p2_3_psm1_init_adds_shims() {
+    let nvm_psm1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.psm1");
+    let content = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
+    let init_pos = content
+        .find("function Initialize-NvmPath")
+        .expect("must have Init");
+    // Use a generous range — the function is ~12 lines. find('}') would
+    // match the first inner if-block's closing brace, not the function's.
+    let init_body = &content[init_pos..(init_pos + 400).min(content.len())];
+    assert!(
+        init_body.contains("$NvmShims"),
+        "nvm.psm1 Initialize-NvmPath must add $NvmShims to PATH (not just $NvmBin)"
     );
 }

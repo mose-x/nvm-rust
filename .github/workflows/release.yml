@@ -150,6 +150,10 @@ jobs:
           fi
           # Call the shared packaging script (same one local users use)
           ASSET_NAME=$(bash scripts/package.sh "$BIN" "${{ env.VERSION }}" "${{ matrix.asset_os }}" "${{ matrix.asset_arch }}")
+          if [ -z "$ASSET_NAME" ]; then
+            echo "::error::package.sh produced empty ASSET_NAME"
+            exit 1
+          fi
           echo "ASSET_NAME=$ASSET_NAME" >> $GITHUB_ENV
 
       - name: Upload artifact

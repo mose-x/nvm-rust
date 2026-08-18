@@ -16,33 +16,6 @@ if not contains "$NVM_RUST_SHIMS" $PATH
     set -gx PATH "$NVM_RUST_SHIMS" $PATH
 end
 
-# Resolve nvm version from alias
-function __nvm_resolve --description "Resolve nvm version alias"
-    set -l ver "$argv[1]"
-    set -l nvm "$NVM_RUST_BIN/nvm"
-
-    if test -z "$ver"
-        echo ""
-        return 1
-    end
-
-    # If it's already a valid version directory, return as-is
-    if test -d "$NVM_RUST_DIR/$ver"
-        echo "$ver"
-        return 0
-    end
-
-    # Try to resolve via nvm alias
-    set -l resolved (eval "$nvm" alias "$ver" 2>/dev/null | string trim)
-    if test -n "$resolved"
-        echo "$resolved"
-        return 0
-    end
-
-    # Return original if no resolution
-    echo "$ver"
-end
-
 # Remove nvm entries from PATH (matches nvm.sh _nvm_strip_path behavior).
 function __nvm_strip_path --description "Remove nvm PATH entries"
     set -l newpath
@@ -99,6 +72,7 @@ function nvm --description "Node version manager (nvm-rust)"
         case deactivate
             eval "$NVM_RUST_BIN/nvm" deactivate
             __nvm_strip_path
+            functions -e __nvm_auto_switch
 
         case unload
             __nvm_strip_path
@@ -106,7 +80,6 @@ function nvm --description "Node version manager (nvm-rust)"
             set -e NVM_RUST_BIN
             set -e NVM_RUST_SHIMS
             functions -e nvm
-            functions -e __nvm_resolve
             functions -e __nvm_strip_path
             functions -e __nvm_auto_switch
 

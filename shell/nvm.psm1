@@ -11,41 +11,22 @@ $NvmBin = Join-Path $NvmDir 'bin'
 $NvmExe = Join-Path $NvmBin 'nvm.exe'
 $NvmShims = Join-Path $NvmDir 'shims'
 
-# Ensure nvm bin is in PATH — use element comparison (not -notlike substring
-# match which falsely matches "bin-old" etc.)
+# Auto-switch flag — deactivated by `nvm deactivate`, re-enabled by `nvm use`/`auto`
+$script:AutoSwitchEnabled = $true
+
+# Ensure nvm bin + shims are in PATH — use element comparison (not -notlike
+# substring match which falsely matches "bin-old" etc.)
 function Initialize-NvmPath {
     $pathElements = if ($env:Path) { $env:Path -split ';' } else { @() }
     if ($pathElements -notcontains $NvmBin) {
         $env:Path = "$NvmBin;$env:Path"
     }
+    if ($pathElements -notcontains $NvmShims) {
+        $env:Path = "$NvmShims;$env:Path"
+    }
 }
 
 Initialize-NvmPath
-
-# Resolve nvm alias or version
-function Get-NvmVersion {
-    param([string]$Version)
-
-    if ([string]::IsNullOrEmpty($Version)) {
-        return $null
-    }
-
-    # Check if it's a valid installed version
-    $versionDir = Join-Path $NvmDir $Version
-    if (Test-Path $versionDir) {
-        return $Version
-    }
-
-    # Try to resolve alias
-    try {
-        $resolved = & $NvmExe alias $Version 2>$null
-        if ($resolved) {
-            return $resolved.Trim()
-        }
-    } catch {}
-
-    return $Version
-}
 
 # Main nvm function
 function nvm {
@@ -73,6 +54,7 @@ function nvm {
     switch ($Command) {
         'use' {
             & $NvmExe use $Arguments
+            $script:AutoSwitchEnabled = $true
             Initialize-NvmPath
         }
         'install' {
@@ -119,10 +101,12 @@ function nvm {
         }
         'auto' {
             & $NvmExe auto $Arguments
+            $script:AutoSwitchEnabled = $true
             Initialize-NvmPath
         }
         'deactivate' {
             & $NvmExe deactivate
+            $script:AutoSwitchEnabled = $false
             Remove-NvmFromPath
         }
         'unload' {
@@ -251,10 +235,15 @@ function Set-Location {
         # Call original Set-Location
         Microsoft.PowerShell\Set-Location -Path $Path -PassThru:$PassThru
 
+        # Skip auto-switch if deactivated (nvm deactivate sets flag to $false)
+        if (-not $script:AutoSwitchEnabled) { return }
+
         # Check for .nvmrc
         $nvmrcPath = Join-Path (Get-Location) '.nvmrc'
         if (Test-Path $nvmrcPath) {
-            $version = Get-Content $nvmrcPath -Raw | ForEach-Object { $_.Trim() }
+            # Extract first token from first line — handles "20 # comment"
+            $firstLine = (Get-Content $nvmrcPath -TotalCount 1)
+            $version = if ($firstLine) { ($firstLine -split '\s+')[0] } else { '' }
             if ($version) {
                 # Get current version
                 $currentVersion = & $NvmExe current 2>$null

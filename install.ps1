@@ -73,7 +73,9 @@ function Get-Arch {
 
 function Get-LatestVersion {
     $apiUrl = "$GithubPrefix$GithubApi/releases/latest"
-    $htmlUrl = "$GithubPrefix$GithubDownload/../releases/latest"
+    # Construct HTML fallback URL directly (not from $GithubDownload which
+    # already has $GithubPrefix prepended — using it would double-prefix)
+    $htmlUrl = "${GithubPrefix}https://github.com/$RepoOwner/$RepoName/releases/latest"
 
     # Try GitHub API first
     try {
@@ -300,7 +302,7 @@ function Main {
     $shimScript = @"
 @echo off
 setlocal
-set NVM_DIR=%USERPROFILE%\.nvm.rust
+if not defined NVM_DIR set NVM_DIR=%USERPROFILE%\.nvm.rust
 set CMD=%~n0
 set CURRENT=
 if exist "%NVM_DIR%\current" for /f "delims=" %%a in (%NVM_DIR%\current) do set CURRENT=%%a

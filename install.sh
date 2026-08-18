@@ -571,7 +571,7 @@ clean_shell_config() {
     esac
     [ -f "$profile" ] || return 0
     cp "$profile" "${profile}.bak" 2>/dev/null || true
-    grep -Ev "nvm\.rust|nvm\.sh|NVM_HOME" "$profile" > "${profile}.tmp" 2>/dev/null && mv "${profile}.tmp" "$profile" || rm -f "${profile}.tmp"
+    grep -Ev "nvm\.rust|nvm\.sh|nvm-rs|NVM_HOME" "$profile" > "${profile}.tmp" 2>/dev/null && mv "${profile}.tmp" "$profile" || rm -f "${profile}.tmp"
     info "Shell config cleaned: $profile"
 }
 

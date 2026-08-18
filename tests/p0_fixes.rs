@@ -369,8 +369,8 @@ fn windows_shim_has_path_traversal_guard() {
     let shim_rs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shim.rs");
     let content = fs::read_to_string(&shim_rs).expect("shim.rs must exist");
     assert!(
-        content.contains("findstr \"..\""),
-        "Windows shim script must have findstr \"..\" path traversal guard"
+        content.contains("findstr /C:\"..\""),
+        "Windows shim script must use findstr /C:\"..\" (literal match, not regex)"
     );
 }
 
@@ -382,5 +382,29 @@ fn install_sh_grep_escapes_dots() {
     assert!(
         content.contains("nvm\\.rust"),
         "install.sh grep pattern must escape dots (nvm\\.rust)"
+    );
+}
+
+/// P1-4: install.sh clean_shell_config must remove the `# nvm-rs` marker
+/// (contains dash, not dot) so reinstall doesn't skip PATH configuration.
+#[test]
+fn install_sh_clean_removes_nvm_rs_marker() {
+    let install_sh = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
+    let content = fs::read_to_string(&install_sh).expect("install.sh must exist");
+    assert!(
+        content.contains("nvm-rs|NVM_HOME"),
+        "install.sh clean_shell_config must match 'nvm-rs' (dash) to remove the marker"
+    );
+}
+
+/// P1-6: install.ps1 shim script must respect existing NVM_DIR env var
+/// (use 'if not defined' instead of unconditional 'set').
+#[test]
+fn install_ps1_shim_respects_nvm_dir() {
+    let install_ps1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.ps1");
+    let content = fs::read_to_string(&install_ps1).expect("install.ps1 must exist");
+    assert!(
+        content.contains("if not defined NVM_DIR"),
+        "install.ps1 shim script must respect existing NVM_DIR (if not defined)"
     );
 }
