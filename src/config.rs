@@ -1066,18 +1066,20 @@ pub fn migrate_rc_to_shim_mode() -> Result<()> {
 
     let shims = nvm_dir.join("shims").display().to_string();
     let active_bin = nvm_dir.join("active").join("bin").display().to_string();
+    let active_root = nvm_dir.join("active").display().to_string();
     let nvm_bin = nvm_dir.join("bin").display().to_string();
     let nvm_sh_path = nvm_dir.join("bin").join("nvm.sh").display().to_string();
 
     let shell_type = detect_shell_type(&shell_config);
+    let nvm_psm1_path = nvm_dir.join("shell").join("nvm.psm1").display().to_string();
     let (nvm_export, path_export, source_line) = if shell_type == "powershell" {
         (
             format!(r#"$env:NVM_HOME = "{}""#, nvm_dir_str),
             format!(
                 r#"$env:PATH = "{};{};{};" + $env:PATH"#,
-                shims, active_bin, nvm_bin
+                shims, active_root, nvm_bin
             ),
-            format!(". \"{}\"", nvm_sh_path),
+            format!(r#"Import-Module "{}""#, nvm_psm1_path),
         )
     } else {
         (
@@ -1114,10 +1116,14 @@ pub fn rc_has_version_specific_path() -> Result<bool> {
         Err(_) => return Ok(false), // Can't read — can't determine, skip migration
     };
     let has_nvm_path = content.contains("shims") && content.contains("bin");
-    // Check for "active/bin" specifically — not just "active" which could
+    // Check for "active" in a PATH context — not just "active" which could
     // appear in unrelated comments, variable names, or aliases.
-    let has_active_bin = content.contains("active/bin") || content.contains("active\\bin");
-    Ok(has_nvm_path && !has_active_bin)
+    // Unix uses active/bin, PowerShell uses active; (semicolon separator).
+    let has_active = content.contains("active/bin")
+        || content.contains("active\\bin")
+        || content.contains("active;")
+        || content.contains("active\"");
+    Ok(has_nvm_path && !has_active)
 }
 
 // ---------------------------------------------------------------------------
@@ -1635,10 +1641,10 @@ export PATH="{nvm}/shims:{nvm}/v22.0.0/bin:$PATH"
             content.contains("active"),
             "migrated rc must include active in PATH: {content}"
         );
-        // P0-2: nvm.sh reference must be present
+        // P0-2: source/Import-Module reference must be present
         assert!(
-            content.contains("nvm.sh"),
-            "migrated rc must include nvm.sh reference: {content}"
+            content.contains("nvm.sh") || content.contains("nvm.psm1"),
+            "migrated rc must include nvm.sh or nvm.psm1 reference: {content}"
         );
         // Old version-specific path must be gone
         assert!(

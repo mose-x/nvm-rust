@@ -164,7 +164,7 @@ fn check_shim_mode(nvm_dir: &Path) {
 }
 
 fn check_shell_config(_nvm_dir: &Path) {
-    // Read the rc file directly — check common paths including fish.
+    // Read the rc file directly — check common paths including fish and PowerShell.
     let home = crate::system::get_home_dir();
     let candidates = [
         format!("{}/.zshrc", home),
@@ -172,6 +172,14 @@ fn check_shell_config(_nvm_dir: &Path) {
         format!("{}/.bash_profile", home),
         format!("{}/.profile", home),
         format!("{}/.config/fish/config.fish", home),
+        format!(
+            "{}/Documents/PowerShell/Microsoft.PowerShell_profile.ps1",
+            home
+        ),
+        format!(
+            "{}/Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1",
+            home
+        ),
     ];
 
     for rc_path in &candidates {

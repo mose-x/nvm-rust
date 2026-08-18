@@ -109,13 +109,35 @@ fn ensure_shell_config(nvm_dir: &Path) -> Result<()> {
     crate::utils::backup_file(config_path).context(T("shell_config_backup_failed"))?;
     let shims = nvm_dir.join("shims").display().to_string();
     let active_bin = nvm_dir.join("active").join("bin").display().to_string();
+    let active_root = nvm_dir.join("active").display().to_string();
     let nvm_bin = nvm_dir.join("bin").display().to_string();
-    let nvm_export = format!(r#"export NVM_HOME="{}""#, nvm_dir_str);
-    let path_export = format!(
-        r#"export PATH="{}:{}:{}:$PATH""#,
-        shims, active_bin, nvm_bin
-    );
-    let source_line = format!(r#"source "{}/bin/nvm.sh""#, nvm_dir_str);
+    let nvm_psm1 = nvm_dir.join("shell").join("nvm.psm1").display().to_string();
+
+    let is_powershell = shell_config.ends_with(".ps1");
+    let active_path = if is_powershell {
+        &active_root
+    } else {
+        &active_bin
+    };
+    let (nvm_export, path_export, source_line) = if is_powershell {
+        (
+            format!(r#"$env:NVM_HOME = "{}""#, nvm_dir_str),
+            format!(
+                r#"$env:PATH = "{};{};{};" + $env:PATH"#,
+                shims, active_path, nvm_bin
+            ),
+            format!(r#"Import-Module "{}""#, nvm_psm1),
+        )
+    } else {
+        (
+            format!(r#"export NVM_HOME="{}""#, nvm_dir_str),
+            format!(
+                r#"export PATH="{}:{}:{}:$PATH""#,
+                shims, active_path, nvm_bin
+            ),
+            format!(r#"source "{}/bin/nvm.sh""#, nvm_dir_str),
+        )
+    };
 
     let new_line = format!(
         "\n# NVM Rust\n{}\n{}\n{}\n",
