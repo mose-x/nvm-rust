@@ -71,7 +71,7 @@ if "%CURRENT%"=="none" (
 )
 REM Defense-in-depth: reject path traversal in CURRENT (matches Unix shim guard)
 if not "%CURRENT%"=="" (
-    echo %CURRENT% | findstr ".." >nul && (
+    echo %CURRENT% | findstr /C:".." >nul && (
         echo nvm: invalid current version
         exit /b 1
     )
