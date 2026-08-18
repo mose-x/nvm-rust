@@ -121,8 +121,8 @@ fn p0_3_shims_prepend_order_is_shims_before_bin() {
 }
 
 /// P0-3 regression: deactivate and unload must strip BOTH NVM_RUST_SHIMS
-/// and NVM_RUST_BIN from PATH. Before the fix, they only stripped BIN,
-/// leaving shims active after deactivate.
+/// and NVM_RUST_BIN from PATH. The implementation now uses _nvm_strip_path
+/// which calls _nvm_path_remove for each entry — verify the function is called.
 #[test]
 fn p0_3_deactivate_and_unload_strip_shims_from_path() {
     let shell_nvm_sh = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -130,7 +130,13 @@ fn p0_3_deactivate_and_unload_strip_shims_from_path() {
         .join("nvm.sh");
     let content = fs::read_to_string(&shell_nvm_sh).expect("shell/nvm.sh must exist");
 
-    // Find the deactivate case
+    // Verify _nvm_strip_path removes NVM_RUST_SHIMS
+    assert!(
+        content.contains("_nvm_path_remove \"${NVM_RUST_SHIMS}\""),
+        "_nvm_strip_path must remove NVM_RUST_SHIMS from PATH"
+    );
+
+    // Verify deactivate calls _nvm_strip_path
     let deactivate_start = content.find("deactivate)").unwrap_or(0);
     let deactivate_section = &content[deactivate_start..];
     let deactivate_end = deactivate_section
@@ -139,11 +145,11 @@ fn p0_3_deactivate_and_unload_strip_shims_from_path() {
         .unwrap_or(content.len());
     let deactivate_body = &content[deactivate_start..deactivate_end];
     assert!(
-        deactivate_body.contains("${NVM_RUST_SHIMS}"),
-        "deactivate must strip NVM_RUST_SHIMS from PATH, not just NVM_RUST_BIN"
+        deactivate_body.contains("_nvm_strip_path"),
+        "deactivate must call _nvm_strip_path to remove nvm entries from PATH"
     );
 
-    // Find the unload case
+    // Verify unload calls _nvm_strip_path
     let unload_start = content.find("unload)").unwrap_or(0);
     let unload_section = &content[unload_start..];
     let unload_end = unload_section
@@ -152,8 +158,8 @@ fn p0_3_deactivate_and_unload_strip_shims_from_path() {
         .unwrap_or(content.len());
     let unload_body = &content[unload_start..unload_end];
     assert!(
-        unload_body.contains("${NVM_RUST_SHIMS}"),
-        "unload must strip NVM_RUST_SHIMS from PATH, not just NVM_RUST_BIN"
+        unload_body.contains("_nvm_strip_path"),
+        "unload must call _nvm_strip_path to remove nvm entries from PATH"
     );
 }
 

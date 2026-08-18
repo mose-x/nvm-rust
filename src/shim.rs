@@ -3,6 +3,9 @@ use std::fs;
 use std::path::Path;
 
 #[cfg(windows)]
+use colored::Colorize;
+
+#[cfg(windows)]
 use std::process::Command;
 
 use crate::system::get_nvm_dir;
@@ -290,8 +293,16 @@ pub fn remove_active_symlink(nvm_dir: &Path) -> Result<()> {
                 // correctly removes junctions (and symlinks) without
                 // following them. Never use remove_dir — it could delete
                 // a real directory's contents if the entry is not a junction.
-                let _ = meta;
-                let _ = fs::remove_file(&link);
+                let _ = meta; // suppress unused on Windows
+                if let Err(e) = fs::remove_file(&link) {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        eprintln!(
+                            "  {} failed to remove active junction: {}",
+                            "⚠".yellow().bold(),
+                            e
+                        );
+                    }
+                }
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

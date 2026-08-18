@@ -1115,7 +1115,8 @@ pub fn rc_has_version_specific_path() -> Result<bool> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(_) => return Ok(false), // Can't read — can't determine, skip migration
     };
-    let has_nvm_path = content.contains("shims") && content.contains("bin");
+    let has_nvm_path =
+        content.contains("nvm.rust") && content.contains("shims") && content.contains("bin");
     // Check for "active" in a PATH context — not just "active" which could
     // appear in unrelated comments, variable names, or aliases.
     // Unix uses active/bin, PowerShell uses active; (semicolon separator).
