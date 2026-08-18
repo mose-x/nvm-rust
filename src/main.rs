@@ -9,10 +9,14 @@ mod config;
 mod corepack;
 mod download;
 mod extract;
+mod fs_util;
 mod i18n;
+mod lock;
+mod lts;
 mod proxy;
 mod shim;
 mod system;
+mod term;
 mod utils;
 
 use clap::Parser;
