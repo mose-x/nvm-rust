@@ -1,24 +1,45 @@
+//! Core install orchestration: `nvm install`.
+//!
+//! This module owns the install target resolution (`build_install_target`),
+//! the prebuilt-binary download/verify/extract path (`install_binary`), the
+//! post-install hook runner (`run_post_install_hooks`), and the public
+//! `install` entry point. It also owns the shared `InstallConfig` /
+//! `InstallTarget` types, the `SourceGuard` RAII guard (used by both
+//! `install_binary` here and `install_from_source` in [`super::install_source`]),
+//! and the `command_failed` formatting helper (used by both source-build and
+//! the package-upgrade helpers in [`super::package_upgrade`]).
+//!
+//! The source-build path (`install_from_source`), the package-manager
+//! upgrade commands (`install_latest_npm`/`yarn`/`pnpm` and helpers), and
+//! the reinstall commands (`reinstall_packages` and helper) live in
+//! sibling modules and are re-exported below for backward compatibility.
+
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::fs;
-use std::io::{self, Write};
 use std::path::Path;
-use std::process::Command;
 
 use super::version_resolve::{
     get_download_url, get_iojs_download_url, get_latest_lts_version, get_latest_version,
-    get_source_url, resolve_iojs_version, resolve_version,
+    resolve_iojs_version, resolve_version,
 };
 use crate::config::{load_config, resolve_alias};
 use crate::download::{copy_from_cache, download_to_cache, is_cached};
 use crate::extract::{extract_archive, extract_iojs_archive};
 use crate::i18n::{format_t, T};
 use crate::system::{
-    exe_path, fetch_shasums, get_nvm_dir, os_suffix, prepend_to_path, verify_checksum,
-    verify_gpg_signature, version_bin_dir, GpgStatus, IOJS_URI, NPM_REGISTRY,
+    fetch_shasums, get_nvm_dir, os_suffix, verify_checksum, verify_gpg_signature, GpgStatus,
+    IOJS_URI,
 };
-use crate::utils::{atomic_write, bytes_progress_style, iojs_version_number};
-use indicatif::ProgressBar;
+use crate::utils::{atomic_write, iojs_version_number};
+
+// Re-export the source / package-upgrade / reinstall helpers that used to
+// live in this module so existing callers (`crate::commands::install_*`,
+// `crate::commands::reinstall_packages`) keep resolving after the split.
+// `pub(crate)` matches the visibility of the items in the sub-modules; the
+// re-exports then propagate up to `commands::*` via mod.rs's
+// `pub use install::*`.
+pub(crate) use super::{install_source::*, package_upgrade::*, reinstall::*};
 
 /// Final io.js release (2015-05-21). io.js merged back into Node.js with
 /// v4.0.0, so `nvm install iojs` (no explicit version) resolves to this.
@@ -31,19 +52,19 @@ const IOJS_FINAL_VERSION: &str = "3.3.1";
 /// process was killed by a signal; we report `-1` there to match the
 /// previous behaviour (callers that need signal-accurate exit codes use
 /// `exit_with_status` in `run.rs` instead).
-fn command_failed(key: &str, status: std::process::ExitStatus) -> anyhow::Error {
+pub(crate) fn command_failed(key: &str, status: std::process::ExitStatus) -> anyhow::Error {
     anyhow::anyhow!("{} ({})", T(key), status.code().unwrap_or(-1))
 }
 
 /// Resolved target for an install operation. Built by `build_install_target`
 /// and consumed by the source/binary/post-install phases so `install` itself
 /// stays a thin orchestrator.
-struct InstallTarget {
-    target_version: String,
-    download_url: String,
-    archive_name: String,
-    product_name: &'static str,
-    is_iojs: bool,
+pub(crate) struct InstallTarget {
+    pub(crate) target_version: String,
+    pub(crate) download_url: String,
+    pub(crate) archive_name: String,
+    pub(crate) product_name: &'static str,
+    pub(crate) is_iojs: bool,
 }
 
 /// Bundles the 11 install-related CLI flags so they can be passed to
@@ -189,163 +210,26 @@ fn build_install_target(
     }))
 }
 
-/// Compile and install Node.js from source. Used when `--source` is passed.
-/// io.js source compilation is rejected upstream in `build_install_target`.
-///
-/// External toolchain required: a POSIX `sh`, `make`, a C compiler, and `tar`
-/// supporting `--strip-components=1` (GNU tar; bsdtar on Windows 10 build
-/// 17063+ behaves differently for that flag — `--source` is primarily a
-/// Unix power-user feature, prebuilt binaries are the default install path).
-fn install_from_source(
-    target: &InstallTarget,
-    base_url: &str,
-    offline: bool,
-    nvm_dir: &Path,
-    version_dir: &Path,
-) -> Result<()> {
-    let ncpus = std::thread::available_parallelism()
-        .map(|p| p.get())
-        .unwrap_or(1);
-    let source_url = get_source_url(&target.target_version, base_url)?;
-    let archive_name = &target.archive_name;
-
-    // Extract straight from the cache file. The previous code copied the
-    // ~80MB source tarball from `cache/<name>` to `<nvm_dir>/<ver>.src.tmp`
-    // and then had `tar` read that copy — a redundant full-file disk write +
-    // read on every source install. We now point `tar` directly at the cache
-    // file. `owns_src` tracks whether that file is our temp copy (offline
-    // path, must be cleaned up) or the shared cache (online path, must stay).
-    let temp_src = nvm_dir.join(format!("{}.src.tmp", target.target_version));
-    let (src_path, owns_src) = if offline {
-        if !is_cached(archive_name) {
-            anyhow::bail!(
-                "{}",
-                format_t(
-                    "offline_source_no_cache",
-                    std::slice::from_ref(archive_name)
-                )
-            );
-        }
-        println!("  {} {}", "ℹ".cyan().bold(), T("using_cache").cyan());
-        copy_from_cache(archive_name, &temp_src)?;
-        (temp_src, true)
-    } else {
-        let cached_path = download_to_cache(&source_url, archive_name)?;
-        (cached_path, false)
-    };
-
-    // RAII guard so the temp source copy is removed on every exit path
-    // (including `?` early-returns from tar/configure/make failures), not
-    // just the success path. A `let _ = fs::remove_file` at the end of the
-    // function was skipped whenever an error bailed out, leaving the ~80MB
-    // temp file behind on every failed source install.
-    let src_guard = owns_src.then(|| SourceGuard::file(src_path.clone()));
-
-    let build_dir = nvm_dir.join(format!("node-v{}.build", target.target_version));
-    fs::create_dir_all(&build_dir)?;
-    // Same RAII pattern for the build dir: `remove_dir_all` at the end was
-    // skipped on every `?` failure, leaving the extracted source tree behind.
-    let build_guard = SourceGuard::dir(build_dir.clone());
-
-    println!("  {} {}", "›".dimmed(), T("source_extract"));
-    let status = Command::new("tar")
-        .arg("xf")
-        .arg(&src_path)
-        .arg("-C")
-        .arg(&build_dir)
-        .arg("--strip-components=1")
-        .status()
-        .context(T("tar_extract_failed"))?;
-    if !status.success() {
-        anyhow::bail!(command_failed("extract_source_failed", status));
-    }
-    // Source extracted into build_dir; the temp tarball copy is no longer
-    // needed. Drop the guard early so it doesn't outlive its usefulness
-    // (and so a later failure doesn't re-delete an already-removed file).
-    drop(src_guard);
-
-    println!(
-        "  {} {}",
-        "›".dimmed(),
-        format_t("source_configure", &[version_dir.display().to_string()])
-    );
-    let cfg = Command::new("./configure")
-        .arg(format!("--prefix={}", version_dir.display()))
-        .current_dir(&build_dir)
-        .status()
-        .context(T("configure_spawn_failed"))?;
-    if !cfg.success() {
-        anyhow::bail!(command_failed("configure_failed", cfg));
-    }
-
-    println!(
-        "  {} {}",
-        "›".dimmed(),
-        format_t("source_make", &[ncpus.to_string()])
-    );
-    let m = Command::new("make")
-        .args(["-j", &ncpus.to_string()])
-        .current_dir(&build_dir)
-        .status()
-        .context(T("make_failed"))?;
-    if !m.success() {
-        anyhow::bail!(command_failed("make_failed", m));
-    }
-
-    println!("  {} {}", "›".dimmed(), T("source_install"));
-    let mi = Command::new("make")
-        .arg("install")
-        .current_dir(&build_dir)
-        .status()
-        .context(T("make_install_failed"))?;
-    if !mi.success() {
-        anyhow::bail!(command_failed("make_install_failed", mi));
-    }
-
-    // Install succeeded — clean up the build tree, matching the previous
-    // `remove_dir_all(&build_dir).ok()` at the end of the happy path. The
-    // guard's Drop would do this anyway, but doing it explicitly + disarming
-    // avoids a redundant stat in Drop and makes the intent obvious.
-    drop(build_guard);
-
-    let npm_path = version_dir.join("bin").join("npm");
-    if !npm_path.exists() {
-        println!("  {} {}", "ℹ".cyan().bold(), T("source_npm_fetch"));
-        download_prebuilt_npm(version_dir, &target.target_version)?;
-    }
-
-    println!();
-    println!(
-        "{} {} {}",
-        "✓".green().bold(),
-        target.product_name.green().bold(),
-        format_t("compiled", std::slice::from_ref(&target.target_version))
-            .white()
-            .bold()
-    );
-    Ok(())
-}
-
 /// RAII guard that removes a file or directory when dropped, unless disarmed.
 /// Used by `install_from_source` / `install_binary` to clean up temp artifacts
 /// on every exit path (success or `?` early-return), replacing the previous
 /// "clean up only at the end of the happy path" pattern that leaked tens of
 /// MB on every failed install.
-struct SourceGuard {
+pub(crate) struct SourceGuard {
     path: std::path::PathBuf,
     is_dir: bool,
     armed: bool,
 }
 
 impl SourceGuard {
-    fn file(path: std::path::PathBuf) -> Self {
+    pub(crate) fn file(path: std::path::PathBuf) -> Self {
         Self {
             path,
             is_dir: false,
             armed: true,
         }
     }
-    fn dir(path: std::path::PathBuf) -> Self {
+    pub(crate) fn dir(path: std::path::PathBuf) -> Self {
         Self {
             path,
             is_dir: true,
@@ -556,7 +440,7 @@ fn run_post_install_hooks(
         // Resolve aliases (default, lts/iron, bare "22.22.2", etc.) the same
         // way `nvm reinstall-packages` does, so the option accepts the same
         // identifiers users already use elsewhere.
-        let from_resolved = match crate::config::resolve_alias(from_ver) {
+        let from_resolved = match resolve_alias(from_ver) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!(
@@ -705,422 +589,7 @@ pub fn install(cfg: InstallConfig) -> Result<()> {
     Ok(())
 }
 
-/// Upgrade a globally-installed package manager (`npm`, `yarn`, or `pnpm`)
-/// to its latest release, using the bundled npm in `version`'s bin dir as the
-/// installer.
-///
-/// The flow mirrors `nvm install-npm`:
-///   1. Resolve + validate the target version (must be installed, must ship npm).
-///   2. Print an "Upgrading X for vX.Y.Z" banner.
-///   3. Run `npm install -g <package>@latest` with that version's bin on PATH.
-///   4. On failure for `npm` only: retry via `npm exec --yes npm@latest --`
-///      to dodge npm 10.x's self-upgrade bug. yarn/pnpm don't have this bug
-///      (they install into their own dirs, npm doesn't replace itself), so
-///      their first-attempt failure is a real failure and we bail.
-fn install_latest_package_inner(version: &str, package: &str) -> Result<()> {
-    let nvm_dir = get_nvm_dir();
-    let resolved = version.to_string();
-    let version_dir = nvm_dir.join(&resolved);
-    if !version_dir.exists() {
-        anyhow::bail!(
-            "{}",
-            format_t("not_installed", std::slice::from_ref(&resolved))
-        );
-    }
-    let npm_path = exe_path(&version_bin_dir(&version_dir), "npm");
-    if !npm_path.exists() {
-        anyhow::bail!(
-            "{}",
-            format_t("version_no_npm", std::slice::from_ref(&resolved))
-        );
-    }
-    // Per-package i18n keys so each tool reports its own name in messages.
-    let (upgrading_key, upgraded_key, failed_key) = match package {
-        "yarn" => ("upgrading_yarn", "yarn_upgraded", "yarn_upgrade_failed"),
-        "pnpm" => ("upgrading_pnpm", "pnpm_upgraded", "pnpm_upgrade_failed"),
-        _ => ("upgrading_npm", "npm_upgraded", "npm_upgrade_failed"),
-    };
-    println!(
-        "  {} {}",
-        "▶".cyan().bold(),
-        format_t(upgrading_key, std::slice::from_ref(&resolved)).cyan()
-    );
-    let path_env = prepend_to_path(&version_bin_dir(&version_dir));
-    // First attempt: plain `npm install -g <package>@latest`. Works for
-    // yarn/pnpm (they don't replace themselves) and for npm 11+ (whose
-    // reify no longer moves its own deps out from under itself).
-    let pkg_spec = format!("{}@latest", package);
-    let status = Command::new(&npm_path)
-        .args(["install", "-g", &pkg_spec])
-        .env("PATH", &path_env)
-        .status()
-        .context(format_t(
-            "package_upgrade_spawn_failed",
-            &[package.to_string()],
-        ))?;
-    if status.success() {
-        println!("    {} {}", "✓".green().bold(), T(upgraded_key).green());
-        return Ok(());
-    }
-    // npm-specific retry: npm 10.x has a self-upgrade bug (reify moves its
-    // own node_modules, then crashes with "Cannot find module
-    // 'promise-retry'" when creating bin links). Retry via `npm exec --yes
-    // npm@latest --` which downloads a fresh npm to a temp dir and runs it
-    // from there. yarn/pnpm don't have this bug, so we bail immediately.
-    if package == "npm" {
-        eprintln!(
-            "  {} {}",
-            "↻".yellow().bold(),
-            T("npm_upgrade_retry_npx").yellow()
-        );
-        let status = Command::new(&npm_path)
-            .args([
-                "exec",
-                "--yes",
-                "npm@latest",
-                "--",
-                "install",
-                "-g",
-                "npm@latest",
-                "--prefix",
-            ])
-            .arg(version_dir.display().to_string())
-            .env("PATH", &path_env)
-            .status()
-            .context(T("npm_upgrade_failed"))?;
-        if status.success() {
-            println!("    {} {}", "✓".green().bold(), T("npm_upgraded").green());
-            return Ok(());
-        }
-    }
-    anyhow::bail!(command_failed(failed_key, status));
-}
-
-fn reinstall_packages_inner(from: &str, to: &str) -> Result<()> {
-    let nvm_dir = get_nvm_dir();
-    let from_dir = nvm_dir.join(from);
-    if !from_dir.exists() {
-        anyhow::bail!("{}", format_t("source_not_installed", &[from.to_string()]));
-    }
-    let to_dir = nvm_dir.join(to);
-    if !to_dir.exists() {
-        anyhow::bail!("{}", format_t("target_not_installed", &[to.to_string()]));
-    }
-    let from_npm = exe_path(&version_bin_dir(&from_dir), "npm");
-    let to_npm = exe_path(&version_bin_dir(&to_dir), "npm");
-
-    let output = Command::new(&from_npm)
-        .arg("list")
-        .arg("-g")
-        .arg("--depth=0")
-        .arg("--json")
-        .env("PATH", prepend_to_path(&version_bin_dir(&from_dir)))
-        .output()
-        .context(T("list_global_packages_failed"))?;
-
-    // `npm list --json` only writes the dependency tree to stdout on exit
-    // success. On a non-zero exit (broken install, corrupt node_modules, npm
-    // crash) stdout is empty or an error blob, so the previous
-    // `from_str(...).unwrap_or_default()` silently produced `Null` and
-    // `reinstall-packages` reported "0 packages migrated" instead of failing.
-    // Bail explicitly so the user sees the real cause.
-    if !output.status.success() {
-        let code = output.status.code().unwrap_or(-1);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let detail = stderr.trim();
-        let msg = format_t("npm_list_failed_code", &[code.to_string()]);
-        if detail.is_empty() {
-            anyhow::bail!("{}", msg);
-        } else {
-            anyhow::bail!("{}: {}", msg, detail);
-        }
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // Surface JSON parse errors instead of silently treating them as "no
-    // dependencies" (which produced a misleading "0 packages migrated"
-    // success). A non-zero exit code is already handled above; reaching
-    // here means npm exited 0 but emitted something we couldn't parse —
-    // typically a truncated pipe or a corrupted/different npm binary.
-    let json: serde_json::Value = serde_json::from_str(&stdout).map_err(|e| {
-        anyhow::anyhow!(
-            "{}: {}",
-            format_t("npm_list_parse_failed", &[e.to_string()]),
-            T("npm_list_parse_failed_hint")
-        )
-    })?;
-    if let Some(deps) = json.get("dependencies").and_then(|d| d.as_object()) {
-        let new_path = prepend_to_path(&version_bin_dir(&to_dir));
-        // Exclude npm/corepack from the count: they are bundled, not migrated.
-        let pkg_count = deps
-            .keys()
-            .filter(|k| *k != "npm" && *k != "corepack")
-            .count();
-        println!(
-            "  {} {}",
-            "ℹ".cyan().bold(),
-            format_t("reinstall_count", &[pkg_count.to_string()])
-        );
-        let mut migrated = 0usize;
-        let mut failed: Vec<String> = Vec::new();
-        for pkg in deps.keys() {
-            if pkg == "npm" || pkg == "corepack" {
-                continue;
-            }
-            print!("    {} {}... ", "•".cyan(), pkg);
-            io::stdout().flush().ok();
-            let status = match Command::new(&to_npm)
-                .arg("install")
-                .arg("-g")
-                .arg(pkg)
-                .env("PATH", &new_path)
-                .status()
-            {
-                Ok(s) => s,
-                Err(e) => {
-                    // Surface the spawn error instead of a bare ✗. A
-                    // non-zero npm exit prints its own code below; a spawn
-                    // failure (e.g. `npm` not executable, EPERM, disk full
-                    // fork) previously printed just "✗" with no reason,
-                    // leaving the user unable to tell why the package was
-                    // skipped.
-                    println!(
-                        "{} {}",
-                        "✗".red().bold(),
-                        format_t("package_failed_spawn", &[e.to_string()]).red()
-                    );
-                    failed.push(pkg.clone());
-                    continue;
-                }
-            };
-            if status.success() {
-                println!("{}", "✓".green().bold());
-                migrated += 1;
-            } else {
-                println!(
-                    "{} {}",
-                    "✗".red().bold(),
-                    format_t(
-                        "package_failed_code",
-                        &[status.code().unwrap_or(-1).to_string()]
-                    )
-                    .red()
-                );
-                failed.push(pkg.clone());
-            }
-        }
-        println!(
-            "    {} {} {} {}",
-            "✓".green().bold(),
-            format_t("packages_migrated", &[migrated.to_string()]).green(),
-            "→".dimmed(),
-            to.white().bold()
-        );
-        if !failed.is_empty() {
-            anyhow::bail!(
-                "{}",
-                format_t("reinstall_failed_list", &[failed.join(", ")])
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Download a prebuilt npm tarball and install it into the version's lib/node_modules.
-///
-/// The npm registry (npmjs.org) is distinct from the Node.js binary mirror
-/// (`config.mirror`): `config.mirror` only mirrors `nodejs.org/dist/`, while
-/// npm tarballs live on the npm registry. We therefore always hit
-/// `registry.npmjs.org` here — the user's npm CLI itself uses the same
-/// registry by default (configurable via `~/.npmrc`).
-///
-/// For tamper resistance we fetch the per-version registry metadata
-/// (`/npm/{version}`) and verify the downloaded tarball's SHA-512 against the
-/// `dist.integrity` field. If the metadata fetch fails (e.g. offline), we
-/// fall back to the hardcoded tarball URL and skip verification — same
-/// "Skipped vs Failed" pattern as GPG verification.
-fn download_prebuilt_npm(version_dir: &Path, version: &str) -> Result<()> {
-    let ver_num = version.trim_start_matches('v');
-    let npm_tarball = format!("npm-v{}.tgz", ver_num);
-    let fallback_url = format!("{}/npm/-/npm-{}.tgz", NPM_REGISTRY, ver_num);
-    let npm_tar_path = get_nvm_dir().join(&npm_tarball);
-    // RAII guard: removes `npm_tar_path` on drop, covering EVERY exit path
-    // (download `io::copy` failure, truncation, integrity mismatch, tar
-    // extraction failure, symlink failure, AND the normal success path).
-    // Previously only the truncation/integrity branches and the final
-    // success line cleaned up; an `io::copy` `?` left a half-written
-    // `npm-v*.tgz` that the next run's `exists()` cache-hit check treated as
-    // complete, silently skipping re-download and then failing at extraction
-    // with a confusing "unexpected EOF". `disarm()` is called only after the
-    // tarball has been successfully extracted AND wired up, so a failure
-    // between staging and disarm still triggers cleanup.
-    let mut tar_guard = crate::utils::FileGuard::new(&npm_tar_path);
-
-    if !npm_tar_path.exists() {
-        println!("  {} {}", "›".dimmed(), T("downloading_npm"));
-        let client = crate::proxy::build_http_client();
-
-        // Fetch registry metadata for the canonical tarball URL + integrity
-        // hash. On any failure we fall back to the hardcoded URL and skip
-        // integrity verification (with a warning), so a transient registry
-        // outage doesn't block source-build npm installs.
-        let meta_url = format!("{}/npm/{}", NPM_REGISTRY, ver_num);
-        let registry_result: Option<(String, Option<String>)> = (|| {
-            let resp = client.get(&meta_url).send().ok()?;
-            if !resp.status().is_success() {
-                return None;
-            }
-            let body = resp.text().ok()?;
-            let json: serde_json::Value = serde_json::from_str(&body).ok()?;
-            let dist = json.get("dist")?;
-            let tarball = dist.get("tarball")?.as_str()?.to_string();
-            let integrity = dist
-                .get("integrity")
-                .and_then(|i| i.as_str())
-                .map(|s| s.to_string());
-            Some((tarball, integrity))
-        })();
-        let (npm_url, expected_integrity) = match registry_result {
-            Some((url, Some(int))) => (url, Some(int)),
-            Some((url, None)) => {
-                eprintln!(
-                    "  {} {}",
-                    "⚠".yellow().bold(),
-                    T("npm_integrity_skipped").yellow()
-                );
-                (url, None)
-            }
-            None => (fallback_url, None),
-        };
-
-        let response = client
-            .get(&npm_url)
-            .send()
-            .context(T("npm_tarball_download_failed"))?;
-        if !response.status().is_success() {
-            anyhow::bail!(
-                "{}",
-                format_t("npm_download_failed", std::slice::from_ref(&npm_url))
-            );
-        }
-        let total = response.content_length().unwrap_or(0);
-        let pb = ProgressBar::new(total);
-        pb.set_style(bytes_progress_style());
-        let mut src = pb.wrap_read(response);
-        let mut dest = std::fs::File::create(&npm_tar_path)?;
-        let bytes_copied =
-            std::io::copy(&mut src, &mut dest).context(T("npm_tarball_write_failed"))?;
-        pb.finish_with_message(T("progress_done"));
-
-        // Detect truncated downloads: if the server advertised a content
-        // length and we got fewer bytes, the connection dropped mid-transfer.
-        // Without this check, `tar xzf` below would fail with a confusing
-        // "unexpected EOF" instead of a clear "truncated" message.
-        if total > 0 && bytes_copied < total {
-            anyhow::bail!("{}", T("npm_download_truncated"));
-        }
-        // When the server omits Content-Length (chunked-only responses, some
-        // proxies), the above length check is a no-op. If we also have no
-        // registry integrity hash to verify against, a truncated tarball would
-        // only surface later as a cryptic `tar` error. Warn so the user can
-        // distinguish a download glitch from a real extraction failure.
-        if total == 0 && expected_integrity.is_none() {
-            eprintln!(
-                "{} {}",
-                "⚠".yellow().bold(),
-                T("npm_no_length_no_integrity").yellow()
-            );
-        }
-
-        // Verify SHA-512 integrity against the registry's `dist.integrity`.
-        // This catches a compromised CDN cache serving a tampered tarball at
-        // the legitimate URL — TLS alone doesn't protect against that.
-        if let Some(integrity) = expected_integrity {
-            if verify_npm_integrity(&npm_tar_path, &integrity).is_err() {
-                anyhow::bail!("{}", T("npm_integrity_failed"));
-            }
-        }
-    }
-
-    // Extract npm tarball into lib/node_modules.
-    // Requires `tar` with `--strip-components=1` (GNU tar; Windows 10 build
-    // 17063+ ships bsdtar which supports this flag). On older Windows the
-    // prebuilt-binary install path is used instead (npm ships bundled).
-    let node_modules = version_dir.join("lib").join("node_modules");
-    std::fs::create_dir_all(&node_modules)?;
-
-    let status = Command::new("tar")
-        .arg("xzf")
-        .arg(&npm_tar_path)
-        .arg("-C")
-        .arg(&node_modules)
-        .arg("--strip-components=1")
-        .status()
-        .context(T("npm_extract_failed"))?;
-    if !status.success() {
-        anyhow::bail!("{}", T("npm_extract_failed"));
-    }
-
-    // Wire up the `npm` executable so it lands on PATH. The tarball ships
-    // `bin/npm` (a JS launcher); we symlink (Unix) or copy (Windows) it into
-    // the version's `bin/` dir alongside `node`, so `nvm use <ver>` exposes
-    // npm immediately.
-    //
-    // These used to be `.ok()` — silently swallowing a read-only `bin/`,
-    // a Windows AV file lock, or a full disk. The result was "npm installed!"
-    // with no npm on PATH. Propagate the error instead so the failure is
-    // visible and the install is reported as failed.
-    let npm_bin_src = node_modules.join("bin").join("npm");
-    let npm_bin_dst = version_dir.join("bin").join("npm");
-    let npm_bin_dst_parent = version_dir.join("bin");
-    std::fs::create_dir_all(&npm_bin_dst_parent)?;
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&npm_bin_src, &npm_bin_dst)
-        .with_context(|| format!("failed to symlink npm bin at {}", npm_bin_dst.display()))?;
-    #[cfg(windows)]
-    std::fs::copy(&npm_bin_src, &npm_bin_dst)
-        .map(|_| ())
-        .with_context(|| format!("failed to copy npm bin at {}", npm_bin_dst.display()))?;
-
-    // Best-effort cleanup of the downloaded tarball; a failure here doesn't
-    // invalidate the install, so don't surface it as an error.
-    let _ = std::fs::remove_file(&npm_tar_path);
-    // The tarball has been extracted and npm wired up — disarm the guard so
-    // its `Drop` doesn't issue a redundant `remove_file` on an already-removed
-    // path. Any `?` early-return above leaves the guard armed, so a partial
-    // download / extraction failure still cleans up.
-    tar_guard.disarm();
-    Ok(())
-}
-
-/// Verify a downloaded npm tarball against the registry's `dist.integrity`
-/// field. The field is in the Subresource Integrity format: `<algo>-<b64>`.
-/// We support `sha512` (the algorithm npm uses for all current releases).
-fn verify_npm_integrity(file_path: &Path, integrity: &str) -> Result<()> {
-    let (algo, expected_b64) = integrity
-        .split_once('-')
-        .ok_or_else(|| anyhow::anyhow!("malformed integrity field"))?;
-    if algo != "sha512" {
-        anyhow::bail!("unsupported integrity algorithm: {} (only sha512)", algo);
-    }
-    use base64::Engine;
-    let expected = base64::engine::general_purpose::STANDARD
-        .decode(expected_b64)
-        .map_err(|e| anyhow::anyhow!("invalid base64 in integrity field: {}", e))?;
-
-    use sha2::Digest;
-    let mut file = std::fs::File::open(file_path)?;
-    let mut hasher = sha2::Sha512::new();
-    std::io::copy(&mut file, &mut hasher)?;
-    let actual = hasher.finalize();
-
-    if actual.as_slice() != expected.as_slice() {
-        anyhow::bail!("sha512 mismatch");
-    }
-    Ok(())
-}
-
-fn get_installed_version(version: &str) -> Result<String> {
+pub(crate) fn get_installed_version(version: &str) -> Result<String> {
     let resolved = resolve_alias(version)?;
     if resolved.starts_with("system:") {
         return Ok(resolved);
@@ -1136,209 +605,9 @@ fn get_installed_version(version: &str) -> Result<String> {
     Ok(resolved)
 }
 
-/// Resolve the target version for a package-upgrade command. With no
-/// argument, act on the *current* version (matches nvm-sh behavior). Only
-/// fall back to `default` when there's no current set — `nvm install-latest-<pkg>`
-/// with no current and no default is a setup error.
-fn resolve_install_target(version: Option<&str>) -> Result<String> {
-    let target = match version {
-        Some(v) => v.to_string(),
-        None => match super::get_current_version()? {
-            Some(v) => v,
-            None => {
-                let config = load_config()?;
-                match config.default_version {
-                    Some(v) => v,
-                    None => anyhow::bail!("{}", T("no_current_version_set")),
-                }
-            }
-        },
-    };
-    get_installed_version(&target)
-}
-
-pub fn install_latest_npm(version: Option<&str>) -> Result<()> {
-    let resolved = resolve_install_target(version)?;
-    install_latest_package_inner(&resolved, "npm")
-}
-
-pub fn install_latest_yarn(version: Option<&str>) -> Result<()> {
-    let resolved = resolve_install_target(version)?;
-    install_latest_package_inner(&resolved, "yarn")
-}
-
-/// Install the latest pnpm for a version via corepack.
-///
-/// Uses `corepack prepare pnpm@latest --activate` instead of
-/// `npm install -g pnpm@latest` to avoid pnpm 10+'s
-/// `@pnpm/exe` native binary verification error. Falls back to
-/// `install_latest_package_inner` (npm install) if corepack is not
-/// bundled with the version or `corepack prepare` fails.
-fn install_latest_pnpm_via_corepack(version: &str) -> Result<()> {
-    let nvm_dir = get_nvm_dir();
-    let resolved = version.to_string();
-    let version_dir = nvm_dir.join(&resolved);
-    if !version_dir.exists() {
-        anyhow::bail!(
-            "{}",
-            format_t("not_installed", std::slice::from_ref(&resolved))
-        );
-    }
-    let bin_dir = version_bin_dir(&version_dir);
-    let corepack_path = exe_path(&bin_dir, "corepack");
-    if !corepack_path.exists() {
-        return install_latest_package_inner(version, "pnpm");
-    }
-
-    println!(
-        "  {} {}",
-        "▶".cyan().bold(),
-        format_t("upgrading_pnpm", std::slice::from_ref(&resolved)).cyan()
-    );
-
-    let path_env = prepend_to_path(&bin_dir);
-    let _ = crate::corepack::corepack_enable(Some(version));
-
-    let status = Command::new(&corepack_path)
-        .args(["prepare", "pnpm@latest", "--activate"])
-        .env("PATH", &path_env)
-        .status()
-        .context(format_t(
-            "package_upgrade_spawn_failed",
-            &["pnpm".to_string()],
-        ))?;
-
-    if status.success() {
-        // Pre-trigger corepack's lazy download so the user isn't prompted
-        // ("Corepack is about to download ... [Y/n]") on first `pnpm` use.
-        // Pipe "Y\n" to stdin to auto-confirm.
-        if let Ok(mut child) = Command::new(&corepack_path)
-            .args(["pnpm", "--version"])
-            .env("PATH", &path_env)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            if let Some(stdin) = child.stdin.as_mut() {
-                let _ = stdin.write_all(b"Y\n");
-            }
-            let _ = child.wait();
-        }
-        println!("    {} {}", "✓".green().bold(), T("pnpm_upgraded").green());
-        return Ok(());
-    }
-
-    // Fallback to npm install if corepack prepare fails
-    eprintln!(
-        "  {} {}",
-        "↻".yellow().bold(),
-        T("pnpm_corepack_fallback").yellow()
-    );
-    install_latest_package_inner(version, "pnpm")
-}
-
-pub fn install_latest_pnpm(version: Option<&str>) -> Result<()> {
-    let resolved = resolve_install_target(version)?;
-    install_latest_pnpm_via_corepack(&resolved)
-}
-
-pub fn reinstall_packages(from_version: &str) -> Result<()> {
-    // Resolve aliases (default, lts/iron, bare "22.22.2", etc.) so the
-    // user can pass the same kind of identifier they would to `nvm use`.
-    let resolved_from = crate::config::resolve_alias(from_version)?;
-    // Validate the source version *before* requiring a current version: the
-    // user-facing input is "from_version", and a missing current is a setup
-    // problem that should be reported only if the source is otherwise valid.
-    let nvm_dir = get_nvm_dir();
-    let from_dir = nvm_dir.join(&resolved_from);
-    if !from_dir.exists() {
-        anyhow::bail!(
-            "{}",
-            format_t("source_not_installed", std::slice::from_ref(&resolved_from))
-        );
-    }
-    let current = super::get_current_version()?
-        .ok_or_else(|| anyhow::anyhow!("{}", T("no_current_version_set")))?;
-    reinstall_packages_inner(&resolved_from, &current)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Build a real SRI `sha512-<base64>` integrity string for `contents`
-    /// so the verify_npm_integrity tests don't depend on a hardcoded hash.
-    fn make_integrity(contents: &str) -> String {
-        use base64::Engine;
-        use sha2::Digest;
-        let mut hasher = sha2::Sha512::new();
-        hasher.update(contents.as_bytes());
-        let digest = hasher.finalize();
-        format!(
-            "sha512-{}",
-            base64::engine::general_purpose::STANDARD.encode(digest)
-        )
-    }
-
-    #[test]
-    fn test_verify_npm_integrity_accepts_correct_hash() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file = dir.path().join("npm.tgz");
-        let contents = "fake npm tarball contents";
-        std::fs::write(&file, contents).expect("write");
-        let integrity = make_integrity(contents);
-        verify_npm_integrity(&file, &integrity).expect("matching integrity should verify");
-    }
-
-    #[test]
-    fn test_verify_npm_integrity_rejects_tampered_file() {
-        // The download flow computes the hash over the bytes on disk. If the
-        // tarball was truncated or replaced after the metadata fetch, the
-        // hash must not match — this is the tamper-detection guarantee.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file = dir.path().join("npm.tgz");
-        std::fs::write(&file, "original contents").expect("write");
-        let integrity = make_integrity("tampered contents");
-        let err = verify_npm_integrity(&file, &integrity).expect_err("mismatched hash should fail");
-        assert!(
-            err.to_string().contains("mismatch"),
-            "expected mismatch error, got: {}",
-            err
-        );
-    }
-
-    #[test]
-    fn test_verify_npm_integrity_rejects_wrong_algorithm() {
-        // npm registry only ships sha512 SRI; sha256 or others must be
-        // rejected so we never silently skip verification for an algo we
-        // can't check.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file = dir.path().join("npm.tgz");
-        std::fs::write(&file, "x").expect("write");
-        let err =
-            verify_npm_integrity(&file, "sha256-AAAA").expect_err("non-sha512 algo should fail");
-        assert!(err.to_string().contains("sha512"));
-    }
-
-    #[test]
-    fn test_verify_npm_integrity_rejects_malformed_field() {
-        // No `-` separator → can't split algo from hash. Must fail rather
-        // than panic on a None unwrap.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file = dir.path().join("npm.tgz");
-        std::fs::write(&file, "x").expect("write");
-        verify_npm_integrity(&file, "noseparator").expect_err("malformed integrity should fail");
-    }
-
-    #[test]
-    fn test_verify_npm_integrity_rejects_invalid_base64() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file = dir.path().join("npm.tgz");
-        std::fs::write(&file, "x").expect("write");
-        verify_npm_integrity(&file, "sha512-!!!not-base64!!!")
-            .expect_err("invalid base64 should fail");
-    }
 
     // --- SourceGuard RAII --------------------------------------------------
     //
