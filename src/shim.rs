@@ -235,7 +235,10 @@ pub fn create_active_symlink(nvm_dir: &Path, version: &str) -> Result<()> {
     #[cfg(windows)]
     {
         // Junction: remove old, create new. `mklink /J` doesn't need admin.
-        let _ = fs::remove_dir(&link); // junction uses remove_dir
+        // Use remove_file (not remove_dir) — it correctly removes junctions
+        // without following the reparse point. remove_dir could follow the
+        // junction and attempt to delete the target directory's contents.
+        let _ = fs::remove_file(&link);
         let status = Command::new("cmd")
             .args([
                 "/C",
