@@ -15,9 +15,12 @@ BIN_LINK="/usr/local/bin/nvm"
 # and the user runs `./install.sh`, this is the archive root — which already
 # contains the `nvm` binary and `shell/` dir. We use that to install from the
 # bundle without any network round-trip (offline install). When piped via
-# `curl | bash`, BASH_SOURCE resolves to a pipe/stdin and this is empty —
-# the script then falls back to the online download path below.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+# `curl | bash`, BASH_SOURCE is empty — SCRIPT_DIR stays empty and we fall
+# back to the online download path below.
+SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+fi
 
 # GitHub mirror for China users
 # Set GITHUB_MIRROR=ghproxy or custom URL to use a mirror
@@ -564,7 +567,7 @@ clean_shell_config() {
     esac
     [ -f "$profile" ] || return 0
     cp "$profile" "${profile}.bak" 2>/dev/null || true
-    grep -v "nvm.rust\|nvm.sh\|NVM_HOME" "$profile" > "${profile}.tmp" 2>/dev/null && mv "${profile}.tmp" "$profile" || rm -f "${profile}.tmp"
+    grep -Ev "nvm.rust|nvm.sh|NVM_HOME" "$profile" > "${profile}.tmp" 2>/dev/null && mv "${profile}.tmp" "$profile" || rm -f "${profile}.tmp"
     info "Shell config cleaned: $profile"
 }
 

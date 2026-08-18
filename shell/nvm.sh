@@ -166,15 +166,11 @@ nvm() {
 
     case "$cmd" in
         use)
-            if [ $# -lt 2 ]; then
-                echo "Usage: nvm use <version>" >&2
-                return 1
-            fi
             "${NVM_RUST_BIN}/nvm" "$@"
             _nvm_prepend_path
             ;;
         auto)
-            "${NVM_RUST_BIN}/nvm" auto
+            "${NVM_RUST_BIN}/nvm" "$@"
             _nvm_prepend_path
             ;;
         deactivate)

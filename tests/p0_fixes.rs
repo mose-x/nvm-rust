@@ -216,3 +216,85 @@ fn install_ps1_supports_uninstall() {
         "install.ps1 must have Uninstall-All function"
     );
 }
+
+/// P1-4: install.sh clean_shell_config must use `grep -Ev` (extended regex)
+/// instead of `grep -v` with `\|` alternation — BSD grep (macOS default) does
+/// not support `\|` in BRE, so the filter would match nothing on macOS.
+#[test]
+fn install_sh_grep_uses_extended_regex() {
+    let install_sh = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
+    let content = fs::read_to_string(&install_sh).expect("install.sh must exist");
+    assert!(
+        content.contains("grep -Ev"),
+        "install.sh must use grep -Ev (extended regex) for BSD grep compatibility"
+    );
+    assert!(
+        !content.contains("grep -v \"nvm.rust\\|"),
+        "install.sh must not use grep -v with \\| (broken on macOS BSD grep)"
+    );
+}
+
+/// P1-5: install.sh must guard against empty BASH_SOURCE[0] when piped via
+/// `curl | bash`. Without this, SCRIPT_DIR falls back to CWD, and a malicious
+/// `nvm` binary in the current directory would be used instead of downloading.
+#[test]
+fn install_sh_guards_empty_bash_source() {
+    let install_sh = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
+    let content = fs::read_to_string(&install_sh).expect("install.sh must exist");
+    assert!(
+        content.contains("[ -n \"${BASH_SOURCE[0]:-}\" ]"),
+        "install.sh must guard against empty BASH_SOURCE[0] (binary planting risk)"
+    );
+}
+
+/// P0-3: install.ps1 must NOT define a custom `Write-Error` function that
+/// shadows PowerShell's built-in cmdlet. The custom version used Write-Host
+/// (console only) and didn't throw, breaking $ErrorActionPreference="Stop".
+#[test]
+fn install_ps1_no_write_error_shadow() {
+    let install_ps1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.ps1");
+    let content = fs::read_to_string(&install_ps1).expect("install.ps1 must exist");
+    assert!(
+        !content.contains("function Write-Error"),
+        "install.ps1 must not define function Write-Error (shadows built-in cmdlet)"
+    );
+    assert!(
+        content.contains("function Write-Err"),
+        "install.ps1 must use Write-Err instead of Write-Error"
+    );
+}
+
+/// P1-6: install.ps1 PATH manipulation must use element-by-element comparison
+/// (-contains) instead of substring match (-notlike) to avoid false matches
+/// like "shims-old" matching "*shims*".
+#[test]
+fn install_ps1_path_uses_element_comparison() {
+    let install_ps1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.ps1");
+    let content = fs::read_to_string(&install_ps1).expect("install.ps1 must exist");
+    assert!(
+        content.contains("-contains $shimsDir"),
+        "install.ps1 must use -contains for PATH element comparison"
+    );
+    assert!(
+        !content.contains("-notlike \"*$shimsDir*\""),
+        "install.ps1 must not use -notlike substring match for PATH"
+    );
+}
+
+/// P1-7: install.ps1 must warn before silently changing the PowerShell
+/// execution policy, so users in compliance-restricted environments are informed.
+#[test]
+fn install_ps1_warns_before_exec_policy_change() {
+    let install_ps1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.ps1");
+    let content = fs::read_to_string(&install_ps1).expect("install.ps1 must exist");
+    let policy_pos = content.find("Set-ExecutionPolicy");
+    assert!(
+        policy_pos.is_some(),
+        "install.ps1 must have Set-ExecutionPolicy"
+    );
+    let before_policy = &content[..policy_pos.unwrap()];
+    assert!(
+        before_policy.contains("Write-Warn") || before_policy.rfind("Write-Warn").is_some(),
+        "install.ps1 must warn before changing execution policy"
+    );
+}
