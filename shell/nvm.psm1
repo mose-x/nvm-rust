@@ -5,10 +5,11 @@
 
 $ErrorActionPreference = 'Stop'
 
-# Configuration
-$NvmDir = "$env:USERPROFILE\.nvm.rust"
+# Configuration — respect NVM_DIR if set (consistent with nvm.sh and nvm.fish)
+$NvmDir = if ($env:NVM_DIR) { $env:NVM_DIR } else { Join-Path $env:USERPROFILE '.nvm.rust' }
 $NvmBin = Join-Path $NvmDir 'bin'
 $NvmExe = Join-Path $NvmBin 'nvm.exe'
+$NvmShims = Join-Path $NvmDir 'shims'
 
 # Module-scoped PATH for unload
 $script:OriginalPath = $env:Path
@@ -57,7 +58,8 @@ function nvm {
                      'deactivate', 'unload', 'cache', 'language', 'proxy', 'completion',
                      'corepack', 'install-npm', 'install-yarn', 'install-pnpm',
                      'reinstall-packages', 'version', 'version-remote', 'mirror',
-                     'upgrade', 'migrate', 'help')]
+                     'upgrade', 'update', 'migrate', 'init', 'doctor', 'refresh',
+                     'help', '--version', '-V', '-v', '--help', '-h')]
         [string]$Command,
 
         [Parameter(Position = 1, ValueFromRemainingArguments = $true)]
@@ -71,10 +73,6 @@ function nvm {
 
     switch ($Command) {
         'use' {
-            if (-not $Arguments) {
-                Write-Host "Usage: nvm use <version>" -ForegroundColor Yellow
-                return
-            }
             & $NvmExe use $Arguments
             Initialize-NvmPath
         }
@@ -121,7 +119,7 @@ function nvm {
             & $NvmExe unalias $Arguments
         }
         'auto' {
-            & $NvmExe auto
+            & $NvmExe auto $Arguments
         }
         'deactivate' {
             & $NvmExe deactivate
@@ -213,7 +211,13 @@ Examples:
 }
 
 function Remove-NvmFromPath {
-    $env:Path = $script:OriginalPath
+    # Remove nvm entries from current PATH (not a stale snapshot from module load).
+    # Matches nvm.sh's _nvm_strip_path: removes bin + shims, preserves everything else.
+    $pathElements = $env:Path -split ';'
+    $filtered = $pathElements | Where-Object {
+        $_ -ne $NvmBin -and $_ -ne $NvmShims
+    }
+    $env:Path = ($filtered -join ';')
 }
 
 # Auto-switch when changing directories
@@ -247,5 +251,6 @@ function Set-Location {
     }
 }
 
-# Export functions
-Export-ModuleMember -Function nvm, Initialize-NvmPath, Remove-NvmFromPath
+# Export functions — Set-Location MUST be exported so the auto-switch-on-cd
+# override actually replaces the global `cd`/`Set-Location` in the user's session.
+Export-ModuleMember -Function nvm, Initialize-NvmPath, Remove-NvmFromPath, Set-Location

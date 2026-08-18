@@ -46,7 +46,8 @@ function Write-Warn($msg) {
     Write-Host $msg
 }
 
-function Write-Error($msg) {
+function Write-Err {
+    param([string]$msg)
     Write-Host "[ERROR] " -ForegroundColor Red -NoNewline
     Write-Host $msg
 }
@@ -62,7 +63,7 @@ function Get-Arch {
         "x64"     { return "x64" }
         "ARM64"   { return "arm64" }
         default   {
-            Write-Error "Unsupported architecture: $arch"
+            Write-Err "Unsupported architecture: $arch"
             exit 1
         }
     }
@@ -95,7 +96,7 @@ function Get-LatestVersion {
         if ($tag) { return $tag }
     } catch {}
 
-    Write-Error "Failed to get latest version (GitHub API rate-limited?). Try: ./install.ps1 -Version v2.1.2"
+    Write-Err "Failed to get latest version (GitHub API rate-limited?). Try: ./install.ps1 -Version v2.1.2"
     exit 1
 }
 
@@ -104,7 +105,7 @@ function Download-File($url, $dest) {
         Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
         return $true
     } catch {
-        Write-Error "Download failed: $_"
+        Write-Err "Download failed: $_"
         return $false
     }
 }
@@ -220,7 +221,7 @@ function Main {
         $archivePath = Join-Path $tmpDir $archive
 
         if (-not (Download-File $downloadUrl $archivePath)) {
-            Write-Error "Failed to download $archive"
+            Write-Err "Failed to download $archive"
             Remove-Item $tmpDir -Recurse -Force
             exit 1
         }
@@ -329,14 +330,20 @@ goto :eof
     }
     Write-Success "Shim scripts created in $shimsDir"
 
-    # Add to user PATH (shims dir + bin dir)
+    # Add to user PATH (shims dir + bin dir) — use element-by-element
+    # comparison instead of substring -notlike to avoid false matches
+    # (e.g. "shims-old" would match "*shims*").
     $pathKey = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($pathKey -notlike "*$shimsDir*") {
-        [Environment]::SetEnvironmentVariable("Path", "$shimsDir;$pathKey;$InstallDir", "User")
-        $env:Path = "$shimsDir;$env:Path;$InstallDir"
-        Write-Success "Added to user PATH"
-    } elseif ($pathKey -notlike "*$InstallDir*") {
-        [Environment]::SetEnvironmentVariable("Path", "$shimsDir;$pathKey;$InstallDir", "User")
+    $pathElements = if ($pathKey) { $pathKey -split ';' } else { @() }
+    $hasShims = $pathElements -contains $shimsDir
+    $hasBin = $pathElements -contains $InstallDir
+    if (-not $hasShims -or -not $hasBin) {
+        $newPath = @()
+        if (-not $hasShims) { $newPath += $shimsDir }
+        $newPath += $pathElements
+        if (-not $hasBin) { $newPath += $InstallDir }
+        $newPathStr = $newPath -join ';'
+        [Environment]::SetEnvironmentVariable("Path", $newPathStr, "User")
         $env:Path = "$shimsDir;$env:Path;$InstallDir"
         Write-Success "Added to user PATH"
     } else {
@@ -349,6 +356,8 @@ goto :eof
     # PowerShell window does nothing.
     $currentPolicy = Get-ExecutionPolicy
     if ($currentPolicy -eq 'Restricted') {
+        Write-Warn "PowerShell execution policy is 'Restricted' — profile (and thus nvm) won't load in new shells."
+        Write-Info "Changing to 'RemoteSigned' (CurrentUser scope) so nvm works in new PowerShell windows."
         Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
         Write-Success "PowerShell execution policy set to RemoteSigned"
     } else {

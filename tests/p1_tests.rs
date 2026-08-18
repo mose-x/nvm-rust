@@ -290,3 +290,159 @@ fn regression_fish_path_order_is_shims_before_bin() {
         shims_pos
     );
 }
+
+/// P0-1: nvm.psm1 must export Set-Location so the auto-switch-on-cd override
+/// actually replaces the global `cd`/`Set-Location` in the user's session.
+#[test]
+fn p0_1_psm1_exports_set_location() {
+    let nvm_psm1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.psm1");
+    let content = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
+    assert!(
+        content.contains("Export-ModuleMember") && content.contains("Set-Location"),
+        "nvm.psm1 must export Set-Location so auto-switch-on-cd works"
+    );
+}
+
+/// P0-2: nvm.psm1 must respect $env:NVM_DIR instead of hardcoding the path.
+#[test]
+fn p0_2_psm1_respects_nvm_dir() {
+    let nvm_psm1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.psm1");
+    let content = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
+    assert!(
+        content.contains("$env:NVM_DIR"),
+        "nvm.psm1 must respect $env:NVM_DIR (not hardcode the path)"
+    );
+}
+
+/// P1-1: All three shell wrappers must forward extra args (e.g. --silent) to
+/// `nvm auto`, not pass a literal "auto" that drops the flag.
+#[test]
+fn p1_1_wrappers_forward_auto_args() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    // nvm.sh: auto case must use "$@" not literal "auto"
+    let nvm_sh = manifest.join("shell/nvm.sh");
+    let sh = fs::read_to_string(&nvm_sh).expect("nvm.sh must exist");
+    assert!(
+        !sh.contains("\"${NVM_RUST_BIN}/nvm\" auto\n"),
+        "nvm.sh must not pass literal 'auto' to nvm binary (drops --silent)"
+    );
+
+    // nvm.fish: auto case must use $argv not literal "auto"
+    let nvm_fish = manifest.join("shell/nvm.fish");
+    let fish = fs::read_to_string(&nvm_fish).expect("nvm.fish must exist");
+    assert!(
+        !fish.contains("\"$NVM_RUST_BIN/nvm\" auto\n"),
+        "nvm.fish must not pass literal 'auto' to nvm binary (drops --silent)"
+    );
+
+    // nvm.psm1: auto case must pass $Arguments
+    let nvm_psm1 = manifest.join("shell/nvm.psm1");
+    let psm1 = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
+    assert!(
+        psm1.contains("& $NvmExe auto $Arguments"),
+        "nvm.psm1 must pass $Arguments to nvm auto (forwards --silent)"
+    );
+}
+
+/// P1-2: All three shell wrappers must accept `nvm use` with no args and let
+/// the binary handle the default-version fallback (not reject it early).
+#[test]
+fn p1_2_wrappers_accept_use_no_args() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    // nvm.sh: must not have the "$# -lt 2" check for use
+    let nvm_sh = manifest.join("shell/nvm.sh");
+    let sh = fs::read_to_string(&nvm_sh).expect("nvm.sh must exist");
+    assert!(
+        !sh.contains("Usage: nvm use <version>"),
+        "nvm.sh must not reject 'nvm use' with no args (binary supports default fallback)"
+    );
+
+    // nvm.fish: must not have the "test -z \"$ver\"" check for use
+    let nvm_fish = manifest.join("shell/nvm.fish");
+    let fish = fs::read_to_string(&nvm_fish).expect("nvm.fish must exist");
+    assert!(
+        !fish.contains("Usage: nvm use <version>"),
+        "nvm.fish must not reject 'nvm use' with no args"
+    );
+
+    // nvm.psm1: must not have the "-not $Arguments" check for use
+    let nvm_psm1 = manifest.join("shell/nvm.psm1");
+    let psm1 = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
+    assert!(
+        !psm1.contains("Usage: nvm use <version>"),
+        "nvm.psm1 must not reject 'nvm use' with no args"
+    );
+}
+
+/// P1-3: nvm.fish must have a __nvm_strip_path function and call it in
+/// deactivate and unload (matching nvm.sh's _nvm_strip_path behavior).
+#[test]
+fn p1_3_fish_has_strip_path() {
+    let nvm_fish = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.fish");
+    let content = fs::read_to_string(&nvm_fish).expect("nvm.fish must exist");
+    assert!(
+        content.contains("function __nvm_strip_path"),
+        "nvm.fish must define __nvm_strip_path function"
+    );
+    // Verify it's called in deactivate and unload
+    let deactivate_pos = content.find("case deactivate");
+    let unload_pos = content.find("case unload");
+    assert!(
+        deactivate_pos.is_some(),
+        "nvm.fish must have deactivate case"
+    );
+    assert!(unload_pos.is_some(), "nvm.fish must have unload case");
+    let deactivate_section = &content[deactivate_pos.unwrap()..unload_pos.unwrap()];
+    assert!(
+        deactivate_section.contains("__nvm_strip_path"),
+        "nvm.fish deactivate must call __nvm_strip_path"
+    );
+    let unload_section = &content[unload_pos.unwrap()..];
+    assert!(
+        unload_section.contains("__nvm_strip_path"),
+        "nvm.fish unload must call __nvm_strip_path"
+    );
+}
+
+/// P1-8: nvm.psm1 ValidateSet must include version/help flags so they pass
+/// through to the binary instead of being rejected by validation.
+#[test]
+fn p1_8_psm1_validateset_includes_version_flags() {
+    let nvm_psm1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.psm1");
+    let content = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
+    for flag in &["--version", "-V", "-v", "--help", "-h"] {
+        assert!(
+            content.contains(&format!("'{}'", flag)),
+            "nvm.psm1 ValidateSet must include '{}'",
+            flag
+        );
+    }
+}
+
+/// P1-9: nvm.psm1 Remove-NvmFromPath must remove entries from the CURRENT
+/// PATH, not restore a stale snapshot from module load ($script:OriginalPath).
+#[test]
+fn p1_9_psm1_remove_from_path_uses_current() {
+    let nvm_psm1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("shell")
+        .join("nvm.psm1");
+    let content = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
+    assert!(
+        !content.contains("$env:Path = $script:OriginalPath"),
+        "nvm.psm1 Remove-NvmFromPath must not restore stale OriginalPath snapshot"
+    );
+    assert!(
+        content.contains("Where-Object"),
+        "nvm.psm1 Remove-NvmFromPath must filter current PATH elements"
+    );
+}

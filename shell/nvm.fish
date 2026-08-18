@@ -43,24 +43,31 @@ function __nvm_resolve --description "Resolve nvm version alias"
     echo "$ver"
 end
 
+# Remove nvm entries from PATH (matches nvm.sh _nvm_strip_path behavior).
+function __nvm_strip_path --description "Remove nvm PATH entries"
+    set -l newpath
+    for p in $PATH
+        if test "$p" != "$NVM_RUST_SHIMS" -a "$p" != "$NVM_RUST_BIN"
+            set newpath $newpath $p
+        end
+    end
+    set -gx PATH $newpath
+end
+
 # nvm use — switch Node.js version
 function nvm --description "Node version manager (nvm-rust)"
     set -l cmd "$argv[1]"
-    set -l ver "$argv[2]"
 
     switch "$cmd"
         case use
-            if test -z "$ver"
-                echo "Usage: nvm use <version>"
-                return 1
-            end
-            eval "$NVM_RUST_BIN/nvm" use "$ver"
+            # No-args falls through to binary (supports default version fallback)
+            eval "$NVM_RUST_BIN/nvm" use $argv[2..-1]
 
         case install
             eval "$NVM_RUST_BIN/nvm" install $argv[2..-1]
 
         case uninstall
-            eval "$NVM_RUST_BIN/nvm" uninstall "$ver"
+            eval "$NVM_RUST_BIN/nvm" uninstall $argv[2..-1]
 
         case ls list
             eval "$NVM_RUST_BIN/nvm" list
@@ -72,7 +79,7 @@ function nvm --description "Node version manager (nvm-rust)"
             eval "$NVM_RUST_BIN/nvm" current
 
         case which
-            eval "$NVM_RUST_BIN/nvm" which "$ver"
+            eval "$NVM_RUST_BIN/nvm" which $argv[2..-1]
 
         case run
             eval "$NVM_RUST_BIN/nvm" run $argv[2..-1]
@@ -81,26 +88,26 @@ function nvm --description "Node version manager (nvm-rust)"
             eval "$NVM_RUST_BIN/nvm" exec $argv[2..-1]
 
         case alias
-            if test -z "$ver"
-                eval "$NVM_RUST_BIN/nvm" alias
-            else
-                eval "$NVM_RUST_BIN/nvm" alias $argv[2..-1]
-            end
+            eval "$NVM_RUST_BIN/nvm" alias $argv[2..-1]
 
         case unalias
-            eval "$NVM_RUST_BIN/nvm" unalias "$ver"
+            eval "$NVM_RUST_BIN/nvm" unalias $argv[2..-1]
 
         case auto
-            eval "$NVM_RUST_BIN/nvm" auto
+            eval "$NVM_RUST_BIN/nvm" $argv
 
         case deactivate
             eval "$NVM_RUST_BIN/nvm" deactivate
+            __nvm_strip_path
 
         case unload
+            __nvm_strip_path
             set -e NVM_RUST_DIR
             set -e NVM_RUST_BIN
+            set -e NVM_RUST_SHIMS
             functions -e nvm
             functions -e __nvm_resolve
+            functions -e __nvm_strip_path
 
         case help ''
             echo "nvm-rs — Node.js version manager (Fish shell)"
