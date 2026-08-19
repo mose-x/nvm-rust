@@ -122,7 +122,7 @@ _copy_binary() {
             chmod +x "$system_bin"
             ln -sf "$system_bin" "$user_bin"
             echo "[OK] Copied to $system_bin (system path, EDR-safe)"
-        elif command -v sudo &>/dev/null; then
+        elif command -v sudo &>/dev/null && [ -d "/usr/local/bin" ]; then
             sudo cp "$src" "$system_bin"
             sudo chmod +x "$system_bin"
             ln -sf "$system_bin" "$user_bin"

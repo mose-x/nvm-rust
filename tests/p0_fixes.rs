@@ -703,3 +703,66 @@ fn doctor_has_edr_risk_check() {
         "doctor.rs must suggest running nvm refresh to migrate"
     );
 }
+
+/// P2-1: install.sh and build scripts must check /usr/local/bin exists
+/// before sudo cp (prevents script abort on Alpine/distroless).
+#[test]
+fn scripts_check_system_dir_exists_before_sudo() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for script in &[
+        "install.sh",
+        "scripts/build-linux.sh",
+        "scripts/build-macos.sh",
+        "scripts/devbuild.sh",
+    ] {
+        let path = manifest.join(script);
+        let content = fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} must exist", script));
+        // The elif sudo branch must include [ -d "/usr/local/bin" ]
+        assert!(
+            content.contains("command -v sudo") && content.contains("[ -d \"/usr/local/bin\" ]"),
+            "{} must check /usr/local/bin exists before sudo cp",
+            script
+        );
+    }
+}
+
+/// P2-4: install.ps1 Clean-ShellConfig must include nvm-rs in regex
+/// (matching install.sh — # nvm-rs marker must be removed on uninstall).
+#[test]
+fn install_ps1_clean_removes_nvm_rs_marker() {
+    let install_ps1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.ps1");
+    let content = fs::read_to_string(&install_ps1).expect("install.ps1 must exist");
+    assert!(
+        content.contains("nvm-rs"),
+        "install.ps1 Clean-ShellConfig must match 'nvm-rs' (dash) to remove the marker"
+    );
+}
+
+/// P2-2/P2-3: i18n keys for EDR migration and Windows admin must exist
+/// in both locale files.
+#[test]
+fn edr_i18n_keys_exist() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for locale in &["locales/en.toml", "locales/cn.toml"] {
+        let path = manifest.join(locale);
+        let content = fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} must exist", locale));
+        for key in &[
+            "refresh_binary_skip_no_system_dir",
+            "refresh_binary_migrating",
+            "refresh_binary_symlink_failed",
+            "refresh_binary_remove_failed",
+            "refresh_binary_edr_risk_manual",
+            "refresh_binary_edr_risk_windows",
+            "upgrade_admin_required",
+            "upgrade_admin_hint",
+            "upgrade_admin_command",
+        ] {
+            assert!(
+                content.contains(&format!("{} =", key)),
+                "{} must contain key '{}'",
+                locale,
+                key
+            );
+        }
+    }
+}

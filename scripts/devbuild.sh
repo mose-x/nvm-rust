@@ -19,7 +19,7 @@ if [ -f target/debug/nvm ]; then
         chmod +x "$SYSTEM_BIN"
         ln -sf "$SYSTEM_BIN" "$USER_BIN"
         echo "✓ Copied to $SYSTEM_BIN (system path, EDR-safe)"
-    elif command -v sudo &>/dev/null; then
+    elif command -v sudo &>/dev/null && [ -d "/usr/local/bin" ]; then
         sudo cp target/debug/nvm "$SYSTEM_BIN"
         sudo chmod +x "$SYSTEM_BIN"
         ln -sf "$SYSTEM_BIN" "$USER_BIN"

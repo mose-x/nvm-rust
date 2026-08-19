@@ -174,15 +174,20 @@ pub(crate) fn swap_binary(bin_path: &Path, new_bin: &Path) -> Result<()> {
         #[cfg(not(unix))]
         {
             eprintln!(
-                "  {} Binary at {} requires admin to update",
+                "  {} {}",
                 "⚠".yellow().bold(),
-                bin_path.display()
+                format_t("upgrade_admin_required", &[bin_path.display().to_string()])
             );
-            eprintln!("  Run install.ps1 again as admin, or:");
+            eprintln!("  {}", T("upgrade_admin_hint"));
             eprintln!(
-                "    Start-Process -Verb RunAs -ArgumentList 'Copy-Item \"{}\" \"{}\" -Force'",
-                new_bin.display(),
-                bin_path.display()
+                "    {}",
+                format_t(
+                    "upgrade_admin_command",
+                    &[
+                        new_bin.display().to_string(),
+                        bin_path.display().to_string()
+                    ]
+                )
             );
             return Ok(());
         }
