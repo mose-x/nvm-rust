@@ -47,13 +47,10 @@ fn check_binary() {
     let ver = env!("CARGO_PKG_VERSION");
     match exe {
         Some(path) => {
-            // Check if the binary lives in a user-writable dir that EDR
-            // software may flag (e.g. ~/.nvm.rust/bin/). If the path
-            // contains ".nvm.rust", it's the old EDR-risky layout —
-            // suggest running `nvm refresh` to migrate to the system path.
             let path_str = path.to_string_lossy();
             if path_str.contains(".nvm.rust") {
                 println!("  {} {}", "⚠".yellow().bold(), T("doctor_binary_edr_risk"));
+                println!("    {}", T("doctor_binary_edr_hint"));
             } else {
                 println!(
                     "  {} {}",
@@ -204,7 +201,17 @@ fn check_current(nvm_dir: &Path, fix: bool) {
             }
         }
         Err(_) if !current_file.exists() => {
-            if fix {
+            // Check if any versions are installed before suggesting fixes
+            let has_versions = crate::utils::get_installed_versions()
+                .iter()
+                .any(|v| nvm_dir.join(v).is_dir());
+            if !has_versions {
+                println!(
+                    "  {} {}",
+                    "ℹ".cyan().bold(),
+                    T("doctor_current_no_versions_install")
+                );
+            } else if fix {
                 if let Some(latest) = crate::shim::next_available_version("") {
                     match crate::utils::atomic_write(&current_file, &latest) {
                         Ok(()) => println!(
@@ -237,7 +244,20 @@ fn check_shim_mode(nvm_dir: &Path) {
     if crate::shim::active_exists(nvm_dir) {
         println!("  {} {}", "✓".green().bold(), T("doctor_shim_mode_active"));
     } else {
-        println!("  {} {}", "ℹ".cyan().bold(), T("doctor_shim_mode_legacy"));
+        // No active symlink. Check if any versions are installed —
+        // refresh can't create the active symlink without a version.
+        let has_versions = crate::utils::get_installed_versions()
+            .iter()
+            .any(|v| nvm_dir.join(v).is_dir());
+        if !has_versions {
+            println!(
+                "  {} {}",
+                "ℹ".cyan().bold(),
+                T("doctor_shim_mode_no_versions")
+            );
+        } else {
+            println!("  {} {}", "ℹ".cyan().bold(), T("doctor_shim_mode_legacy"));
+        }
     }
 }
 
