@@ -13,7 +13,9 @@ if exist target\debug\nvm.exe (
     if !ERRORLEVEL! equ 0 (
         if not exist "%ProgramFiles%\nvm-rust" mkdir "%ProgramFiles%\nvm-rust" 2>nul
         copy /Y target\debug\nvm.exe "%ProgramFiles%\nvm-rust\nvm.exe" >nul
-        echo ✓ Copied to %ProgramFiles%\nvm-rust\nvm.exe (system path, EDR-safe)
+        REM Also sync to user dir (Windows can't symlink, so dual-copy)
+        copy /Y target\debug\nvm.exe "%USERPROFILE%\.nvm.rust\bin\nvm.exe" >nul
+        echo ✓ Copied to %ProgramFiles%\nvm-rust\nvm.exe (system path) + %USERPROFILE%\.nvm.rust\bin\nvm.exe (sync)
     ) else (
         copy /Y target\debug\nvm.exe "%USERPROFILE%\.nvm.rust\bin\nvm.exe" >nul
         echo ✓ Copied to %USERPROFILE%\.nvm.rust\bin\nvm.exe (user path — run as admin for EDR-safe)

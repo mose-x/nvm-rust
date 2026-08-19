@@ -198,7 +198,9 @@ if exist "%BIN_SRC%" (
     if !ERRORLEVEL! equ 0 (
         if not exist "%SYSTEM_DIR%" mkdir "%SYSTEM_DIR%" 2>nul
         copy /Y "%BIN_SRC%" "%SYSTEM_DIR%\nvm.exe" >nul
-        echo [OK] Copied to %SYSTEM_DIR%\nvm.exe (system path, EDR-safe)
+        REM Also sync to user dir (Windows can't symlink, so dual-copy)
+        copy /Y "%BIN_SRC%" "%USER_BIN%" >nul
+        echo [OK] Copied to %SYSTEM_DIR%\nvm.exe (system path) + %USER_BIN% (sync)
     ) else (
         copy /Y "%BIN_SRC%" "%USER_BIN%" >nul
         echo [OK] Copied to %USER_BIN% (user path — run as admin for EDR-safe)
