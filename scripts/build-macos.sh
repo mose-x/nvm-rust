@@ -111,24 +111,30 @@ esac
 _copy_binary() {
     local mode="$1"
     local src="target/${mode}/nvm"
-    local system_bin="/usr/local/bin/nvm"
     local install_dir="${NVM_INSTALL_DIR:-$HOME/.nvm.rust/bin}"
     local user_bin="${install_dir}/nvm"
     if [ -f "$src" ]; then
         mkdir -p "$install_dir"
-        # Try system path first (EDR-safe: real binary in /usr/local/bin)
-        if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
-            cp "$src" "$system_bin"
-            chmod +x "$system_bin"
-            ln -sf "$system_bin" "$user_bin"
-            echo "[OK] Copied to $system_bin (system path, EDR-safe)"
-        elif command -v sudo &>/dev/null && [ -d "/usr/local/bin" ]; then
-            sudo cp "$src" "$system_bin"
-            sudo chmod +x "$system_bin"
-            ln -sf "$system_bin" "$user_bin"
-            echo "[OK] Copied to $system_bin (system path via sudo, EDR-safe)"
-        else
-            # Fallback: user path (EDR risk)
+        # EDR probe-first: try each system candidate by copying a probe
+        # binary and executing --version. No auto-sudo.
+        local SYSTEM_CANDIDATES="/usr/local/bin /opt/homebrew/bin"
+        local INSTALL_DONE=0
+        for cand in $SYSTEM_CANDIDATES; do
+            [ -d "$cand" ] || continue
+            [ -w "$cand" ] || continue
+            cp -f "$src" "$cand/.nvm_probe_$$"
+            chmod +x "$cand/.nvm_probe_$$"
+            if "$cand/.nvm_probe_$$" --version >/dev/null 2>&1; then
+                cp -f "$src" "$cand/nvm"
+                chmod +x "$cand/nvm"
+                ln -sf "$cand/nvm" "$user_bin"
+                echo "[OK] Copied to $cand/nvm (system path, EDR-safe)"
+                INSTALL_DONE=1
+                break
+            fi
+            rm -f "$cand/.nvm_probe_$$"
+        done
+        if [ "$INSTALL_DONE" = "0" ]; then
             cp "$src" "$user_bin"
             chmod +x "$user_bin"
             echo "[OK] Copied to $user_bin (user path — EDR may block)"

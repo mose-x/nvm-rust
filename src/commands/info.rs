@@ -225,7 +225,7 @@ pub fn use_version_silent(
             }
             // Check if rc was reverted to old format by an old nvm version
             if let Ok(true) = crate::config::rc_has_version_specific_path() {
-                if let Err(e) = crate::config::migrate_rc_to_shim_mode() {
+                if let Err(e) = crate::config::migrate_rc_to_shim_mode_with_dir(&nvm_dir) {
                     eprintln!("  {} failed to re-migrate rc: {}", "⚠".yellow().bold(), e);
                 }
             }

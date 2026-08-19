@@ -582,57 +582,67 @@ fn build_scripts_have_auto_copy() {
     );
 }
 
-/// EDR-safe layout: install.sh must try /usr/local/bin first (system path,
-/// EDR-safe), then create a symlink at ~/.nvm.rust/bin/nvm → /usr/local/bin/nvm.
-/// Fallback to old behavior (real file in user dir) with warning.
+/// EDR-safe layout: install.sh must use a probe-first candidate chain.
+/// Instead of hardcoded /usr/local/bin + sudo, it probes each candidate
+/// by copying a probe binary and executing --version. No auto-sudo.
 #[test]
-fn install_sh_installs_to_system_path_first() {
+fn install_sh_uses_probe_chain() {
     let install_sh = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
     let content = fs::read_to_string(&install_sh).expect("install.sh must exist");
-    // Must try /usr/local/bin first
+    // Must have the probe candidate chain
     assert!(
-        content.contains("/usr/local/bin") && content.contains("[ -w \"/usr/local/bin\""),
-        "install.sh must check if /usr/local/bin is writable for EDR-safe install"
+        content.contains("SYSTEM_CANDIDATES"),
+        "install.sh must define SYSTEM_CANDIDATES for probe chain"
     );
-    // Must create symlink from user dir → system path
     assert!(
-        content.contains("ln -sf \"$BIN_LINK\" \"${INSTALL_DIR}/${BINARY_NAME}\""),
+        content.contains("/usr/local/bin") && content.contains("/opt/homebrew/bin"),
+        "install.sh must include /usr/local/bin and /opt/homebrew/bin as candidates"
+    );
+    // Must have probe binary name
+    assert!(
+        content.contains(".nvm_probe_"),
+        "install.sh must copy a probe binary (.nvm_probe_) before executing"
+    );
+    // Must create symlink from user dir to system path
+    assert!(
+        content.contains("ln -sf"),
         "install.sh must create symlink from user dir to system path (EDR-safe layout)"
     );
-    // Must have sudo fallback for system path
+    // Must NOT use auto-sudo in the install section
     assert!(
-        content.contains("sudo cp -f"),
-        "install.sh must use sudo cp as fallback for system path install"
+        !content.contains("sudo cp -f \"${source_dir}/${BINARY_NAME}\" \"$BIN_LINK\""),
+        "install.sh must NOT use auto-sudo cp in install section"
     );
-    // Must have EDR warning for fallback to user dir
+    // Must have EDR warning for fallback
     assert!(
-        content.contains("EDR may block"),
-        "install.sh must warn about EDR risk when falling back to user dir"
+        content.contains("EDR"),
+        "install.sh must warn about EDR when falling back to user dir"
     );
-    // Uninstall must use sudo rm for system-path binary
+    // Uninstall must try all candidates
     assert!(
-        content.contains("sudo rm -f \"$BIN_LINK\""),
-        "install.sh uninstall must use sudo rm for system-path binary (may be root-owned)"
+        content.contains("/opt/homebrew/bin"),
+        "install.sh uninstall must try /opt/homebrew/bin as well as /usr/local/bin"
     );
 }
 
-/// EDR-safe layout: binary_swap.rs must have sudo fallback logic for
-/// system paths that are not user-writable.
+/// EDR-safe layout: binary_swap.rs must have probe_dir_for_edr function
+/// and must NOT auto-sudo in swap_binary. Instead, it prints explicit
+/// manual instructions when the system path is not writable.
 #[test]
-fn binary_swap_has_sudo_fallback() {
+fn binary_swap_has_probe_and_no_auto_sudo() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/binary_swap.rs");
     let content = fs::read_to_string(&src).expect("binary_swap.rs must exist");
-    // Must check if dir is writable
+    // Must have is_dir_writable to detect system paths
     assert!(
         content.contains("is_dir_writable"),
         "binary_swap.rs must have is_dir_writable function to detect system paths"
     );
-    // Must have sudo cp fallback on Unix
+    // Must have probe_dir_for_edr for EDR-safe probing
     assert!(
-        content.contains("sudo") && content.contains("cp"),
-        "binary_swap.rs must have sudo cp fallback for non-writable system paths"
+        content.contains("fn probe_dir_for_edr"),
+        "binary_swap.rs must have probe_dir_for_edr function for EDR probe-first"
     );
-    // Marker must be in user bin dir (always user-writable).
+    // Must have .swap-pending marker in user bin dir.
     // cargo fmt may split the chained .join() across lines, so check
     // for the components separately.
     assert!(
@@ -646,10 +656,16 @@ fn binary_swap_has_sudo_fallback() {
         content.contains("user_bin_dir"),
         "binary_swap.rs check_swap_recovery must look in user bin dir for marker and recovery files"
     );
+    // Must NOT auto-sudo in swap_binary (replaced with manual instructions)
+    assert!(
+        !content.contains("Command::new(\"sudo\")"),
+        "binary_swap.rs must NOT auto-sudo in swap_binary — print manual instructions instead"
+    );
 }
 
 /// EDR-safe layout: refresh.rs must have migrate_binary_to_system_path
-/// function that auto-migrates old-layout binaries to the new EDR-safe layout.
+/// function that uses probe_dir_for_edr to auto-migrate old-layout binaries
+/// to the new EDR-safe layout. No auto-sudo.
 #[test]
 fn refresh_has_migrate_binary_to_system_path() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/refresh.rs");
@@ -664,15 +680,20 @@ fn refresh_has_migrate_binary_to_system_path() {
         content.contains("symlink_metadata"),
         "refresh.rs must use symlink_metadata to check if binary is already a symlink"
     );
-    // Must try sudo cp on Unix
+    // Must use probe_dir_for_edr for EDR-safe probing (not just writability)
     assert!(
-        content.contains("sudo") && content.contains("/usr/local/bin/nvm"),
-        "refresh.rs must try sudo cp to /usr/local/bin/nvm for migration"
+        content.contains("probe_dir_for_edr"),
+        "refresh.rs must use probe_dir_for_edr to verify EDR-safe execution before migration"
     );
     // Must create symlink after migration
     assert!(
         content.contains("std::os::unix::fs::symlink"),
         "refresh.rs must create symlink from user dir to system path after migration"
+    );
+    // Must NOT auto-sudo (replaced with explicit manual instructions)
+    assert!(
+        !content.contains("Command::new(\"sudo\")"),
+        "refresh.rs must NOT auto-sudo in migrate_binary_to_system_path"
     );
     // Must call it in refresh()
     assert!(
@@ -705,9 +726,11 @@ fn doctor_has_edr_risk_check() {
 }
 
 /// P2-1: install.sh and build scripts must check /usr/local/bin exists
-/// before sudo cp (prevents script abort on Alpine/distroless).
+/// and use a probe-first approach (no auto-sudo). Previously scripts checked
+/// `command -v sudo` before sudo cp; now they check `[ -d` and `[ -w` on
+/// each candidate and probe by executing --version.
 #[test]
-fn scripts_check_system_dir_exists_before_sudo() {
+fn scripts_use_probe_chain_no_auto_sudo() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     for script in &[
         "install.sh",
@@ -717,10 +740,16 @@ fn scripts_check_system_dir_exists_before_sudo() {
     ] {
         let path = manifest.join(script);
         let content = fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} must exist", script));
-        // The elif sudo branch must include [ -d "/usr/local/bin" ]
+        // Must have a probe binary name pattern
         assert!(
-            content.contains("command -v sudo") && content.contains("[ -d \"/usr/local/bin\" ]"),
-            "{} must check /usr/local/bin exists before sudo cp",
+            content.contains(".nvm_probe_"),
+            "{} must use a probe binary (.nvm_probe_) for EDR probe-first",
+            script
+        );
+        // Must check directory existence before probing
+        assert!(
+            content.contains("[ -d "),
+            "{} must check directory existence ([ -d) before probing",
             script
         );
     }
@@ -767,14 +796,20 @@ fn edr_i18n_keys_exist() {
     }
 }
 
-/// Fix 1: refresh.rs must check writability before sudo cp.
+/// Fix 1: refresh.rs must check writability and probe EDR safety before
+/// installing to system path. The old code used `can_write` + sudo; the
+/// new code uses `is_dir_writable` + `probe_dir_for_edr`.
 #[test]
-fn refresh_checks_writability_before_sudo() {
+fn refresh_checks_writability_and_probes() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/refresh.rs");
     let content = fs::read_to_string(&src).expect("refresh.rs must exist");
     assert!(
-        content.contains("is_dir_writable") && content.contains("can_write"),
-        "refresh.rs must check writability before sudo cp"
+        content.contains("is_dir_writable"),
+        "refresh.rs must check writability with is_dir_writable before installing to system path"
+    );
+    assert!(
+        content.contains("probe_dir_for_edr"),
+        "refresh.rs must probe EDR safety with probe_dir_for_edr before installing"
     );
 }
 
@@ -803,5 +838,212 @@ fn upgrade_syncs_windows_user_dir_copy() {
     assert!(
         content.contains("Sync user-dir copy"),
         "upgrade.rs must sync user-dir copy on Windows"
+    );
+}
+
+/// Test isolation: shell_config.rs must have migrate_rc_to_shim_mode_with_dir
+/// that takes nvm_dir as a parameter (not re-deriving from env).
+#[test]
+fn shell_config_has_migrate_rc_with_dir() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shell_config.rs");
+    let content = fs::read_to_string(&src).expect("shell_config.rs must exist");
+    assert!(
+        content.contains("fn migrate_rc_to_shim_mode_with_dir(nvm_dir: &Path)"),
+        "shell_config.rs must have migrate_rc_to_shim_mode_with_dir that takes nvm_dir parameter"
+    );
+    // Old function must be kept as a wrapper for backward compat
+    assert!(
+        content.contains("fn migrate_rc_to_shim_mode()"),
+        "shell_config.rs must keep migrate_rc_to_shim_mode as backward-compat wrapper"
+    );
+    // TMPDIR defense must be present (test-only)
+    assert!(
+        content.contains("TMPDIR"),
+        "shell_config.rs must have TMPDIR defense in migrate_rc_to_shim_mode_with_dir"
+    );
+}
+
+/// Test isolation: shim.rs setup_temp_nvm_dir must sandbox HOME (and
+/// USERPROFILE on Windows), not just NVM_DIR.
+#[test]
+fn shim_setup_temp_nvm_dir_sandboxes_home() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shim.rs");
+    let content = fs::read_to_string(&src).expect("shim.rs must exist");
+    // NvmDirGuard must store old_home
+    assert!(
+        content.contains("old_home"),
+        "shim.rs NvmDirGuard must store and restore old_home"
+    );
+    // setup_temp_nvm_dir must set HOME
+    assert!(
+        content.contains("env::set_var(\"HOME\""),
+        "shim.rs setup_temp_nvm_dir must set HOME to temp dir"
+    );
+    // On Windows, must also set USERPROFILE
+    assert!(
+        content.contains("USERPROFILE"),
+        "shim.rs setup_temp_nvm_dir must set USERPROFILE on Windows"
+    );
+    // migrate_to_full_shim must call _with_dir variant
+    assert!(
+        content.contains("migrate_rc_to_shim_mode_with_dir(nvm_dir)"),
+        "shim.rs migrate_to_full_shim must call migrate_rc_to_shim_mode_with_dir(nvm_dir)"
+    );
+}
+
+/// Test isolation: tests/common/mod.rs run_isolated must set HOME (and
+/// USERPROFILE on Windows) to the same temp dir as NVM_DIR.
+#[test]
+fn run_isolated_sets_home() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/common/mod.rs");
+    let content = fs::read_to_string(&src).expect("tests/common/mod.rs must exist");
+    assert!(
+        content.contains(".env(\"HOME\""),
+        "run_isolated must set HOME env var to the temp dir"
+    );
+    assert!(
+        content.contains("USERPROFILE"),
+        "run_isolated must set USERPROFILE on Windows"
+    );
+}
+
+/// EDR probe-first: system.rs must define system bin candidate constants.
+#[test]
+fn system_has_bin_candidate_constants() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/system.rs");
+    let content = fs::read_to_string(&src).expect("system.rs must exist");
+    assert!(
+        content.contains("SYSTEM_BIN_CANDIDATES_UNIX"),
+        "system.rs must define SYSTEM_BIN_CANDIDATES_UNIX constant"
+    );
+    assert!(
+        content.contains("SYSTEM_BIN_CANDIDATE_WINDOWS"),
+        "system.rs must define SYSTEM_BIN_CANDIDATE_WINDOWS constant"
+    );
+    // Unix candidates must include /usr/local/bin and /opt/homebrew/bin
+    assert!(
+        content.contains("/usr/local/bin") && content.contains("/opt/homebrew/bin"),
+        "SYSTEM_BIN_CANDIDATES_UNIX must include /usr/local/bin and /opt/homebrew/bin"
+    );
+}
+
+/// Config ownership: main.rs must check config.json ownership (root-owned
+/// warning on Unix).
+#[test]
+fn main_checks_config_ownership() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let content = fs::read_to_string(&src).expect("main.rs must exist");
+    assert!(
+        content.contains("CONFIG_FILE"),
+        "main.rs must reference CONFIG_FILE for ownership check"
+    );
+    assert!(
+        content.contains("root-owned"),
+        "main.rs must warn about root-owned config.json"
+    );
+}
+
+/// Config ownership: doctor.rs must have check_config_ownership function.
+#[test]
+fn doctor_has_config_ownership_check() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/doctor.rs");
+    let content = fs::read_to_string(&src).expect("doctor.rs must exist");
+    assert!(
+        content.contains("fn check_config_ownership"),
+        "doctor.rs must have check_config_ownership function"
+    );
+    assert!(
+        content.contains("check_config_ownership(&nvm_dir)"),
+        "doctor.rs must call check_config_ownership in doctor()"
+    );
+}
+
+/// EDR probe-first: install.ps1 must probe system path before installing.
+#[test]
+fn install_ps1_uses_probe_chain() {
+    let install_ps1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.ps1");
+    let content = fs::read_to_string(&install_ps1).expect("install.ps1 must exist");
+    // Must have probe binary
+    assert!(
+        content.contains(".nvm_probe"),
+        "install.ps1 must use a probe binary (.nvm_probe) for EDR probe-first"
+    );
+    // Must execute probe with --version
+    assert!(
+        content.contains("--version"),
+        "install.ps1 must execute probe with --version to verify EDR safety"
+    );
+    // Must have EDR fallback warning
+    assert!(
+        content.contains("EDR"),
+        "install.ps1 must warn about EDR when probe fails"
+    );
+}
+
+/// EDR probe-first: build-windows.bat must probe system path before installing.
+#[test]
+fn build_windows_uses_probe_chain() {
+    let bat = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/build-windows.bat");
+    let content = fs::read_to_string(&bat).expect("build-windows.bat must exist");
+    assert!(
+        content.contains(".nvm_probe"),
+        "build-windows.bat must use a probe binary for EDR probe-first"
+    );
+    assert!(
+        content.contains("--version"),
+        "build-windows.bat must execute probe with --version"
+    );
+}
+
+/// EDR probe-first: devbuild.bat must probe system path before installing.
+#[test]
+fn devbuild_bat_uses_probe_chain() {
+    let bat = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/devbuild.bat");
+    let content = fs::read_to_string(&bat).expect("devbuild.bat must exist");
+    assert!(
+        content.contains(".nvm_probe"),
+        "devbuild.bat must use a probe binary for EDR probe-first"
+    );
+    assert!(
+        content.contains("--version"),
+        "devbuild.bat must execute probe with --version"
+    );
+}
+
+/// No auto-sudo: upgrade.rs must NOT use Command::new("sudo") in the
+/// non-writable branch. Instead, it prints manual instructions.
+#[test]
+fn upgrade_rs_no_auto_sudo() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/upgrade.rs");
+    let content = fs::read_to_string(&src).expect("upgrade.rs must exist");
+    assert!(
+        !content.contains("Command::new(\"sudo\")"),
+        "upgrade.rs must NOT auto-sudo — print manual instructions instead"
+    );
+    assert!(
+        content.contains("System path not writable"),
+        "upgrade.rs must print manual instructions when system path is not writable"
+    );
+}
+
+/// Call sites: init.rs must use migrate_rc_to_shim_mode_with_dir variant.
+#[test]
+fn init_rs_uses_with_dir_variant() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/init.rs");
+    let content = fs::read_to_string(&src).expect("init.rs must exist");
+    assert!(
+        content.contains("migrate_rc_to_shim_mode_with_dir(nvm_dir)"),
+        "init.rs must call migrate_rc_to_shim_mode_with_dir(nvm_dir) instead of re-deriving from env"
+    );
+}
+
+/// Call sites: info.rs must use migrate_rc_to_shim_mode_with_dir variant.
+#[test]
+fn info_rs_uses_with_dir_variant() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/info.rs");
+    let content = fs::read_to_string(&src).expect("info.rs must exist");
+    assert!(
+        content.contains("migrate_rc_to_shim_mode_with_dir(&nvm_dir)"),
+        "info.rs must call migrate_rc_to_shim_mode_with_dir(&nvm_dir) instead of re-deriving from env"
     );
 }

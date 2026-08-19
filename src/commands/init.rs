@@ -97,7 +97,7 @@ fn ensure_shell_config(nvm_dir: &Path) -> Result<()> {
     if has_nvm {
         // Already configured — ensure it's the new active/bin format
         if !content.contains("active") {
-            crate::config::migrate_rc_to_shim_mode()?;
+            crate::config::migrate_rc_to_shim_mode_with_dir(nvm_dir)?;
             println!("  {} {}", "✓".green().bold(), T("init_shell_migrated"));
         } else {
             // Already has active format, but check for old-style source line

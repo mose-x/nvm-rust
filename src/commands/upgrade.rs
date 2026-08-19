@@ -238,81 +238,28 @@ pub fn upgrade(
     //
     //    If the binary lives in a system path like /usr/local/bin (not
     //    user-writable), the three-step swap can't write temp/backup files
-    //    there. Instead, on Unix we use `sudo cp` to replace the binary
-    //    directly; on Windows we print runas instructions. In either case
-    //    we DON'T bail on failure — the binary was downloaded, the user
-    //    can update manually. We continue with shims/completions/refresh.
-    //    (swap_binary also has an internal sudo fallback as a safety net
-    //    for direct callers, but we handle it here to control the flow.)
+    //    there. No auto-sudo — print explicit manual instructions so the
+    //    user can run the sudo cp themselves. We continue with shims/
+    //    completions/refresh since the binary was downloaded and the user
+    //    can update manually.
     let bin_parent = bin_path.parent().unwrap_or(std::path::Path::new("."));
     let can_write = is_dir_writable(bin_parent);
     if can_write {
         // User-writable path (e.g. ~/.nvm.rust/bin/) — use the atomic swap.
         swap_binary(&bin_path, &extracted_bin)?;
     } else {
-        // System path (e.g. /usr/local/bin/nvm) — needs elevated privileges.
-        #[cfg(unix)]
-        {
-            eprintln!(
-                "  {} {}",
-                "⚠".yellow().bold(),
-                format_t(
-                    "upgrade_sudo_required",
-                    std::slice::from_ref(&bin_path.display().to_string())
-                )
-            );
-            let status = std::process::Command::new("sudo")
-                .args([
-                    "cp",
-                    "-f",
-                    &extracted_bin.display().to_string(),
-                    &bin_path.display().to_string(),
-                ])
-                .status();
-            match status {
-                Ok(s) if s.success() => {
-                    // Ensure executable permissions on the copied binary.
-                    let _ = std::process::Command::new("sudo")
-                        .args(["chmod", "755", &bin_path.display().to_string()])
-                        .status();
-                    println!("  {} {}", "✓".green().bold(), T("upgrade_sudo_success"));
-                }
-                _ => {
-                    // Don't bail — the binary was downloaded, user can
-                    // update manually. Print instructions and continue.
-                    eprintln!(
-                        "  {} {}",
-                        "✗".red().bold(),
-                        format_t(
-                            "upgrade_sudo_failed",
-                            &[
-                                extracted_bin.display().to_string(),
-                                bin_path.display().to_string()
-                            ]
-                        )
-                    );
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            eprintln!(
-                "  {} {}",
-                "⚠".yellow().bold(),
-                format_t("upgrade_admin_required", &[bin_path.display().to_string()])
-            );
-            eprintln!("  {}", T("upgrade_admin_hint"));
-            eprintln!(
-                "    {}",
-                format_t(
-                    "upgrade_admin_command",
-                    &[
-                        extracted_bin.display().to_string(),
-                        bin_path.display().to_string()
-                    ]
-                )
-            );
-        }
+        // System path (e.g. /usr/local/bin/nvm) — not writable.
+        // No auto-sudo: print manual instructions and continue.
+        eprintln!(
+            "  {} System path not writable. To update manually:",
+            "⚠".yellow().bold()
+        );
+        eprintln!(
+            "    sudo cp -f {} {} && sudo chmod 755 {}",
+            extracted_bin.display(),
+            bin_path.display(),
+            bin_path.display()
+        );
     }
 
     // Sync user-dir copy on Windows — install.ps1 admin mode creates two copies

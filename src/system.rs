@@ -24,6 +24,21 @@ pub const CONFIG_FILE: &str = "config.json";
 pub const ALIAS_FILE: &str = "alias.json";
 pub const CACHE_DIR: &str = "cache";
 
+/// System bin directories to probe for EDR-safe binary placement (Unix).
+/// Ordered by preference. The first that passes the EDR probe wins.
+///
+/// `/usr/local/bin` is the traditional system bin on most Linux/macOS
+/// installs. `/opt/homebrew/bin` is the Homebrew directory on Apple Silicon
+/// macOS (Intel macOS uses `/usr/local/bin` which Homebrew populates).
+#[cfg_attr(not(unix), allow(dead_code))]
+pub const SYSTEM_BIN_CANDIDATES_UNIX: &[&str] = &["/usr/local/bin", "/opt/homebrew/bin"];
+
+/// Windows system bin directory candidate name. Joined with `%ProgramFiles%`
+/// to get `C:\Program Files\nvm-rust\`. EDR trusts `Program Files` more
+/// than user-writable dirs.
+#[cfg(windows)]
+pub const SYSTEM_BIN_CANDIDATE_WINDOWS: &str = "nvm-rust";
+
 /// The platform PATH separator (`:` on Unix, `;` on Windows).
 ///
 /// Centralised here so all PATH assembly goes through one constant —

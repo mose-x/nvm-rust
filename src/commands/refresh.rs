@@ -129,10 +129,11 @@ pub fn refresh() -> Result<()> {
 /// ~/.nvm.rust/bin/nvm          ← symlink → /usr/local/bin/nvm
 /// ```
 ///
-/// This function:
-/// 1. Checks if `~/.nvm.rust/bin/nvm` is a real file (not a symlink).
-/// 2. If so, tries `sudo cp` to `/usr/local/bin/nvm`.
-/// 3. If sudo succeeds, removes the real file and creates a symlink.
+/// This function probes each system bin candidate by copying a probe
+/// binary and executing `--version`. Only if the probe succeeds (EDR is
+/// not blocking) does it install the real binary and create the reverse
+/// symlink. No auto-sudo — if no candidate is writable+executable, it
+/// prints an explicit message telling the user how to do it manually.
 ///
 /// Safe to call on all platforms. On Windows, prints a warning suggesting
 /// admin install. No-op if the binary is already a symlink or doesn't exist.
@@ -158,104 +159,98 @@ fn migrate_binary_to_system_path(nvm_dir: &Path) {
 
     #[cfg(unix)]
     {
-        let system_bin = std::path::Path::new("/usr/local/bin/nvm");
-
-        // Ensure /usr/local/bin exists.
-        let system_dir = system_bin.parent().unwrap_or(std::path::Path::new("."));
-        if !system_dir.is_dir() {
-            eprintln!(
-                "  {} {}",
-                "⚠".yellow().bold(),
-                T("refresh_binary_skip_no_system_dir")
-            );
-            return;
-        }
-
-        // Migrate binary to system path. Check writability first to avoid
-        // unnecessary sudo password prompts and root-owned files.
-        let system_dir = system_bin.parent().unwrap_or(std::path::Path::new("."));
-        let can_write = crate::commands::binary_swap::is_dir_writable(system_dir);
         eprintln!("  {} {}", "ℹ".cyan().bold(), T("refresh_binary_migrating"));
 
-        let copy_ok = if can_write {
-            // Directory is writable — copy directly (no sudo needed).
-            match std::fs::copy(&user_bin, system_bin) {
-                Ok(_) => {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        let _ = std::fs::set_permissions(
-                            system_bin,
-                            std::fs::Permissions::from_mode(0o755),
-                        );
-                    }
-                    true
-                }
-                Err(_) => false,
-            }
-        } else {
-            // Not writable — need sudo.
-            let status = std::process::Command::new("sudo")
-                .args([
-                    "cp",
-                    "-f",
-                    &user_bin.display().to_string(),
-                    &system_bin.display().to_string(),
-                ])
-                .status();
-            if status.map(|s| s.success()).unwrap_or(false) {
-                let _ = std::process::Command::new("sudo")
-                    .args(["chmod", "755", &system_bin.display().to_string()])
-                    .status();
-                true
-            } else {
-                false
-            }
-        };
+        // Probe each candidate: check writability, then probe EDR safety.
+        // Uses the shared constant from system.rs as the single source of
+        // truth for system bin candidate paths.
+        let candidates = crate::system::SYSTEM_BIN_CANDIDATES_UNIX;
 
-        if copy_ok {
-            // Remove the real file and create a symlink → system path.
-            if std::fs::remove_file(&user_bin).is_ok() {
-                if std::os::unix::fs::symlink(system_bin, &user_bin).is_ok() {
-                    println!("  {} {}", "✓".green().bold(), T("refresh_binary_migrated"));
-                } else {
-                    let _ = std::fs::copy(system_bin, &user_bin);
-                    eprintln!(
-                        "  {} {}",
-                        "⚠".yellow().bold(),
-                        T("refresh_binary_symlink_failed")
-                    );
-                }
-            } else {
-                eprintln!(
-                    "  {} {}",
-                    "⚠".yellow().bold(),
-                    T("refresh_binary_remove_failed")
-                );
+        for cand in candidates {
+            let system_dir = std::path::Path::new(cand);
+            if !system_dir.is_dir() {
+                continue;
             }
-        } else {
-            eprintln!(
-                "  {} {}",
-                "⚠".yellow().bold(),
-                format_t(
-                    "refresh_binary_edr_risk_manual",
-                    &[
-                        user_bin.display().to_string(),
-                        system_bin.display().to_string()
-                    ]
-                )
-            );
+            if !crate::commands::binary_swap::is_dir_writable(system_dir) {
+                continue;
+            }
+            // Probe: copy + execute
+            if crate::commands::binary_swap::probe_dir_for_edr(system_dir, &user_bin) {
+                // EDR-safe! Copy + symlink
+                let system_bin = system_dir.join(bin_name);
+                match std::fs::copy(&user_bin, &system_bin) {
+                    Ok(_) => {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = std::fs::set_permissions(
+                                &system_bin,
+                                std::fs::Permissions::from_mode(0o755),
+                            );
+                        }
+                        // Remove the real file and create a symlink → system path.
+                        if std::fs::remove_file(&user_bin).is_ok() {
+                            if std::os::unix::fs::symlink(&system_bin, &user_bin).is_ok() {
+                                println!(
+                                    "  {} {}",
+                                    "✓".green().bold(),
+                                    T("refresh_binary_migrated")
+                                );
+                                return;
+                            } else {
+                                let _ = std::fs::copy(&system_bin, &user_bin);
+                                eprintln!(
+                                    "  {} {}",
+                                    "⚠".yellow().bold(),
+                                    T("refresh_binary_symlink_failed")
+                                );
+                                return;
+                            }
+                        } else {
+                            eprintln!(
+                                "  {} {}",
+                                "⚠".yellow().bold(),
+                                T("refresh_binary_remove_failed")
+                            );
+                            return;
+                        }
+                    }
+                    Err(_) => continue,
+                }
+            }
         }
+
+        // All candidates failed — print explicit manual instructions (no auto-sudo)
+        eprintln!(
+            "  {} {}",
+            "⚠".yellow().bold(),
+            format_t(
+                "refresh_binary_edr_risk_manual",
+                &[
+                    user_bin.display().to_string(),
+                    "/usr/local/bin/nvm".to_string()
+                ]
+            )
+        );
     }
     #[cfg(windows)]
     {
         // Windows has no /usr/local/bin equivalent that EDR trusts. The
-        // closest is C:\Program Files\nvm-rust\. Suggest running
+        // closest is %ProgramFiles%\nvm-rust\. Suggest running
         // install.ps1 as admin for the system-path install.
+        let system_dir = std::env::var("ProgramFiles")
+            .map(|pf| format!("{}\\{}", pf, crate::system::SYSTEM_BIN_CANDIDATE_WINDOWS))
+            .unwrap_or_else(|_| {
+                format!(
+                    "C:\\Program Files\\{}",
+                    crate::system::SYSTEM_BIN_CANDIDATE_WINDOWS
+                )
+            });
         eprintln!(
-            "  {} {}",
+            "  {} {} (system path candidate: {})",
             "⚠".yellow().bold(),
-            T("refresh_binary_edr_risk_windows")
+            T("refresh_binary_edr_risk_windows"),
+            system_dir
         );
     }
     #[cfg(not(any(unix, windows)))]

@@ -361,7 +361,7 @@ pub fn migrate_to_full_shim(nvm_dir: &Path) -> Result<bool> {
     // 2. First migration: active doesn't exist
     if !active_exists(nvm_dir) {
         create_active_symlink(nvm_dir, &current)?;
-        crate::config::migrate_rc_to_shim_mode()?;
+        crate::config::migrate_rc_to_shim_mode_with_dir(nvm_dir)?;
         return Ok(true);
     }
 
@@ -370,7 +370,7 @@ pub fn migrate_to_full_shim(nvm_dir: &Path) -> Result<bool> {
 
     // 4. Check if rc was reverted to old format (e.g. by old nvm version)
     if crate::config::rc_has_version_specific_path()? {
-        crate::config::migrate_rc_to_shim_mode()?;
+        crate::config::migrate_rc_to_shim_mode_with_dir(nvm_dir)?;
     }
 
     Ok(false)
@@ -382,24 +382,40 @@ mod tests {
     use std::env;
     use std::fs;
 
-    /// Guard that restores NVM_DIR to its original value when dropped,
-    /// BEFORE releasing the ENV_TESTS_MUTEX. This prevents other tests
-    /// from seeing a stale NVM_DIR pointing to a deleted temp dir.
+    /// Guard that restores NVM_DIR (and HOME/USERPROFILE) to their original
+    /// values when dropped, BEFORE releasing the ENV_TESTS_MUTEX. This prevents
+    /// other tests from seeing a stale NVM_DIR pointing to a deleted temp dir,
+    /// and prevents the real ~/.zshrc / ~/.bashrc from being touched by
+    /// migrate_rc_to_shim_mode() calls that derive rc paths from HOME.
     struct NvmDirGuard {
-        old_value: Option<String>,
+        old_nvm_dir: Option<String>,
+        old_home: Option<String>,
+        #[allow(dead_code)]
+        old_userprofile: Option<String>,
         _dir: tempfile::TempDir,
         _mutex: std::sync::MutexGuard<'static, ()>,
     }
 
     impl Drop for NvmDirGuard {
         fn drop(&mut self) {
-            // Restore NVM_DIR BEFORE the mutex is released (fields drop
+            // Restore all env vars BEFORE the mutex is released (fields drop
             // after Drop::drop returns, in declaration order: _mutex first,
-            // then _dir, then old_value — but NVM_DIR is already restored
-            // here, so other tests waiting on the mutex see the right value).
-            match &self.old_value {
+            // then _dir, then the old_* — but the env vars are already restored
+            // here, so other tests waiting on the mutex see the right values).
+            match &self.old_nvm_dir {
                 Some(v) => env::set_var("NVM_DIR", v),
                 None => env::remove_var("NVM_DIR"),
+            }
+            match &self.old_home {
+                Some(v) => env::set_var("HOME", v),
+                None => env::remove_var("HOME"),
+            }
+            #[cfg(windows)]
+            {
+                match &self.old_userprofile {
+                    Some(v) => env::set_var("USERPROFILE", v),
+                    None => env::remove_var("USERPROFILE"),
+                }
             }
         }
     }
@@ -414,11 +430,26 @@ mod tests {
         let mutex = crate::system::ENV_TESTS_MUTEX
             .lock()
             .expect("ENV_TESTS_MUTEX poisoned");
-        let old_value = env::var("NVM_DIR").ok();
+        let old_nvm_dir = env::var("NVM_DIR").ok();
+        let old_home = env::var("HOME").ok();
+        let old_userprofile = env::var("USERPROFILE").ok();
         let dir = tempfile::tempdir().expect("tempdir");
         env::set_var("NVM_DIR", dir.path());
+        // Also sandbox HOME (and USERPROFILE on Windows) to the temp dir so
+        // detect_shell_config() looks for .zshrc etc. inside the temp dir
+        // (which don't exist → returns a path but no rc to write). This
+        // prevents migrate_rc_to_shim_mode() from polluting the user's real
+        // ~/.zshrc / ~/.bashrc during tests. Pattern: shell_config.rs test
+        // migrate_rc_to_shim_mode_includes_nvm_bin_and_source_line.
+        env::set_var("HOME", dir.path());
+        #[cfg(windows)]
+        {
+            env::set_var("USERPROFILE", dir.path());
+        }
         NvmDirGuard {
-            old_value,
+            old_nvm_dir,
+            old_home,
+            old_userprofile,
             _dir: dir,
             _mutex: mutex,
         }
