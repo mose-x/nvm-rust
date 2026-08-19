@@ -36,6 +36,7 @@ pub const SYSTEM_BIN_CANDIDATES_UNIX: &[&str] = &["/usr/local/bin", "/opt/homebr
 /// Windows system bin directory candidate name. Joined with `%ProgramFiles%`
 /// to get `C:\Program Files\nvm-rust\`. EDR trusts `Program Files` more
 /// than user-writable dirs.
+#[cfg(windows)]
 pub const SYSTEM_BIN_CANDIDATE_WINDOWS: &str = "nvm-rust";
 
 /// The platform PATH separator (`:` on Unix, `;` on Windows).

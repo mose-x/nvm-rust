@@ -390,6 +390,7 @@ mod tests {
     struct NvmDirGuard {
         old_nvm_dir: Option<String>,
         old_home: Option<String>,
+        #[allow(dead_code)]
         old_userprofile: Option<String>,
         _dir: tempfile::TempDir,
         _mutex: std::sync::MutexGuard<'static, ()>,
