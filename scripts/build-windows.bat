@@ -166,6 +166,7 @@ if defined RESTORE_CARGO (
     echo [INFO] Restored Cargo.toml
 )
 echo [OK] Release build: target\release\nvm.exe
+call :copy_binary release
 goto :eof
 
 :build
@@ -182,6 +183,17 @@ if defined RESTORE_CARGO (
     echo [INFO] Restored Cargo.toml
 )
 echo [OK] Debug build: target\debug\nvm.exe
+call :copy_binary debug
+goto :eof
+
+:copy_binary
+set "BIN_SRC=target\%~1\nvm.exe"
+set "INSTALL_DIR=%USERPROFILE%\.nvm.rust\bin"
+if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%" 2>nul
+if exist "%BIN_SRC%" (
+    copy /Y "%BIN_SRC%" "%INSTALL_DIR%\nvm.exe" >nul
+    echo [OK] Copied to %INSTALL_DIR%\nvm.exe
+)
 goto :eof
 
 :usage

@@ -100,25 +100,30 @@ fn ensure_shell_config(nvm_dir: &Path) -> Result<()> {
             crate::config::migrate_rc_to_shim_mode()?;
             println!("  {} {}", "✓".green().bold(), T("init_shell_migrated"));
         } else {
-            // Already has active format, but check for unguarded `source` line
-            // (pre-fix versions wrote `source "..."` without `[ -f ]` guard).
-            // Replace it so .zshrc doesn't error when nvm.sh is missing.
+            // Already has active format, but check for old-style source line
+            // (pre-fix versions wrote `source "..."` without `[ -f ]` guard,
+            // or used literal paths instead of $NVM_HOME). Replace with the
+            // guarded $NVM_HOME version so .zshrc doesn't error when nvm.sh
+            // is missing and works regardless of install path.
             if !shell_config.ends_with(".ps1")
                 && content.contains("source \"")
                 && content.contains("nvm.sh")
-                && !content.contains("[ -f ")
             {
-                let old_source = format!(r#"source "{}/bin/nvm.sh""#, nvm_dir_str);
-                let new_source = format!(
+                let old_unguarded = format!(r#"source "{}/bin/nvm.sh""#, nvm_dir_str);
+                let old_guarded = format!(
                     r#"[ -f "{}/bin/nvm.sh" ] && source "{}/bin/nvm.sh""#,
                     nvm_dir_str, nvm_dir_str
                 );
-                let fixed = content.replace(&old_source, &new_source);
+                let new_source =
+                    r#"[ -f "$NVM_HOME/bin/nvm.sh" ] && source "$NVM_HOME/bin/nvm.sh""#;
+                let fixed = content
+                    .replace(&old_unguarded, new_source)
+                    .replace(&old_guarded, new_source);
                 if fixed != content {
                     crate::utils::atomic_write(config_path, &fixed)
                         .context(T("shell_config_write_failed"))?;
                     println!(
-                        "  {} Fixed: nvm.sh source line now has [ -f ] guard",
+                        "  {} Fixed: nvm.sh source line now uses $NVM_HOME with [ -f ] guard",
                         "✓".green().bold()
                     );
                 }
@@ -130,38 +135,20 @@ fn ensure_shell_config(nvm_dir: &Path) -> Result<()> {
 
     // Add nvm lines with active/bin format
     crate::utils::backup_file(config_path).context(T("shell_config_backup_failed"))?;
-    let shims = nvm_dir.join("shims").display().to_string();
-    let active_bin = nvm_dir.join("active").join("bin").display().to_string();
-    let active_root = nvm_dir.join("active").display().to_string();
-    let nvm_bin = nvm_dir.join("bin").display().to_string();
-    let nvm_psm1 = nvm_dir.join("shell").join("nvm.psm1").display().to_string();
 
     let is_powershell = shell_config.ends_with(".ps1");
-    let active_path = if is_powershell {
-        &active_root
-    } else {
-        &active_bin
-    };
     let (nvm_export, path_export, source_line) = if is_powershell {
         (
             format!(r#"$env:NVM_HOME = "{}""#, nvm_dir_str),
-            format!(
-                r#"$env:PATH = "{};{};{};" + $env:PATH"#,
-                shims, active_path, nvm_bin
-            ),
-            format!(r#"Import-Module "{}""#, nvm_psm1),
+            r#"$env:PATH = "$env:NVM_HOME\shims;$env:NVM_HOME\active;$env:NVM_HOME\bin;" + $env:PATH"#
+                .to_string(),
+            r#"Import-Module "$env:NVM_HOME\shell\nvm.psm1""#.to_string(),
         )
     } else {
         (
             format!(r#"export NVM_HOME="{}""#, nvm_dir_str),
-            format!(
-                r#"export PATH="{}:{}:{}:$PATH""#,
-                shims, active_path, nvm_bin
-            ),
-            format!(
-                r#"[ -f "{}/bin/nvm.sh" ] && source "{}/bin/nvm.sh""#,
-                nvm_dir_str, nvm_dir_str
-            ),
+            r#"export PATH="$NVM_HOME/shims:$NVM_HOME/active/bin:$NVM_HOME/bin:$PATH""#.to_string(),
+            r#"[ -f "$NVM_HOME/bin/nvm.sh" ] && source "$NVM_HOME/bin/nvm.sh""#.to_string(),
         )
     };
 

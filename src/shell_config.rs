@@ -331,31 +331,19 @@ pub fn migrate_rc_to_shim_mode() -> Result<()> {
 
     let stripped = strip_nvm_lines(&content, &nvm_dir_str);
 
-    let shims = nvm_dir.join("shims").display().to_string();
-    let active_bin = nvm_dir.join("active").join("bin").display().to_string();
-    let active_root = nvm_dir.join("active").display().to_string();
-    let nvm_bin = nvm_dir.join("bin").display().to_string();
-    let nvm_sh_path = nvm_dir.join("bin").join("nvm.sh").display().to_string();
-
     let shell_type = detect_shell_type(&shell_config);
-    let nvm_psm1_path = nvm_dir.join("shell").join("nvm.psm1").display().to_string();
     let (nvm_export, path_export, source_line) = if shell_type == "powershell" {
         (
             format!(r#"$env:NVM_HOME = "{}""#, nvm_dir_str),
-            format!(
-                r#"$env:PATH = "{};{};{};" + $env:PATH"#,
-                shims, active_root, nvm_bin
-            ),
-            format!(r#"Import-Module "{}""#, nvm_psm1_path),
+            r#"$env:PATH = "$env:NVM_HOME\shims;$env:NVM_HOME\active;$env:NVM_HOME\bin;" + $env:PATH"#
+                .to_string(),
+            r#"Import-Module "$env:NVM_HOME\shell\nvm.psm1""#.to_string(),
         )
     } else {
         (
             format!(r#"export NVM_HOME="{}""#, nvm_dir_str),
-            format!(
-                r#"export PATH="{}:{}:{}:$PATH""#,
-                shims, active_bin, nvm_bin
-            ),
-            format!(r#"[ -f "{}" ] && source "{}""#, nvm_sh_path, nvm_sh_path),
+            r#"export PATH="$NVM_HOME/shims:$NVM_HOME/active/bin:$NVM_HOME/bin:$PATH""#.to_string(),
+            r#"[ -f "$NVM_HOME/bin/nvm.sh" ] && source "$NVM_HOME/bin/nvm.sh""#.to_string(),
         )
     };
 
@@ -626,10 +614,12 @@ export PATH="{nvm}/shims:{nvm}/v22.0.0/bin:$PATH"
         std::fs::write(rc, &old_content).expect("write rc");
         migrate_rc_to_shim_mode().expect("migrate should succeed");
         let content = std::fs::read_to_string(rc).expect("read rc");
-        // P0-1: nvm_bin must be in PATH
+        // P0-1: nvm_bin must be in PATH (literal path or $NVM_HOME variable)
         assert!(
             content.contains(&format!("{nvm_dir_str}/bin"))
-                || content.contains(&format!("{}\\bin", nvm_dir_str)),
+                || content.contains(&format!("{}\\bin", nvm_dir_str))
+                || content.contains("$NVM_HOME/bin")
+                || content.contains("$env:NVM_HOME\\bin"),
             "migrated rc must include nvm/bin in PATH: {content}"
         );
         // P0-1: active must be in PATH

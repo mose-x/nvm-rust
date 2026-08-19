@@ -530,3 +530,54 @@ fn refresh_has_source_guard_fix() {
         "refresh.rs must have fix_rc_source_guard function for auto-repair"
     );
 }
+
+/// NVM_HOME usage: shell_config.rs must use $NVM_HOME in PATH and source lines.
+#[test]
+fn shell_config_uses_nvm_home_variable() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shell_config.rs");
+    let content = fs::read_to_string(&src).expect("shell_config.rs must exist");
+    assert!(
+        content.contains("$NVM_HOME/shims"),
+        "shell_config.rs must use $NVM_HOME in PATH export"
+    );
+    assert!(
+        content.contains("$NVM_HOME/bin/nvm.sh"),
+        "shell_config.rs must use $NVM_HOME in source line"
+    );
+}
+
+/// NVM_HOME usage: init.rs must also use $NVM_HOME (matching shell_config.rs).
+#[test]
+fn init_rs_uses_nvm_home_variable() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/init.rs");
+    let content = fs::read_to_string(&src).expect("init.rs must exist");
+    assert!(
+        content.contains("$NVM_HOME/shims"),
+        "init.rs must use $NVM_HOME in PATH export"
+    );
+    assert!(
+        content.contains("$NVM_HOME/bin/nvm.sh"),
+        "init.rs must use $NVM_HOME in source line"
+    );
+}
+
+/// Build scripts must auto-copy binary after build.
+#[test]
+fn build_scripts_have_auto_copy() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for script in &["scripts/build-linux.sh", "scripts/build-macos.sh"] {
+        let path = manifest.join(script);
+        let content = fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} must exist", script));
+        assert!(
+            content.contains("cp ") && content.contains(".nvm.rust/bin"),
+            "{} must auto-copy binary to ~/.nvm.rust/bin/",
+            script
+        );
+    }
+    let bat = manifest.join("scripts/build-windows.bat");
+    let bat_content = fs::read_to_string(&bat).expect("build-windows.bat must exist");
+    assert!(
+        bat_content.contains("copy /Y") && bat_content.contains(".nvm.rust\\bin"),
+        "build-windows.bat must auto-copy binary to .nvm.rust\\bin\\"
+    );
+}
