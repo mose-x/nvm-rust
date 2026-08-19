@@ -503,3 +503,15 @@ fn init_rs_has_source_migration_logic() {
         "init.rs must have migration logic to detect and fix unguarded source lines"
     );
 }
+
+/// Issue 5 (refresh): refresh.rs must also auto-fix unguarded source lines
+/// so users who upgrade and run `nvm refresh` get the repair without `nvm init`.
+#[test]
+fn refresh_has_source_guard_fix() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/refresh.rs");
+    let content = fs::read_to_string(&src).expect("refresh.rs must exist");
+    assert!(
+        content.contains("fn fix_rc_source_guard"),
+        "refresh.rs must have fix_rc_source_guard function for auto-repair"
+    );
+}
