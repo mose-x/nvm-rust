@@ -111,11 +111,30 @@ pub fn uninstall_self() -> Result<()> {
     let nvm_bin = nvm_dir.join("bin").join(bin_name);
     let _ = fs::remove_file(&nvm_bin);
 
-    // Remove /usr/local/bin/nvm symlink if exists
+    // Remove /usr/local/bin/nvm — REAL binary in EDR-safe layout.
+    // May be root-owned if installed via sudo. Try regular rm, suggest
+    // sudo if it still exists (zero auto-sudo).
     #[cfg(unix)]
     {
-        let symlink = std::path::Path::new("/usr/local/bin/nvm");
-        let _ = fs::remove_file(symlink);
+        let system_bin = std::path::Path::new("/usr/local/bin/nvm");
+        if system_bin.exists() && fs::remove_file(system_bin).is_err() {
+            eprintln!(
+                "  {} /usr/local/bin/nvm may be root-owned. Remove: sudo rm -f /usr/local/bin/nvm",
+                "⚠".yellow().bold()
+            );
+        }
+    }
+    #[cfg(windows)]
+    {
+        let system_dir = std::path::Path::new(&std::env::var("ProgramFiles").unwrap_or_default())
+            .join("nvm-rust");
+        if system_dir.exists() && fs::remove_dir_all(&system_dir).is_err() {
+            eprintln!(
+                "  {} Cannot remove {} (needs admin)",
+                "⚠".yellow().bold(),
+                system_dir.display()
+            );
+        }
     }
 
     println!(
@@ -154,11 +173,28 @@ pub fn uninstall_all() -> Result<()> {
         fs::remove_dir_all(&nvm_dir).context("failed to remove nvm directory")?;
     }
 
-    // Remove /usr/local/bin/nvm symlink if exists
+    // Remove /usr/local/bin/nvm — REAL binary, may be root-owned.
     #[cfg(unix)]
     {
-        let symlink = std::path::Path::new("/usr/local/bin/nvm");
-        let _ = fs::remove_file(symlink);
+        let system_bin = std::path::Path::new("/usr/local/bin/nvm");
+        if system_bin.exists() && fs::remove_file(system_bin).is_err() {
+            eprintln!(
+                "  {} /usr/local/bin/nvm may be root-owned. Remove: sudo rm -f /usr/local/bin/nvm",
+                "⚠".yellow().bold()
+            );
+        }
+    }
+    #[cfg(windows)]
+    {
+        let system_dir = std::path::Path::new(&std::env::var("ProgramFiles").unwrap_or_default())
+            .join("nvm-rust");
+        if system_dir.exists() && fs::remove_dir_all(&system_dir).is_err() {
+            eprintln!(
+                "  {} Cannot remove {} (needs admin)",
+                "⚠".yellow().bold(),
+                system_dir.display()
+            );
+        }
     }
 
     println!("{} {}", "✓".green().bold(), T("uninstall_all_done"));
