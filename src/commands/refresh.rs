@@ -167,39 +167,34 @@ fn migrate_binary_to_system_path(nvm_dir: &Path) {
         let system_dir = std::path::Path::new("/usr/local/bin");
         if system_dir.is_dir() && crate::commands::binary_swap::is_dir_writable(system_dir) {
             let system_bin = system_dir.join(bin_name);
-            match std::fs::copy(&user_bin, &system_bin) {
-                Ok(_) => {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(
-                        &system_bin,
-                        std::fs::Permissions::from_mode(0o755),
-                    );
-                    // Remove the real file and create a symlink → system path.
-                    if std::fs::remove_file(&user_bin).is_ok() {
-                        if std::os::unix::fs::symlink(&system_bin, &user_bin).is_ok() {
-                            println!("  {} {}", "✓".green().bold(), T("refresh_binary_migrated"));
-                            return;
-                        } else {
-                            // Restore the real binary so the user isn't left
-                            // without a working nvm.
-                            let _ = std::fs::copy(&system_bin, &user_bin);
-                            eprintln!(
-                                "  {} {}",
-                                "⚠".yellow().bold(),
-                                T("refresh_binary_symlink_failed")
-                            );
-                            return;
-                        }
+            if let Ok(_) = std::fs::copy(&user_bin, &system_bin) {
+                use std::os::unix::fs::PermissionsExt;
+                let _ =
+                    std::fs::set_permissions(&system_bin, std::fs::Permissions::from_mode(0o755));
+                // Remove the real file and create a symlink → system path.
+                if std::fs::remove_file(&user_bin).is_ok() {
+                    if std::os::unix::fs::symlink(&system_bin, &user_bin).is_ok() {
+                        println!("  {} {}", "✓".green().bold(), T("refresh_binary_migrated"));
+                        return;
                     } else {
+                        // Restore the real binary so the user isn't left
+                        // without a working nvm.
+                        let _ = std::fs::copy(&system_bin, &user_bin);
                         eprintln!(
                             "  {} {}",
                             "⚠".yellow().bold(),
-                            T("refresh_binary_remove_failed")
+                            T("refresh_binary_symlink_failed")
                         );
                         return;
                     }
+                } else {
+                    eprintln!(
+                        "  {} {}",
+                        "⚠".yellow().bold(),
+                        T("refresh_binary_remove_failed")
+                    );
+                    return;
                 }
-                Err(_) => {} // fall through to manual instructions
             }
         }
 
