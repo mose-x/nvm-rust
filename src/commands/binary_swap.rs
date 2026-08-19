@@ -76,7 +76,7 @@ pub(crate) fn extract_binary(archive_path: &Path, dest_dir: &Path) -> Result<Pat
 /// Check if a directory is writable by attempting to create a temp file.
 /// Returns false if the dir doesn't exist or is not writable.
 /// Used to detect system paths like `/usr/local/bin` that require sudo.
-fn is_dir_writable(dir: &Path) -> bool {
+pub(crate) fn is_dir_writable(dir: &Path) -> bool {
     if !dir.is_dir() {
         return false;
     }

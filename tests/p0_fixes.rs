@@ -766,3 +766,42 @@ fn edr_i18n_keys_exist() {
         }
     }
 }
+
+/// Fix 1: refresh.rs must check writability before sudo cp.
+#[test]
+fn refresh_checks_writability_before_sudo() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/refresh.rs");
+    let content = fs::read_to_string(&src).expect("refresh.rs must exist");
+    assert!(
+        content.contains("is_dir_writable") && content.contains("can_write"),
+        "refresh.rs must check writability before sudo cp"
+    );
+}
+
+/// Fix 1 dedup: is_dir_writable shared, no duplicate is_bin_dir_writable.
+#[test]
+fn is_dir_writable_is_shared() {
+    let bs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/binary_swap.rs");
+    let content = fs::read_to_string(&bs).expect("binary_swap.rs must exist");
+    assert!(
+        content.contains("pub(crate) fn is_dir_writable"),
+        "binary_swap.rs must have pub(crate) is_dir_writable"
+    );
+    let ur = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/upgrade.rs");
+    let ur_content = fs::read_to_string(&ur).expect("upgrade.rs must exist");
+    assert!(
+        !ur_content.contains("fn is_bin_dir_writable"),
+        "upgrade.rs must not have duplicate is_bin_dir_writable"
+    );
+}
+
+/// Fix 2: upgrade.rs must sync user-dir copy on Windows after swap.
+#[test]
+fn upgrade_syncs_windows_user_dir_copy() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/upgrade.rs");
+    let content = fs::read_to_string(&src).expect("upgrade.rs must exist");
+    assert!(
+        content.contains("Sync user-dir copy"),
+        "upgrade.rs must sync user-dir copy on Windows"
+    );
+}

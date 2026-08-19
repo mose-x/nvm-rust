@@ -171,58 +171,80 @@ fn migrate_binary_to_system_path(nvm_dir: &Path) {
             return;
         }
 
-        // Try sudo cp to copy the real binary to the system path.
+        // Migrate binary to system path. Check writability first to avoid
+        // unnecessary sudo password prompts and root-owned files.
+        let system_dir = system_bin.parent().unwrap_or(std::path::Path::new("."));
+        let can_write = crate::commands::binary_swap::is_dir_writable(system_dir);
         eprintln!("  {} {}", "ℹ".cyan().bold(), T("refresh_binary_migrating"));
-        let status = std::process::Command::new("sudo")
-            .args([
-                "cp",
-                "-f",
-                &user_bin.display().to_string(),
-                &system_bin.display().to_string(),
-            ])
-            .status();
 
-        match status {
-            Ok(s) if s.success() => {
-                // Ensure executable permissions on the system-path binary.
+        let copy_ok = if can_write {
+            // Directory is writable — copy directly (no sudo needed).
+            match std::fs::copy(&user_bin, system_bin) {
+                Ok(_) => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(
+                            system_bin,
+                            std::fs::Permissions::from_mode(0o755),
+                        );
+                    }
+                    true
+                }
+                Err(_) => false,
+            }
+        } else {
+            // Not writable — need sudo.
+            let status = std::process::Command::new("sudo")
+                .args([
+                    "cp",
+                    "-f",
+                    &user_bin.display().to_string(),
+                    &system_bin.display().to_string(),
+                ])
+                .status();
+            if status.map(|s| s.success()).unwrap_or(false) {
                 let _ = std::process::Command::new("sudo")
                     .args(["chmod", "755", &system_bin.display().to_string()])
                     .status();
+                true
+            } else {
+                false
+            }
+        };
 
-                // Remove the real file and create a symlink → system path.
-                if std::fs::remove_file(&user_bin).is_ok() {
-                    if std::os::unix::fs::symlink(system_bin, &user_bin).is_ok() {
-                        println!("  {} {}", "✓".green().bold(), T("refresh_binary_migrated"));
-                    } else {
-                        // Failed to create symlink — restore the real file.
-                        let _ = std::fs::copy(system_bin, &user_bin);
-                        eprintln!(
-                            "  {} {}",
-                            "⚠".yellow().bold(),
-                            T("refresh_binary_symlink_failed")
-                        );
-                    }
+        if copy_ok {
+            // Remove the real file and create a symlink → system path.
+            if std::fs::remove_file(&user_bin).is_ok() {
+                if std::os::unix::fs::symlink(system_bin, &user_bin).is_ok() {
+                    println!("  {} {}", "✓".green().bold(), T("refresh_binary_migrated"));
                 } else {
+                    let _ = std::fs::copy(system_bin, &user_bin);
                     eprintln!(
                         "  {} {}",
                         "⚠".yellow().bold(),
-                        T("refresh_binary_remove_failed")
+                        T("refresh_binary_symlink_failed")
                     );
                 }
-            }
-            _ => {
+            } else {
                 eprintln!(
                     "  {} {}",
                     "⚠".yellow().bold(),
-                    format_t(
-                        "refresh_binary_edr_risk_manual",
-                        &[
-                            user_bin.display().to_string(),
-                            system_bin.display().to_string()
-                        ]
-                    )
+                    T("refresh_binary_remove_failed")
                 );
             }
+        } else {
+            eprintln!(
+                "  {} {}",
+                "⚠".yellow().bold(),
+                format_t(
+                    "refresh_binary_edr_risk_manual",
+                    &[
+                        user_bin.display().to_string(),
+                        system_bin.display().to_string()
+                    ]
+                )
+            );
         }
     }
     #[cfg(windows)]

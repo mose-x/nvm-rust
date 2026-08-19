@@ -245,7 +245,7 @@ pub fn upgrade(
     //    (swap_binary also has an internal sudo fallback as a safety net
     //    for direct callers, but we handle it here to control the flow.)
     let bin_parent = bin_path.parent().unwrap_or(std::path::Path::new("."));
-    let can_write = is_bin_dir_writable(bin_parent);
+    let can_write = is_dir_writable(bin_parent);
     if can_write {
         // User-writable path (e.g. ~/.nvm.rust/bin/) — use the atomic swap.
         swap_binary(&bin_path, &extracted_bin)?;
@@ -312,6 +312,23 @@ pub fn upgrade(
                     ]
                 )
             );
+        }
+    }
+
+    // Sync user-dir copy on Windows — install.ps1 admin mode creates two copies
+    // (Program Files real + user dir copy). Upgrade only updates the one
+    // current_exe() resolves to. Sync the other to prevent version drift.
+    #[cfg(windows)]
+    {
+        let user_bin = crate::system::get_nvm_dir().join("bin").join("nvm.exe");
+        if user_bin.exists() && user_bin != bin_path {
+            if let Err(e) = std::fs::copy(&extracted_bin, &user_bin) {
+                eprintln!(
+                    "  {} Failed to sync user-dir copy: {}",
+                    "⚠".yellow().bold(),
+                    e
+                );
+            }
         }
     }
 
@@ -392,23 +409,6 @@ fn current_binary_path() -> Result<PathBuf> {
     // parent dir might have its own symlinks.
     let exe = exe.canonicalize().unwrap_or(exe);
     Ok(exe)
-}
-
-/// Check if a directory is writable by attempting to create a temp file.
-/// Returns false if the dir doesn't exist or is not writable.
-/// Used to detect system paths like `/usr/local/bin` that require sudo.
-fn is_bin_dir_writable(dir: &std::path::Path) -> bool {
-    if !dir.is_dir() {
-        return false;
-    }
-    let tmp = dir.join(format!(".nvm_writable_test_{}", std::process::id()));
-    match std::fs::File::create(&tmp) {
-        Ok(_) => {
-            let _ = std::fs::remove_file(&tmp);
-            true
-        }
-        Err(_) => false,
-    }
 }
 
 /// Host platform identifier used in release asset names.
