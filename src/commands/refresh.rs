@@ -84,7 +84,12 @@ pub fn refresh() -> Result<()> {
     // 5. Download latest nvm.sh (release archive doesn't include it)
     refresh_nvm_sh(&nvm_dir)?;
 
-    // 6. zsh cache tip
+    // 6. Fix unguarded `source` lines in shell config (auto-repair for
+    // users who upgraded — pre-fix versions wrote `source "..."` without
+    // `[ -f ]` guard, causing .zshrc errors when nvm.sh is missing).
+    fix_rc_source_guard(&nvm_dir);
+
+    // 7. zsh cache tip
     if std::env::var("SHELL")
         .map(|s| s.ends_with("zsh"))
         .unwrap_or(false)
@@ -100,6 +105,52 @@ pub fn refresh() -> Result<()> {
     println!();
     println!("  {}", T("refresh_complete").green().bold());
     Ok(())
+}
+
+/// Fix unguarded `source` lines in the shell config file.
+///
+/// Pre-fix versions wrote `source "/path/nvm.sh"` without a `[ -f ]` guard,
+/// causing `.zshrc` to error on every shell startup when nvm.sh is missing.
+/// This function detects and replaces those lines with the guarded version.
+/// Safe to call on PowerShell profiles (they use `Import-Module`, not `source`).
+fn fix_rc_source_guard(nvm_dir: &Path) {
+    let shell_config = match crate::config::detect_shell_config() {
+        Some(p) => p,
+        None => return,
+    };
+    let config_path = Path::new(&shell_config);
+    if config_path.extension().is_some_and(|ext| ext == "ps1") {
+        return;
+    }
+    let content = match fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    // Only fix if there's a `source` line with nvm.sh but no `[ -f ]` guard
+    if !content.contains("source \"") || !content.contains("nvm.sh") || content.contains("[ -f ") {
+        return;
+    }
+    let nvm_dir_str = nvm_dir.display().to_string();
+    let old_source = format!(r#"source "{}/bin/nvm.sh""#, nvm_dir_str);
+    let new_source = format!(
+        r#"[ -f "{}/bin/nvm.sh" ] && source "{}/bin/nvm.sh""#,
+        nvm_dir_str, nvm_dir_str
+    );
+    let fixed = content.replace(&old_source, &new_source);
+    if fixed != content {
+        if let Err(e) = atomic_write(config_path, &fixed) {
+            eprintln!(
+                "  {} Failed to fix shell config: {}",
+                "⚠".yellow().bold(),
+                e
+            );
+            return;
+        }
+        println!(
+            "  {} Fixed: nvm.sh source line now has [ -f ] guard",
+            "✓".green().bold()
+        );
+    }
 }
 
 /// Status of the `current` file.
