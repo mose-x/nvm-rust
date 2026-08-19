@@ -451,19 +451,20 @@ mod tests {
         // open is refused before any write could happen.
         let _guard = crate::system::ENV_TESTS_MUTEX
             .lock()
-            .expect("ENV_TESTS_MUTEX poisoned");
-        std::env::set_var("NVM_LANG", "en");
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().expect("tempdir");
         let link = tmp.path().join("evil.part");
         std::os::unix::fs::symlink("/dev/null", &link).expect("symlink");
 
         let err = create_part_file(&link).unwrap_err();
         let msg = format!("{err}");
+        // Locale-agnostic: the error IS format_t output, so compare against
+        // the same format_t call (self-consistent regardless of locale).
+        let expected = crate::i18n::format_t("part_refused_symlink", &[link.display().to_string()]);
         assert!(
-            msg.contains("symlink") || msg.contains("symbolic"),
+            msg.contains(&expected),
             "expected symlink-rejection error, got: {msg}"
         );
-        std::env::remove_var("NVM_LANG");
     }
 
     #[cfg(unix)]
@@ -471,19 +472,18 @@ mod tests {
     fn open_part_for_resume_refuses_symlink() {
         let _guard = crate::system::ENV_TESTS_MUTEX
             .lock()
-            .expect("ENV_TESTS_MUTEX poisoned");
-        std::env::set_var("NVM_LANG", "en");
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().expect("tempdir");
         let link = tmp.path().join("resume.part");
         std::os::unix::fs::symlink("/dev/null", &link).expect("symlink");
 
         let err = open_part_for_resume(&link).unwrap_err();
         let msg = format!("{err}");
+        let expected = crate::i18n::format_t("part_refused_symlink", &[link.display().to_string()]);
         assert!(
-            msg.contains("symlink") || msg.contains("symbolic"),
+            msg.contains(&expected),
             "expected symlink-rejection error, got: {msg}"
         );
-        std::env::remove_var("NVM_LANG");
     }
 
     #[test]
@@ -569,7 +569,7 @@ mod tests {
         // to. The next write to the deleted .part would fail with a
         // confusing "No such file" error. list_cached_files already hid
         // .part from listings; clear_cache must match that behavior.
-        let _guard = ENV_TESTS_MUTEX.lock().expect("ENV_TESTS_MUTEX poisoned");
+        let _guard = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         // Save and override NVM_DIR so get_cache_dir() points at our tempdir.
         let saved_nvm_dir = std::env::var_os("NVM_DIR");
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -627,7 +627,7 @@ mod tests {
         // and its .part.ifrange validator sidecar), not just the .part.
         // Showing the sidecar would be noise (it's not a usable cache hit)
         // and would leak the existence of a download still in progress.
-        let _guard = ENV_TESTS_MUTEX.lock().expect("ENV_TESTS_MUTEX poisoned");
+        let _guard = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let saved_nvm_dir = std::env::var_os("NVM_DIR");
         let tmp = tempfile::tempdir().expect("tempdir");
         std::env::set_var("NVM_DIR", tmp.path());

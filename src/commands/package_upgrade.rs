@@ -472,7 +472,7 @@ mod tests {
     fn test_sanitize_proxy_clears_empty_string() {
         let _guard = crate::system::ENV_TESTS_MUTEX
             .lock()
-            .expect("ENV_TESTS_MUTEX poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("http_proxy", "");
         let overrides = sanitize_proxy_env_for_corepack();
         let http_proxy = overrides
@@ -491,7 +491,7 @@ mod tests {
     fn test_sanitize_proxy_clears_socks() {
         let _guard = crate::system::ENV_TESTS_MUTEX
             .lock()
-            .expect("ENV_TESTS_MUTEX poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("https_proxy", "socks5://127.0.0.1:7890");
         let overrides = sanitize_proxy_env_for_corepack();
         let https = overrides
@@ -507,7 +507,7 @@ mod tests {
     fn test_sanitize_proxy_prepends_http_to_bare_host() {
         let _guard = crate::system::ENV_TESTS_MUTEX
             .lock()
-            .expect("ENV_TESTS_MUTEX poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("HTTP_PROXY", "127.0.0.1:7890");
         let overrides = sanitize_proxy_env_for_corepack();
         let http = overrides
@@ -526,7 +526,7 @@ mod tests {
     fn test_sanitize_proxy_keeps_valid_http() {
         let _guard = crate::system::ENV_TESTS_MUTEX
             .lock()
-            .expect("ENV_TESTS_MUTEX poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:7890");
         let overrides = sanitize_proxy_env_for_corepack();
         // Valid http:// proxy should NOT appear in overrides (kept as-is, no override needed)
@@ -542,7 +542,7 @@ mod tests {
     fn test_sanitize_proxy_no_env_returns_empty() {
         let _guard = crate::system::ENV_TESTS_MUTEX
             .lock()
-            .expect("ENV_TESTS_MUTEX poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("HTTP_PROXY");
         std::env::remove_var("HTTPS_PROXY");
         std::env::remove_var("http_proxy");
