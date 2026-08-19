@@ -126,17 +126,26 @@ fn fix_rc_source_guard(nvm_dir: &Path) {
         Ok(c) => c,
         Err(_) => return,
     };
-    // Only fix if there's a `source` line with nvm.sh but no `[ -f ]` guard
-    if !content.contains("source \"") || !content.contains("nvm.sh") || content.contains("[ -f ") {
+    // Fix any source line that uses literal paths instead of $NVM_HOME,
+    // or is missing the [ -f ] guard. Replace with the $NVM_HOME guarded version.
+    if !content.contains("source \"") || !content.contains("nvm.sh") {
+        return;
+    }
+    // Already uses $NVM_HOME with guard — nothing to do
+    if content.contains("$NVM_HOME/bin/nvm.sh") {
         return;
     }
     let nvm_dir_str = nvm_dir.display().to_string();
-    let old_source = format!(r#"source "{}/bin/nvm.sh""#, nvm_dir_str);
-    let new_source = format!(
+    let new_source = r#"[ -f "$NVM_HOME/bin/nvm.sh" ] && source "$NVM_HOME/bin/nvm.sh""#;
+    // Replace both unguarded and guarded-but-literal versions
+    let old_unguarded = format!(r#"source "{}/bin/nvm.sh""#, nvm_dir_str);
+    let old_guarded = format!(
         r#"[ -f "{}/bin/nvm.sh" ] && source "{}/bin/nvm.sh""#,
         nvm_dir_str, nvm_dir_str
     );
-    let fixed = content.replace(&old_source, &new_source);
+    let fixed = content
+        .replace(&old_unguarded, new_source)
+        .replace(&old_guarded, new_source);
     if fixed != content {
         if let Err(e) = atomic_write(config_path, &fixed) {
             eprintln!(

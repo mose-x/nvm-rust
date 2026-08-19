@@ -90,14 +90,28 @@ case "$MODE" in
         echo "[INFO] Building release (optimized + LTO)..."
         cargo build --release
         echo "[OK] Release build: target/release/nvm"
+        _copy_binary release
         ;;
     build|"")
         echo "[INFO] Building debug..."
         cargo build
         echo "[OK] Debug build: target/debug/nvm"
+        _copy_binary debug
         ;;
     *)
         echo "Usage: $0 [build|release|check [quick]] [--version X.Y.Z]"
         exit 1
         ;;
 esac
+
+_copy_binary() {
+    local mode="$1"
+    local src="target/${mode}/nvm"
+    local install_dir="${NVM_INSTALL_DIR:-$HOME/.nvm.rust/bin}"
+    if [ -f "$src" ]; then
+        mkdir -p "$install_dir"
+        cp "$src" "$install_dir/nvm"
+        chmod +x "$install_dir/nvm"
+        echo "[OK] Copied to $install_dir/nvm"
+    fi
+}
