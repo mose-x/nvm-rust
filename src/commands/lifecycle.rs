@@ -117,13 +117,11 @@ pub fn uninstall_self() -> Result<()> {
     #[cfg(unix)]
     {
         let system_bin = std::path::Path::new("/usr/local/bin/nvm");
-        if system_bin.exists() {
-            if fs::remove_file(system_bin).is_err() {
-                eprintln!(
-                    "  {} /usr/local/bin/nvm may be root-owned. Remove: sudo rm -f /usr/local/bin/nvm",
-                    "⚠".yellow().bold()
-                );
-            }
+        if system_bin.exists() && fs::remove_file(system_bin).is_err() {
+            eprintln!(
+                "  {} /usr/local/bin/nvm may be root-owned. Remove: sudo rm -f /usr/local/bin/nvm",
+                "⚠".yellow().bold()
+            );
         }
     }
     #[cfg(windows)]
@@ -179,13 +177,11 @@ pub fn uninstall_all() -> Result<()> {
     #[cfg(unix)]
     {
         let system_bin = std::path::Path::new("/usr/local/bin/nvm");
-        if system_bin.exists() {
-            if fs::remove_file(system_bin).is_err() {
-                eprintln!(
-                    "  {} /usr/local/bin/nvm may be root-owned. Remove: sudo rm -f /usr/local/bin/nvm",
-                    "⚠".yellow().bold()
-                );
-            }
+        if system_bin.exists() && fs::remove_file(system_bin).is_err() {
+            eprintln!(
+                "  {} /usr/local/bin/nvm may be root-owned. Remove: sudo rm -f /usr/local/bin/nvm",
+                "⚠".yellow().bold()
+            );
         }
     }
     #[cfg(windows)]
