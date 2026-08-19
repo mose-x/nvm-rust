@@ -479,3 +479,27 @@ fn corepack_verifies_shim_content() {
         "corepack.rs must verify shim content contains 'corepack' (not just file existence)"
     );
 }
+
+/// Issue 5 (init.rs): init.rs source line must have [ -f ] guard
+/// (matching shell_config.rs — prevents .zshrc error when nvm.sh missing).
+#[test]
+fn init_rs_source_has_file_guard() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/init.rs");
+    let content = fs::read_to_string(&src).expect("init.rs must exist");
+    assert!(
+        content.contains("[ -f "),
+        "init.rs source line must have [ -f ] guard (matching shell_config.rs)"
+    );
+}
+
+/// Issue 5 (init.rs migration): init.rs must auto-fix existing unguarded
+/// source lines when user runs `nvm init` after upgrading.
+#[test]
+fn init_rs_has_source_migration_logic() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/init.rs");
+    let content = fs::read_to_string(&src).expect("init.rs must exist");
+    assert!(
+        content.contains("unguarded") || content.contains("pre-fix"),
+        "init.rs must have migration logic to detect and fix unguarded source lines"
+    );
+}
