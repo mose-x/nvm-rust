@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn acquire_nvm_lock_is_reentrant_in_same_process() {
-        let _guard = ENV_TESTS_MUTEX.lock().expect("ENV_TESTS_MUTEX poisoned");
+        let _guard = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         // Two nested acquires in the SAME process must not deadlock: the
         // inner one returns a no-op guard (re-entrant) because the outer
         // already holds the OS lock. This is the `nvm use --install` →
@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn acquire_nvm_lock_can_be_reacquired_after_drop() {
-        let _guard = ENV_TESTS_MUTEX.lock().expect("ENV_TESTS_MUTEX poisoned");
+        let _guard = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         // Regression for the drop-order bug: previously `drop` released the
         // OS lock FIRST and only then cleared `NVM_LOCK_HELD`. If anything
         // went wrong between those two steps (panic, reentrant re-acquire

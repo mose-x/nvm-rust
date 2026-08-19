@@ -532,7 +532,7 @@ mod tests {
 
     #[test]
     fn update_shell_config_surfaces_create_dir_all_failure() {
-        let _guard = ENV_TESTS_MUTEX.lock().expect("ENV_TESTS_MUTEX poisoned");
+        let _guard = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         // Set up a HOME whose `.bashrc` parent cannot be created: place a
         // regular file where the parent directory would go. `create_dir_all`
@@ -590,7 +590,7 @@ mod tests {
     fn migrate_rc_to_shim_mode_includes_nvm_bin_and_source_line() {
         // P0-1: After migration, PATH must include ~/.nvm.rust/bin
         // P0-2: After migration, rc must include a source nvm.sh line
-        let _guard = ENV_TESTS_MUTEX.lock().expect("ENV_TESTS_MUTEX poisoned");
+        let _guard = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::TempDir::new().expect("tempdir for HOME");
         let nvm_tmp = tempfile::TempDir::new().expect("tempdir for NVM_DIR");
         let old_home = std::env::var_os("HOME");

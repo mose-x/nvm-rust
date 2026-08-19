@@ -308,7 +308,7 @@ mod tests {
 
     impl CwdGuard {
         fn enter(dir: &std::path::Path) -> Self {
-            let lock = CWD_MUTEX.lock().expect("CWD_MUTEX poisoned");
+            let lock = CWD_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
             let original = std::env::current_dir().expect("current_dir");
             std::env::set_current_dir(dir).expect("set_current_dir");
             CwdGuard {

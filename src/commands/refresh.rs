@@ -402,7 +402,7 @@ mod tests {
     }
 
     fn setup_temp_nvm_dir() -> NvmDirGuard {
-        let mutex = ENV_TESTS_MUTEX.lock().expect("mutex");
+        let mutex = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let old_value = env::var("NVM_DIR").ok();
         let dir = tempfile::tempdir().expect("tempdir");
         env::set_var("NVM_DIR", dir.path());

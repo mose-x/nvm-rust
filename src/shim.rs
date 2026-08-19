@@ -429,7 +429,7 @@ mod tests {
     fn setup_temp_nvm_dir() -> NvmDirGuard {
         let mutex = crate::system::ENV_TESTS_MUTEX
             .lock()
-            .expect("ENV_TESTS_MUTEX poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         let old_nvm_dir = env::var("NVM_DIR").ok();
         let old_home = env::var("HOME").ok();
         let old_userprofile = env::var("USERPROFILE").ok();

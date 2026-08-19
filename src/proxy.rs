@@ -566,7 +566,7 @@ mod tests {
         // clobbered. The previous `std::env::remove_var("NVM_DIR")` at the
         // end unconditionally deleted the var even if it was set before.
         let _env_guard = EnvGuard::new();
-        let _lock = ENV_TESTS_MUTEX.lock().expect("ENV_TESTS_MUTEX poisoned");
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().expect("tempdir");
         std::env::set_var("NVM_DIR", tmp.path());
         std::fs::create_dir_all(tmp.path()).expect("create nvm dir");
@@ -623,7 +623,7 @@ mod tests {
     #[test]
     fn direct_config_edit_is_invisible_until_cache_reset() {
         let _env_guard = EnvGuard::new();
-        let _lock = ENV_TESTS_MUTEX.lock().expect("ENV_TESTS_MUTEX poisoned");
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().expect("tempdir");
         std::env::set_var("NVM_DIR", tmp.path());
         std::fs::create_dir_all(tmp.path()).expect("create nvm dir");

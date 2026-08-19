@@ -113,11 +113,14 @@ mod tests {
     fn test_normalize_mirror_url_rejects_empty() {
         let _guard = crate::system::ENV_TESTS_MUTEX
             .lock()
-            .expect("ENV_TESTS_MUTEX poisoned");
-        std::env::set_var("NVM_LANG", "en");
+            .unwrap_or_else(|e| e.into_inner());
         let err = normalize_mirror_url("   ").unwrap_err();
-        assert!(format!("{err}").contains("empty"));
-        std::env::remove_var("NVM_LANG");
+        // Locale-agnostic: error IS T() output, compare against same call.
+        let expected = crate::i18n::T("mirror_url_empty");
+        assert!(
+            format!("{err}").contains(expected.as_ref()),
+            "expected mirror_url_empty error, got: {err}"
+        );
     }
 
     #[test]
