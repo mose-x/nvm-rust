@@ -236,16 +236,52 @@ function Main {
         $sourceDir = $tmpDir
     }
 
-    # Install binary — Copy-Item (not Move) so offline mode doesn't damage
-    # the extracted bundle.
-    if (-not (Test-Path $InstallDir)) {
-        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    }
+    # Install binary — EDR-safe layout: if running as admin, install to
+    # Program Files (system path, EDR trusts). If not admin, fall back to
+    # user dir with a warning.
+    $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
     $exeSource = Join-Path $sourceDir "nvm.exe"
-    $exeDest = Join-Path $InstallDir "nvm.exe"
-    Copy-Item -Path $exeSource -Destination $exeDest -Force
-    Write-Success "Installed to $exeDest"
+
+    if ($isAdmin) {
+        # Install to system path (EDR-safe)
+        $systemDir = Join-Path $env:ProgramFiles "nvm-rust"
+        if (-not (Test-Path $systemDir)) {
+            New-Item -ItemType Directory -Path $systemDir -Force | Out-Null
+        }
+        $exeDest = Join-Path $systemDir "nvm.exe"
+        Copy-Item -Path $exeSource -Destination $exeDest -Force
+        Write-Success "Installed to $exeDest (system path, EDR-safe)"
+
+        # Also create user bin dir (for nvm.sh/shell scripts that reference
+        # ~/.nvm.rust/bin/) and put a copy there too (Windows can't symlink
+        # without admin/developer mode, so we copy).
+        if (-not (Test-Path $InstallDir)) {
+            New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+        }
+        $userExe = Join-Path $InstallDir "nvm.exe"
+        Copy-Item -Path $exeSource -Destination $userExe -Force
+
+        # Add system dir to user PATH (if not already there)
+        $pathKey = [Environment]::GetEnvironmentVariable("Path", "User")
+        $pathElements = if ($pathKey) { $pathKey -split ';' } else { @() }
+        if (-not ($pathElements -contains $systemDir)) {
+            $newPath = @($systemDir) + $pathElements
+            $newPathStr = $newPath -join ';'
+            [Environment]::SetEnvironmentVariable("Path", $newPathStr, "User")
+            $env:Path = "$systemDir;$env:Path"
+            Write-Success "Added $systemDir to PATH"
+        }
+    } else {
+        # Fallback: user dir (EDR risk)
+        if (-not (Test-Path $InstallDir)) {
+            New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+        }
+        $exeDest = Join-Path $InstallDir "nvm.exe"
+        Copy-Item -Path $exeSource -Destination $exeDest -Force
+        Write-Success "Installed to $exeDest"
+        Write-Warn "Installed to user dir — EDR may block. Run as admin for system path."
+    }
 
     # Install shell integration scripts shipped inside the tarball.
     # The release archive includes `shell/nvm.psm1` so we copy it from the
@@ -437,6 +473,15 @@ function Uninstall-Self {
     Remove-Item (Join-Path $binDir "nvm.sh") -Force -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $nvmDir "shims") -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $nvmDir "current") -Force -ErrorAction SilentlyContinue
+    # Also remove system-path binary (EDR-safe layout) if it exists.
+    # May require admin; try silently and warn if it can't be removed.
+    $systemDir = Join-Path $env:ProgramFiles "nvm-rust"
+    if (Test-Path $systemDir) {
+        Remove-Item $systemDir -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path $systemDir) {
+            Write-Warn "Could not remove $systemDir (needs admin). Run as admin to remove."
+        }
+    }
     Clean-ShellConfig
 
     Write-Success "nvm uninstalled. Node versions preserved at $nvmDir"
@@ -455,6 +500,15 @@ function Uninstall-All {
     }
 
     Remove-Item $nvmDir -Recurse -Force -ErrorAction SilentlyContinue
+    # Also remove system-path binary (EDR-safe layout) if it exists.
+    # May require admin; try silently and warn if it can't be removed.
+    $systemDir = Join-Path $env:ProgramFiles "nvm-rust"
+    if (Test-Path $systemDir) {
+        Remove-Item $systemDir -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path $systemDir) {
+            Write-Warn "Could not remove $systemDir (needs admin). Run as admin to remove."
+        }
+    }
     Clean-ShellConfig
 
     Write-Success "nvm and all Node versions uninstalled."

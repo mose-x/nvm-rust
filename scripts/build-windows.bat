@@ -188,11 +188,21 @@ goto :eof
 
 :copy_binary
 set "BIN_SRC=target\%~1\nvm.exe"
+set "SYSTEM_DIR=%ProgramFiles%\nvm-rust"
+set "USER_BIN=%USERPROFILE%\.nvm.rust\bin\nvm.exe"
 set "INSTALL_DIR=%USERPROFILE%\.nvm.rust\bin"
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%" 2>nul
 if exist "%BIN_SRC%" (
-    copy /Y "%BIN_SRC%" "%INSTALL_DIR%\nvm.exe" >nul
-    echo [OK] Copied to %INSTALL_DIR%\nvm.exe
+    REM Try system path (EDR-safe) — requires admin
+    net session >nul 2>&1
+    if !ERRORLEVEL! equ 0 (
+        if not exist "%SYSTEM_DIR%" mkdir "%SYSTEM_DIR%" 2>nul
+        copy /Y "%BIN_SRC%" "%SYSTEM_DIR%\nvm.exe" >nul
+        echo [OK] Copied to %SYSTEM_DIR%\nvm.exe (system path, EDR-safe)
+    ) else (
+        copy /Y "%BIN_SRC%" "%USER_BIN%" >nul
+        echo [OK] Copied to %USER_BIN% (user path — run as admin for EDR-safe)
+    )
 )
 goto :eof
 

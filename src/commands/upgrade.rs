@@ -235,7 +235,80 @@ pub fn upgrade(
     //    On Unix, renaming over a running binary is fine (the kernel keeps
     //    the old inode alive for the running process). On Windows the exe
     //    is locked, so we rename the old one to .bak first, then write new.
-    swap_binary(&bin_path, &extracted_bin)?;
+    //
+    //    If the binary lives in a system path like /usr/local/bin (not
+    //    user-writable), the three-step swap can't write temp/backup files
+    //    there. Instead, on Unix we use `sudo cp` to replace the binary
+    //    directly; on Windows we print runas instructions. In either case
+    //    we DON'T bail on failure — the binary was downloaded, the user
+    //    can update manually. We continue with shims/completions/refresh.
+    //    (swap_binary also has an internal sudo fallback as a safety net
+    //    for direct callers, but we handle it here to control the flow.)
+    let bin_parent = bin_path.parent().unwrap_or(std::path::Path::new("."));
+    let can_write = is_bin_dir_writable(bin_parent);
+    if can_write {
+        // User-writable path (e.g. ~/.nvm.rust/bin/) — use the atomic swap.
+        swap_binary(&bin_path, &extracted_bin)?;
+    } else {
+        // System path (e.g. /usr/local/bin/nvm) — needs elevated privileges.
+        #[cfg(unix)]
+        {
+            eprintln!(
+                "  {} {}",
+                "⚠".yellow().bold(),
+                format_t(
+                    "upgrade_sudo_required",
+                    std::slice::from_ref(&bin_path.display().to_string())
+                )
+            );
+            let status = std::process::Command::new("sudo")
+                .args([
+                    "cp",
+                    "-f",
+                    &extracted_bin.display().to_string(),
+                    &bin_path.display().to_string(),
+                ])
+                .status();
+            match status {
+                Ok(s) if s.success() => {
+                    // Ensure executable permissions on the copied binary.
+                    let _ = std::process::Command::new("sudo")
+                        .args(["chmod", "755", &bin_path.display().to_string()])
+                        .status();
+                    println!("  {} {}", "✓".green().bold(), T("upgrade_sudo_success"));
+                }
+                _ => {
+                    // Don't bail — the binary was downloaded, user can
+                    // update manually. Print instructions and continue.
+                    eprintln!(
+                        "  {} {}",
+                        "✗".red().bold(),
+                        format_t(
+                            "upgrade_sudo_failed",
+                            &[
+                                extracted_bin.display().to_string(),
+                                bin_path.display().to_string()
+                            ]
+                        )
+                    );
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            eprintln!(
+                "  {} Binary at {} requires admin to update",
+                "⚠".yellow().bold(),
+                bin_path.display()
+            );
+            eprintln!("  Run install.ps1 again as admin, or:");
+            eprintln!(
+                "    Start-Process -Verb RunAs -ArgumentList 'Copy-Item \"{}\" \"{}\" -Force'",
+                extracted_bin.display(),
+                bin_path.display()
+            );
+        }
+    }
 
     // Migrate to shim architecture: create shim scripts for all SHIM_COMMANDS.
     // `migrate_to_shims` handles first-time setup (creates shims dir + ensures
@@ -302,6 +375,10 @@ pub fn upgrade(
 /// `std::env::current_exe` follows symlinks, so if the user installed via
 /// install.sh's `/usr/local/bin/nvm` symlink, this returns the real path
 /// under `~/.nvm.rust/bin/nvm` — which is what we want to replace.
+///
+/// With the new EDR-safe layout (real binary in /usr/local/bin, symlink in
+/// ~/.nvm.rust/bin/), `current_exe` returns /usr/local/bin/nvm (the real
+/// binary), which is what we want to replace on upgrade.
 fn current_binary_path() -> Result<PathBuf> {
     let exe = std::env::current_exe().context(T("upgrade_find_exe_failed"))?;
     // Canonicalize to resolve any symlinks in the parent path. The binary
@@ -310,6 +387,23 @@ fn current_binary_path() -> Result<PathBuf> {
     // parent dir might have its own symlinks.
     let exe = exe.canonicalize().unwrap_or(exe);
     Ok(exe)
+}
+
+/// Check if a directory is writable by attempting to create a temp file.
+/// Returns false if the dir doesn't exist or is not writable.
+/// Used to detect system paths like `/usr/local/bin` that require sudo.
+fn is_bin_dir_writable(dir: &std::path::Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    let tmp = dir.join(format!(".nvm_writable_test_{}", std::process::id()));
+    match std::fs::File::create(&tmp) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&tmp);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// Host platform identifier used in release asset names.

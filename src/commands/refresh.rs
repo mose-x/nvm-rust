@@ -81,15 +81,22 @@ pub fn refresh() -> Result<()> {
         Err(e) => eprintln!("  {} shim migration failed: {}", "⚠".yellow().bold(), e),
     }
 
-    // 5. Download latest nvm.sh (release archive doesn't include it)
+    // 5. Migrate binary to system path (EDR-safe layout).
+    // If the binary is a real file in the user dir (old layout), try to
+    // move it to /usr/local/bin (Unix) and replace with a symlink. This
+    // is a no-op if the binary is already in a system path or is already
+    // a symlink.
+    migrate_binary_to_system_path(&nvm_dir);
+
+    // 6. Download latest nvm.sh (release archive doesn't include it)
     refresh_nvm_sh(&nvm_dir)?;
 
-    // 6. Fix unguarded `source` lines in shell config (auto-repair for
+    // 7. Fix unguarded `source` lines in shell config (auto-repair for
     // users who upgraded — pre-fix versions wrote `source "..."` without
     // `[ -f ]` guard, causing .zshrc errors when nvm.sh is missing).
     fix_rc_source_guard(&nvm_dir);
 
-    // 7. zsh cache tip
+    // 8. zsh cache tip
     if std::env::var("SHELL")
         .map(|s| s.ends_with("zsh"))
         .unwrap_or(false)
@@ -105,6 +112,128 @@ pub fn refresh() -> Result<()> {
     println!();
     println!("  {}", T("refresh_complete").green().bold());
     Ok(())
+}
+
+/// Migrate the nvm binary from the old layout (real file in user dir) to
+/// the new EDR-safe layout (real binary in system path, symlink in user dir).
+///
+/// Old layout (EDR-risky):
+/// ```text
+/// ~/.nvm.rust/bin/nvm          ← real binary (EDR kills)
+/// /usr/local/bin/nvm           ← symlink → ~/.nvm.rust/bin/nvm
+/// ```
+///
+/// New layout (EDR-safe):
+/// ```text
+/// /usr/local/bin/nvm           ← real binary (EDR trusts)
+/// ~/.nvm.rust/bin/nvm          ← symlink → /usr/local/bin/nvm
+/// ```
+///
+/// This function:
+/// 1. Checks if `~/.nvm.rust/bin/nvm` is a real file (not a symlink).
+/// 2. If so, tries `sudo cp` to `/usr/local/bin/nvm`.
+/// 3. If sudo succeeds, removes the real file and creates a symlink.
+///
+/// Safe to call on all platforms. On Windows, prints a warning suggesting
+/// admin install. No-op if the binary is already a symlink or doesn't exist.
+fn migrate_binary_to_system_path(nvm_dir: &Path) {
+    let bin_name = if cfg!(windows) { "nvm.exe" } else { "nvm" };
+    let user_bin = nvm_dir.join("bin").join(bin_name);
+
+    // Nothing to migrate if the user-path binary doesn't exist.
+    if !user_bin.exists() {
+        return;
+    }
+
+    // Use symlink_metadata to check if it's a symlink WITHOUT following it.
+    // If it's already a symlink, the migration is already done.
+    match std::fs::symlink_metadata(&user_bin) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                return; // already migrated
+            }
+        }
+        Err(_) => return, // can't stat, bail
+    }
+
+    #[cfg(unix)]
+    {
+        let system_bin = std::path::Path::new("/usr/local/bin/nvm");
+
+        // Ensure /usr/local/bin exists.
+        let system_dir = system_bin.parent().unwrap_or(std::path::Path::new("."));
+        if !system_dir.is_dir() {
+            eprintln!(
+                "  {} /usr/local/bin does not exist — skipping binary migration",
+                "⚠".yellow().bold()
+            );
+            return;
+        }
+
+        // Try sudo cp to copy the real binary to the system path.
+        eprintln!(
+            "  {} Migrating binary to /usr/local/bin/ (EDR-safe layout)...",
+            "ℹ".cyan().bold()
+        );
+        let status = std::process::Command::new("sudo")
+            .args([
+                "cp",
+                "-f",
+                &user_bin.display().to_string(),
+                &system_bin.display().to_string(),
+            ])
+            .status();
+
+        match status {
+            Ok(s) if s.success() => {
+                // Ensure executable permissions on the system-path binary.
+                let _ = std::process::Command::new("sudo")
+                    .args(["chmod", "755", &system_bin.display().to_string()])
+                    .status();
+
+                // Remove the real file and create a symlink → system path.
+                if std::fs::remove_file(&user_bin).is_ok() {
+                    if std::os::unix::fs::symlink(system_bin, &user_bin).is_ok() {
+                        println!("  {} {}", "✓".green().bold(), T("refresh_binary_migrated"));
+                    } else {
+                        // Failed to create symlink — restore the real file.
+                        let _ = std::fs::copy(system_bin, &user_bin);
+                        eprintln!(
+                            "  {} Failed to create symlink — binary left in user dir",
+                            "⚠".yellow().bold()
+                        );
+                    }
+                } else {
+                    eprintln!(
+                        "  {} Failed to remove old binary — migration incomplete",
+                        "⚠".yellow().bold()
+                    );
+                }
+            }
+            _ => {
+                eprintln!(
+                    "  {} Binary in user dir (EDR risk). Run manually: sudo cp {} {}",
+                    "⚠".yellow().bold(),
+                    user_bin.display(),
+                    system_bin.display()
+                );
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        // Windows has no /usr/local/bin equivalent that EDR trusts. The
+        // closest is C:\Program Files\nvm-rust\. Suggest running
+        // install.ps1 as admin for the system-path install.
+        eprintln!(
+            "  {} Binary in user dir (EDR risk) — run install.ps1 as admin for system path",
+            "⚠".yellow().bold()
+        );
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = nvm_dir;
+    }
 }
 
 /// Fix unguarded `source` lines in the shell config file.
