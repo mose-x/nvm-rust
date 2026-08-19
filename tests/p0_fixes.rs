@@ -409,16 +409,31 @@ fn install_ps1_shim_respects_nvm_dir() {
     );
 }
 
-/// Issue 1: .cargo/config.toml must have devbuild alias for auto-copy.
+/// Issue 1: scripts/devbuild.sh and scripts/devbuild.bat must exist for auto-copy.
 #[test]
-fn cargo_config_has_devbuild_alias() {
-    let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(".cargo")
-        .join("config.toml");
-    let content = fs::read_to_string(&config).expect(".cargo/config.toml must exist");
+fn devbuild_scripts_exist() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let sh = manifest.join("scripts/devbuild.sh");
+    let bat = manifest.join("scripts/devbuild.bat");
     assert!(
-        content.contains("devbuild"),
-        ".cargo/config.toml must have devbuild alias"
+        sh.exists(),
+        "scripts/devbuild.sh must exist (Unix auto-copy)"
+    );
+    assert!(
+        bat.exists(),
+        "scripts/devbuild.bat must exist (Windows auto-copy)"
+    );
+    // Verify Unix script copies nvm binary
+    let sh_content = fs::read_to_string(&sh).expect("devbuild.sh must be readable");
+    assert!(
+        sh_content.contains("cp target/debug/nvm"),
+        "devbuild.sh must copy target/debug/nvm to ~/.nvm.rust/bin/"
+    );
+    // Verify Windows script copies nvm.exe
+    let bat_content = fs::read_to_string(&bat).expect("devbuild.bat must be readable");
+    assert!(
+        bat_content.contains("target\\debug\\nvm.exe"),
+        "devbuild.bat must copy target/debug/nvm.exe to ~/.nvm.rust/bin/"
     );
 }
 
