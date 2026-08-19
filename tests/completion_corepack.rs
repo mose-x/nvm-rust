@@ -263,15 +263,28 @@ fn corepack_disable_no_arg_with_system_current_bails_with_clear_message() {
 /// system Node.js is detectable on PATH. This test is skipped when `which
 /// node` finds nothing (e.g. minimal CI without Node) because resolve_alias
 /// would then bail with `system_node_not_found` before reaching the fix.
+/// Also skipped when the only node on PATH is an nvm shim — the sandbox
+/// isolates NVM_DIR, so the shim can't resolve a version in the subprocess.
 #[test]
 fn corepack_status_system_arg_succeeds_when_node_on_path() {
-    let node_on_path = std::process::Command::new(if cfg!(windows) { "where" } else { "which" })
+    let which = std::process::Command::new(if cfg!(windows) { "where" } else { "which" })
         .arg("node")
         .output()
-        .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-        .unwrap_or(false);
-    if !node_on_path {
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if which.is_empty() {
         eprintln!("skipping: no system node on PATH");
+        return;
+    }
+    // Skip if the node on PATH is an nvm shim — in the sandbox, NVM_DIR is
+    // isolated so the shim can't resolve a version. Only proceed if there's
+    // an independent system node (Homebrew, official pkg, etc.).
+    let is_nvm_shim = which.contains(".nvm.rust")
+        || which.contains("/shims/")
+        || which.contains("\\shims\\")
+        || which.contains("NVM_HOME");
+    if is_nvm_shim {
+        eprintln!("skipping: node on PATH is an nvm shim (sandbox would isolate it)");
         return;
     }
 
@@ -289,16 +302,24 @@ fn corepack_status_system_arg_succeeds_when_node_on_path() {
 }
 
 /// `nvm corepack enable system` must refuse (we don't mutate system state).
-/// Also skipped when no system node is on PATH, for the same reason as above.
+/// Also skipped when no system node is on PATH or the only node is an nvm shim.
 #[test]
 fn corepack_enable_system_arg_refuses_when_node_on_path() {
-    let node_on_path = std::process::Command::new(if cfg!(windows) { "where" } else { "which" })
+    let which = std::process::Command::new(if cfg!(windows) { "where" } else { "which" })
         .arg("node")
         .output()
-        .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-        .unwrap_or(false);
-    if !node_on_path {
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if which.is_empty() {
         eprintln!("skipping: no system node on PATH");
+        return;
+    }
+    let is_nvm_shim = which.contains(".nvm.rust")
+        || which.contains("/shims/")
+        || which.contains("\\shims\\")
+        || which.contains("NVM_HOME");
+    if is_nvm_shim {
+        eprintln!("skipping: node on PATH is an nvm shim (sandbox would isolate it)");
         return;
     }
 
