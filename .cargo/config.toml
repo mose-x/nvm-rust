@@ -7,8 +7,6 @@
 [target.'cfg(windows)']
 rustflags = ["-C", "target-feature=+crt-static"]
 
-# `cargo devbuild` — build debug binary and auto-copy to ~/.nvm.rust/bin/
-# so the new binary is immediately usable without manual copy.
-# On Windows without Git Bash, run: scripts\devbuild.bat
-[alias]
-devbuild = "!sh -c 'cargo build && mkdir -p \"$HOME/.nvm.rust/bin\" && cp target/debug/nvm \"$HOME/.nvm.rust/bin/nvm\" && echo \"✓ Copied to ~/.nvm.rust/bin/nvm\"'"
+# Build + auto-copy binary to ~/.nvm.rust/bin/:
+#   Unix:   ./scripts/devbuild.sh
+#   Windows: scripts\devbuild.bat
