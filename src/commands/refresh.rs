@@ -167,7 +167,7 @@ fn migrate_binary_to_system_path(nvm_dir: &Path) {
         let system_dir = std::path::Path::new("/usr/local/bin");
         if system_dir.is_dir() && crate::commands::binary_swap::is_dir_writable(system_dir) {
             let system_bin = system_dir.join(bin_name);
-            if let Ok(_) = std::fs::copy(&user_bin, &system_bin) {
+            if std::fs::copy(&user_bin, &system_bin).is_ok() {
                 use std::os::unix::fs::PermissionsExt;
                 let _ =
                     std::fs::set_permissions(&system_bin, std::fs::Permissions::from_mode(0o755));
