@@ -519,7 +519,7 @@ function Clean-ShellConfig {
     if (-not (Test-Path $profilePath)) { return }
     Copy-Item $profilePath "$profilePath.bak" -Force -ErrorAction SilentlyContinue
     $content = Get-Content $profilePath
-    $filtered = $content | Where-Object { $_ -notmatch "nvm.rust|nvm.sh|NVM_HOME" }
+    $filtered = $content | Where-Object { $_ -notmatch "nvm\.rust|nvm\.sh|nvm-rs|NVM_HOME" }
     $filtered | Set-Content $profilePath
     Write-Info "Shell config cleaned: $profilePath"
 }

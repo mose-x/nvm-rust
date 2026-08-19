@@ -164,17 +164,15 @@ fn migrate_binary_to_system_path(nvm_dir: &Path) {
         let system_dir = system_bin.parent().unwrap_or(std::path::Path::new("."));
         if !system_dir.is_dir() {
             eprintln!(
-                "  {} /usr/local/bin does not exist — skipping binary migration",
-                "⚠".yellow().bold()
+                "  {} {}",
+                "⚠".yellow().bold(),
+                T("refresh_binary_skip_no_system_dir")
             );
             return;
         }
 
         // Try sudo cp to copy the real binary to the system path.
-        eprintln!(
-            "  {} Migrating binary to /usr/local/bin/ (EDR-safe layout)...",
-            "ℹ".cyan().bold()
-        );
+        eprintln!("  {} {}", "ℹ".cyan().bold(), T("refresh_binary_migrating"));
         let status = std::process::Command::new("sudo")
             .args([
                 "cp",
@@ -199,23 +197,30 @@ fn migrate_binary_to_system_path(nvm_dir: &Path) {
                         // Failed to create symlink — restore the real file.
                         let _ = std::fs::copy(system_bin, &user_bin);
                         eprintln!(
-                            "  {} Failed to create symlink — binary left in user dir",
-                            "⚠".yellow().bold()
+                            "  {} {}",
+                            "⚠".yellow().bold(),
+                            T("refresh_binary_symlink_failed")
                         );
                     }
                 } else {
                     eprintln!(
-                        "  {} Failed to remove old binary — migration incomplete",
-                        "⚠".yellow().bold()
+                        "  {} {}",
+                        "⚠".yellow().bold(),
+                        T("refresh_binary_remove_failed")
                     );
                 }
             }
             _ => {
                 eprintln!(
-                    "  {} Binary in user dir (EDR risk). Run manually: sudo cp {} {}",
+                    "  {} {}",
                     "⚠".yellow().bold(),
-                    user_bin.display(),
-                    system_bin.display()
+                    format_t(
+                        "refresh_binary_edr_risk_manual",
+                        &[
+                            user_bin.display().to_string(),
+                            system_bin.display().to_string()
+                        ]
+                    )
                 );
             }
         }
@@ -226,8 +231,9 @@ fn migrate_binary_to_system_path(nvm_dir: &Path) {
         // closest is C:\Program Files\nvm-rust\. Suggest running
         // install.ps1 as admin for the system-path install.
         eprintln!(
-            "  {} Binary in user dir (EDR risk) — run install.ps1 as admin for system path",
-            "⚠".yellow().bold()
+            "  {} {}",
+            "⚠".yellow().bold(),
+            T("refresh_binary_edr_risk_windows")
         );
     }
     #[cfg(not(any(unix, windows)))]

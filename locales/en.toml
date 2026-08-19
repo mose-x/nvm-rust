@@ -626,6 +626,16 @@ doctor_network_ok = "network      {0} reachable ({1}ms)"
 doctor_network_http_error = "network      {0} HTTP {1}"
 doctor_network_unreachable = "network      {0} unreachable: {1}"
 
+refresh_binary_skip_no_system_dir = "/usr/local/bin does not exist — skipping binary migration"
+refresh_binary_migrating = "Migrating binary to /usr/local/bin/ (EDR-safe layout)..."
+refresh_binary_symlink_failed = "Failed to create symlink — binary left in user dir"
+refresh_binary_remove_failed = "Failed to remove old binary — migration incomplete"
+refresh_binary_edr_risk_manual = "Binary in user dir (EDR risk). Run manually: sudo cp {0} {1}"
+refresh_binary_edr_risk_windows = "Binary in user dir (EDR risk) — run install.ps1 as admin for system path"
+upgrade_admin_required = "Binary at {0} requires admin to update"
+upgrade_admin_hint = "Run install.ps1 again as admin, or:"
+upgrade_admin_command = "Start-Process -Verb RunAs -ArgumentList 'Copy-Item \"{0}\" \"{1}\" -Force'"
+
 [_meta]
 display_name = "English"
 aliases = ["en-us", "english"]

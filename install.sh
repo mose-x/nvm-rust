@@ -376,7 +376,7 @@ main() {
         chmod +x "$BIN_LINK"
         ln -sf "$BIN_LINK" "${INSTALL_DIR}/${BINARY_NAME}"
         success "Installed to $BIN_LINK (system path, EDR-safe)"
-    elif command -v sudo &>/dev/null; then
+    elif command -v sudo &>/dev/null && [ -d "/usr/local/bin" ]; then
         # Use sudo to write to system path
         sudo cp -f "${source_dir}/${BINARY_NAME}" "$BIN_LINK"
         sudo chmod +x "$BIN_LINK"

@@ -297,15 +297,20 @@ pub fn upgrade(
         #[cfg(not(unix))]
         {
             eprintln!(
-                "  {} Binary at {} requires admin to update",
+                "  {} {}",
                 "⚠".yellow().bold(),
-                bin_path.display()
+                format_t("upgrade_admin_required", &[bin_path.display().to_string()])
             );
-            eprintln!("  Run install.ps1 again as admin, or:");
+            eprintln!("  {}", T("upgrade_admin_hint"));
             eprintln!(
-                "    Start-Process -Verb RunAs -ArgumentList 'Copy-Item \"{}\" \"{}\" -Force'",
-                extracted_bin.display(),
-                bin_path.display()
+                "    {}",
+                format_t(
+                    "upgrade_admin_command",
+                    &[
+                        extracted_bin.display().to_string(),
+                        bin_path.display().to_string()
+                    ]
+                )
             );
         }
     }

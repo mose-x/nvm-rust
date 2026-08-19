@@ -626,6 +626,16 @@ doctor_network_ok = "network      {0} 可达（{1}ms）"
 doctor_network_http_error = "network      {0} HTTP {1}"
 doctor_network_unreachable = "network      {0} 不可达：{1}"
 
+refresh_binary_skip_no_system_dir = "/usr/local/bin 不存在 — 跳过二进制迁移"
+refresh_binary_migrating = "正在迁移二进制到 /usr/local/bin/（EDR 安全布局）..."
+refresh_binary_symlink_failed = "创建符号链接失败 — 二进制保留在用户目录"
+refresh_binary_remove_failed = "删除旧二进制失败 — 迁移未完成"
+refresh_binary_edr_risk_manual = "二进制在用户目录（EDR 风险）。手动执行: sudo cp {0} {1}"
+refresh_binary_edr_risk_windows = "二进制在用户目录（EDR 风险）— 以管理员运行 install.ps1 安装到系统路径"
+upgrade_admin_required = "二进制位于 {0}，需要管理员权限更新"
+upgrade_admin_hint = "以管理员重新运行 install.ps1，或："
+upgrade_admin_command = "Start-Process -Verb RunAs -ArgumentList 'Copy-Item \"{0}\" \"{1}\" -Force'"
+
 [_meta]
 display_name = "中文"
 aliases = ["zh", "zh-cn", "zh-hans", "chinese", "中文"]
