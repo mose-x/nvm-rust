@@ -100,6 +100,29 @@ fn ensure_shell_config(nvm_dir: &Path) -> Result<()> {
             crate::config::migrate_rc_to_shim_mode()?;
             println!("  {} {}", "✓".green().bold(), T("init_shell_migrated"));
         } else {
+            // Already has active format, but check for unguarded `source` line
+            // (pre-fix versions wrote `source "..."` without `[ -f ]` guard).
+            // Replace it so .zshrc doesn't error when nvm.sh is missing.
+            if !shell_config.ends_with(".ps1")
+                && content.contains("source \"")
+                && content.contains("nvm.sh")
+                && !content.contains("[ -f ")
+            {
+                let old_source = format!(r#"source "{}/bin/nvm.sh""#, nvm_dir_str);
+                let new_source = format!(
+                    r#"[ -f "{}/bin/nvm.sh" ] && source "{}/bin/nvm.sh""#,
+                    nvm_dir_str, nvm_dir_str
+                );
+                let fixed = content.replace(&old_source, &new_source);
+                if fixed != content {
+                    crate::utils::atomic_write(config_path, &fixed)
+                        .context(T("shell_config_write_failed"))?;
+                    println!(
+                        "  {} Fixed: nvm.sh source line now has [ -f ] guard",
+                        "✓".green().bold()
+                    );
+                }
+            }
             println!("  {} {}", "✓".green().bold(), T("init_shell_configured"));
         }
         return Ok(());
@@ -135,7 +158,10 @@ fn ensure_shell_config(nvm_dir: &Path) -> Result<()> {
                 r#"export PATH="{}:{}:{}:$PATH""#,
                 shims, active_path, nvm_bin
             ),
-            format!(r#"source "{}/bin/nvm.sh""#, nvm_dir_str),
+            format!(
+                r#"[ -f "{}/bin/nvm.sh" ] && source "{}/bin/nvm.sh""#,
+                nvm_dir_str, nvm_dir_str
+            ),
         )
     };
 
