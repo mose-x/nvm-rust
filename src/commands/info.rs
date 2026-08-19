@@ -378,6 +378,30 @@ fn probe_versions(node_bin: &Path) -> Option<[String; 4]> {
     }
 }
 
+/// Probe a package manager's version by running its binary directly.
+/// Used as a fallback for corepack-managed pnpm/yarn that `require.resolve`
+/// can't find (they're shims in bin/, not packages in node_modules/).
+fn probe_tool_version(node_bin: &Path, tool: &str) -> Option<String> {
+    let bin_dir = node_bin.parent()?;
+    let tool_path = exe_path(bin_dir, tool);
+    if !tool_path.exists() {
+        return None;
+    }
+    let path_env = bin_dir.display().to_string();
+    let out = Command::new(&tool_path)
+        .arg("--version")
+        .env("PATH", &path_env)
+        .output()
+        .ok()?;
+    if out.status.success() {
+        let ver = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !ver.is_empty() {
+            return Some(ver);
+        }
+    }
+    None
+}
+
 pub fn show_version_info() -> Result<()> {
     match get_current_version()? {
         Some(v) if v.starts_with("system:") => {
@@ -413,7 +437,20 @@ pub fn show_version_info() -> Result<()> {
             }
 
             // Single node invocation to get node + npm + yarn + pnpm versions.
-            if let Some(parts) = probe_versions(&node_bin) {
+            if let Some(mut parts) = probe_versions(&node_bin) {
+                // Fallback for corepack-managed pnpm/yarn: require.resolve
+                // can't find them (shims in bin/, not node_modules/).
+                // Try running the binary directly with --version.
+                if parts[2] == "none" {
+                    if let Some(ver) = probe_tool_version(&node_bin, "yarn") {
+                        parts[2] = ver;
+                    }
+                }
+                if parts[3] == "none" {
+                    if let Some(ver) = probe_tool_version(&node_bin, "pnpm") {
+                        parts[3] = ver;
+                    }
+                }
                 // node
                 println!("  {} {}", T("node_label").dimmed(), parts[0].white());
                 // npm
