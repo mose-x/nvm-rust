@@ -311,14 +311,39 @@ pub fn remove_from_shell_config() -> Result<()> {
 /// (e.g. `export PATH="shims:v24.18.0/bin:$PATH"`) to the fixed
 /// `active/bin` format (`export PATH="shims:active/bin:$PATH"`).
 /// This is the core of the Full Shim mode migration.
-pub fn migrate_rc_to_shim_mode() -> Result<()> {
+///
+/// Takes `nvm_dir` as a parameter so callers that already resolved the
+/// path can pass it through directly, instead of this function re-deriving
+/// it from env (which broke test isolation — the env `NVM_DIR` could point
+/// at a temp dir while the caller held a specific `nvm_dir`).
+pub fn migrate_rc_to_shim_mode_with_dir(nvm_dir: &Path) -> Result<()> {
+    // Test-isolation guard: if nvm_dir lives under $TMPDIR (test sandbox) but
+    // HOME does NOT (real user home still set), refuse to write to the real
+    // ~/.zshrc / ~/.bashrc. This catches the case where setup_temp_nvm_dir()
+    // sandboxed NVM_DIR but forgot to also sandbox HOME. When HOME IS also
+    // under TMPDIR (properly sandboxed test), writing is safe and allowed.
+    // Guarded by #[cfg(test)] so production is unaffected.
+    #[cfg(test)]
+    {
+        if let Ok(tmpdir) = std::env::var("TMPDIR") {
+            let nvm_in_tmp = nvm_dir.starts_with(&tmpdir);
+            let home = std::env::var("HOME").unwrap_or_default();
+            let home_in_tmp = std::path::Path::new(&home).starts_with(&tmpdir);
+            if nvm_in_tmp && !home_in_tmp {
+                eprintln!(
+                    "  ⚠ Refusing to write shell config: nvm_dir in TMPDIR but HOME not sandboxed (test isolation?)"
+                );
+                return Ok(());
+            }
+        }
+    }
+
     let shell_config = match detect_shell_config() {
         Some(p) => p,
         None => return Ok(()), // No rc file, nothing to migrate
     };
 
     let config_path = Path::new(&shell_config);
-    let nvm_dir = get_nvm_dir();
     let nvm_dir_str = nvm_dir.display().to_string();
 
     let content = match fs::read_to_string(config_path) {
@@ -354,6 +379,14 @@ pub fn migrate_rc_to_shim_mode() -> Result<()> {
 
     crate::utils::atomic_write(config_path, &new_config)?;
     Ok(())
+}
+
+/// Backward-compat wrapper: re-derives nvm_dir from env and delegates to
+/// [`migrate_rc_to_shim_mode_with_dir`]. Prefer the `_with_dir` variant in
+/// call sites that already hold a resolved `nvm_dir`.
+#[allow(dead_code)]
+pub fn migrate_rc_to_shim_mode() -> Result<()> {
+    migrate_rc_to_shim_mode_with_dir(&get_nvm_dir())
 }
 
 /// Check if the rc file contains version-specific PATH (old format)

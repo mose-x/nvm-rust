@@ -50,6 +50,32 @@ fn main() -> Result<()> {
     system::os_check();
     system::ensure_nvm_dir()?;
 
+    // Check config.json ownership — warn (not block) if root-owned.
+    // A root-owned config.json means a previous `sudo nvm` wrote it, and
+    // the current non-root user can't update it. nvm continues in read-only
+    // mode (writes fail silently), but the user should fix ownership.
+    let nvm_dir = system::get_nvm_dir();
+    let config_path = nvm_dir.join(system::CONFIG_FILE);
+    if config_path.exists() {
+        if let Ok(meta) = std::fs::metadata(&config_path) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if meta.uid() == 0 {
+                    eprintln!(
+                        "  {} config.json is root-owned. Fix: sudo chown $(whoami) {}",
+                        "⚠".yellow().bold(),
+                        config_path.display()
+                    );
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = meta;
+            }
+        }
+    }
+
     // Recover from interrupted upgrade (crash during swap_binary).
     // If .swap-pending exists in the nvm bin dir, a previous upgrade was
     // killed mid-swap. Try to finish the swap or restore the .bak.

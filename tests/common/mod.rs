@@ -38,13 +38,24 @@ pub fn isolated_nvm_dir() -> (TempDir, OsString) {
 ///
 /// The returned `TempDir` owns the scratch directory; keep it alive for the
 /// duration of the assertions (binding it to `_dir` is enough).
+///
+/// Also sets `HOME` (and `USERPROFILE` on Windows) to the same temp dir so
+/// that `detect_shell_config()` resolves rc paths inside the temp dir (which
+/// don't exist → migrate_rc_to_shim_mode returns early). This prevents the
+/// 48+ call sites from exposing the real `~/.zshrc` / `~/.bashrc` to the nvm
+/// subprocess. No return-type change is needed: the same TempDir owns both
+/// NVM_DIR and HOME.
 pub fn run_isolated(args: &[&str]) -> (Output, TempDir) {
     let (dir, nvm_dir) = isolated_nvm_dir();
-    let output = Command::new(nvm_bin())
-        .args(args)
+    let mut cmd = Command::new(nvm_bin());
+    cmd.args(args)
         .env("NVM_DIR", &nvm_dir)
-        .output()
-        .expect("failed to run nvm binary");
+        .env("HOME", &nvm_dir);
+    #[cfg(windows)]
+    {
+        cmd.env("USERPROFILE", &nvm_dir);
+    }
+    let output = cmd.output().expect("failed to run nvm binary");
     (output, dir)
 }
 

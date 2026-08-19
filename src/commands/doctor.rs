@@ -20,6 +20,7 @@ pub fn doctor(fix: bool, network: bool) -> Result<()> {
     println!();
 
     check_binary();
+    check_config_ownership(&nvm_dir);
     check_shims(&nvm_dir, fix);
     check_current(&nvm_dir, fix);
     check_shim_mode(&nvm_dir);
@@ -65,6 +66,46 @@ fn check_binary() {
             }
         }
         None => println!("  {} {}", "✗".red().bold(), T("doctor_binary_fail")),
+    }
+}
+
+/// Check config.json ownership — warn if root-owned (Unix only).
+/// A root-owned config.json means a previous `sudo nvm` wrote it, and
+/// the current non-root user can't update it.
+fn check_config_ownership(nvm_dir: &Path) {
+    let config_path = nvm_dir.join(crate::system::CONFIG_FILE);
+    if !config_path.exists() {
+        return;
+    }
+    let meta = match std::fs::metadata(&config_path) {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if meta.uid() == 0 {
+            println!(
+                "  {} config.json is root-owned — non-root user cannot update. Fix: sudo chown $(whoami) {}",
+                "⚠".yellow().bold(),
+                config_path.display()
+            );
+        } else {
+            println!(
+                "  {} config.json ownership OK ({})",
+                "✓".green().bold(),
+                config_path.display()
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        println!(
+            "  {} config.json: {}",
+            "✓".green().bold(),
+            config_path.display()
+        );
     }
 }
 
