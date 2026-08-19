@@ -111,8 +111,13 @@ mod tests {
 
     #[test]
     fn test_normalize_mirror_url_rejects_empty() {
+        let _guard = crate::system::ENV_TESTS_MUTEX
+            .lock()
+            .expect("ENV_TESTS_MUTEX poisoned");
+        std::env::set_var("NVM_LANG", "en");
         let err = normalize_mirror_url("   ").unwrap_err();
         assert!(format!("{err}").contains("empty"));
+        std::env::remove_var("NVM_LANG");
     }
 
     #[test]

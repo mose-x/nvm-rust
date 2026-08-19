@@ -449,6 +449,10 @@ mod tests {
         // A symlink planted at the .part path must be rejected, not followed.
         // We point the symlink at /dev/null (harmless target) to prove the
         // open is refused before any write could happen.
+        let _guard = crate::system::ENV_TESTS_MUTEX
+            .lock()
+            .expect("ENV_TESTS_MUTEX poisoned");
+        std::env::set_var("NVM_LANG", "en");
         let tmp = tempfile::tempdir().expect("tempdir");
         let link = tmp.path().join("evil.part");
         std::os::unix::fs::symlink("/dev/null", &link).expect("symlink");
@@ -459,11 +463,16 @@ mod tests {
             msg.contains("symlink") || msg.contains("symbolic"),
             "expected symlink-rejection error, got: {msg}"
         );
+        std::env::remove_var("NVM_LANG");
     }
 
     #[cfg(unix)]
     #[test]
     fn open_part_for_resume_refuses_symlink() {
+        let _guard = crate::system::ENV_TESTS_MUTEX
+            .lock()
+            .expect("ENV_TESTS_MUTEX poisoned");
+        std::env::set_var("NVM_LANG", "en");
         let tmp = tempfile::tempdir().expect("tempdir");
         let link = tmp.path().join("resume.part");
         std::os::unix::fs::symlink("/dev/null", &link).expect("symlink");
@@ -474,6 +483,7 @@ mod tests {
             msg.contains("symlink") || msg.contains("symbolic"),
             "expected symlink-rejection error, got: {msg}"
         );
+        std::env::remove_var("NVM_LANG");
     }
 
     #[test]
