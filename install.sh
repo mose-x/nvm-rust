@@ -365,12 +365,29 @@ main() {
         source_dir="$tmp_dir"
     fi
 
-    # Install binary — cp (not mv) so offline mode doesn't damage the
-    # extracted bundle; online mode's tmp_dir is cleaned by the trap.
+    # Install binary — EDR-safe layout: real binary in /usr/local/bin
+    # (system path, EDR trusts), symlink at ~/.nvm.rust/bin/nvm → /usr/local/bin/nvm.
+    # Falls back to old layout (real file in user dir) if /usr/local/bin is
+    # not writable and sudo is not available.
     mkdir -p "$INSTALL_DIR"
-    cp -f "${source_dir}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
-    chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
-    success "Installed to ${INSTALL_DIR}/${BINARY_NAME}"
+    if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
+        # Direct write to system path (user has write access)
+        cp -f "${source_dir}/${BINARY_NAME}" "$BIN_LINK"
+        chmod +x "$BIN_LINK"
+        ln -sf "$BIN_LINK" "${INSTALL_DIR}/${BINARY_NAME}"
+        success "Installed to $BIN_LINK (system path, EDR-safe)"
+    elif command -v sudo &>/dev/null; then
+        # Use sudo to write to system path
+        sudo cp -f "${source_dir}/${BINARY_NAME}" "$BIN_LINK"
+        sudo chmod +x "$BIN_LINK"
+        ln -sf "$BIN_LINK" "${INSTALL_DIR}/${BINARY_NAME}"
+        success "Installed to $BIN_LINK (system path via sudo, EDR-safe)"
+    else
+        # Fallback: old layout (real file in user dir — EDR risk)
+        cp -f "${source_dir}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+        chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
+        warn "Installed to user dir — EDR may block. Use sudo for system path."
+    fi
 
     # Create shim scripts for node/npm/npx/corepack so they resolve
     # via the `current` file without shell-wrapper PATH manipulation.
@@ -483,11 +500,16 @@ main() {
     # Auto-install tab-completion for the current shell.
     install_completion "$current_shell" "$shell_profile" "$shell_dir" "$nvm_dir"
 
-    # Try to create symlink to /usr/local/bin
+    # Try to create symlink to /usr/local/bin (for old-layout installs where
+    # the binary is in the user dir). With the new EDR-safe layout, the
+    # symlink is already created (user dir → system path), so this only
+    # runs in the fallback case where the binary ended up in the user dir.
     if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
-        ln -sf "${INSTALL_DIR}/${BINARY_NAME}" "$BIN_LINK" 2>/dev/null && \
-            success "Symlink created: $BIN_LINK" || \
-            warn "Could not create symlink at $BIN_LINK (permission denied)"
+        if [ ! -f "$BIN_LINK" ]; then
+            ln -sf "${INSTALL_DIR}/${BINARY_NAME}" "$BIN_LINK" 2>/dev/null && \
+                success "Symlink created: $BIN_LINK" || \
+                warn "Could not create symlink at $BIN_LINK (permission denied)"
+        fi
     fi
 
     echo ""
@@ -532,7 +554,12 @@ uninstall_self() {
     rm -f "${nvm_dir}/bin/nvm" "${nvm_dir}/bin/nvm.sh" 2>/dev/null || true
     rm -rf "${nvm_dir}/shims" 2>/dev/null || true
     rm -f "${nvm_dir}/current" 2>/dev/null || true
+    # BIN_LINK may be a real binary owned by root (new EDR-safe layout)
+    # or a symlink (old layout). Try regular rm first, then sudo if needed.
     rm -f "$BIN_LINK" 2>/dev/null || true
+    if [ -e "$BIN_LINK" ] && command -v sudo &>/dev/null; then
+        sudo rm -f "$BIN_LINK" 2>/dev/null || true
+    fi
     clean_shell_config
 
     echo ""
@@ -553,7 +580,12 @@ uninstall_all() {
 
     local nvm_dir="$NVM_DIR"
     rm -rf "$nvm_dir" 2>/dev/null || true
+    # BIN_LINK may be a real binary owned by root (new EDR-safe layout)
+    # or a symlink (old layout). Try regular rm first, then sudo if needed.
     rm -f "$BIN_LINK" 2>/dev/null || true
+    if [ -e "$BIN_LINK" ] && command -v sudo &>/dev/null; then
+        sudo rm -f "$BIN_LINK" 2>/dev/null || true
+    fi
     clean_shell_config
 
     echo ""

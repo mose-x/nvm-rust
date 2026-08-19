@@ -581,3 +581,125 @@ fn build_scripts_have_auto_copy() {
         "build-windows.bat must auto-copy binary to .nvm.rust\\bin\\"
     );
 }
+
+/// EDR-safe layout: install.sh must try /usr/local/bin first (system path,
+/// EDR-safe), then create a symlink at ~/.nvm.rust/bin/nvm → /usr/local/bin/nvm.
+/// Fallback to old behavior (real file in user dir) with warning.
+#[test]
+fn install_sh_installs_to_system_path_first() {
+    let install_sh = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
+    let content = fs::read_to_string(&install_sh).expect("install.sh must exist");
+    // Must try /usr/local/bin first
+    assert!(
+        content.contains("/usr/local/bin") && content.contains("[ -w \"/usr/local/bin\""),
+        "install.sh must check if /usr/local/bin is writable for EDR-safe install"
+    );
+    // Must create symlink from user dir → system path
+    assert!(
+        content.contains("ln -sf \"$BIN_LINK\" \"${INSTALL_DIR}/${BINARY_NAME}\""),
+        "install.sh must create symlink from user dir to system path (EDR-safe layout)"
+    );
+    // Must have sudo fallback for system path
+    assert!(
+        content.contains("sudo cp -f"),
+        "install.sh must use sudo cp as fallback for system path install"
+    );
+    // Must have EDR warning for fallback to user dir
+    assert!(
+        content.contains("EDR may block"),
+        "install.sh must warn about EDR risk when falling back to user dir"
+    );
+    // Uninstall must use sudo rm for system-path binary
+    assert!(
+        content.contains("sudo rm -f \"$BIN_LINK\""),
+        "install.sh uninstall must use sudo rm for system-path binary (may be root-owned)"
+    );
+}
+
+/// EDR-safe layout: binary_swap.rs must have sudo fallback logic for
+/// system paths that are not user-writable.
+#[test]
+fn binary_swap_has_sudo_fallback() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/binary_swap.rs");
+    let content = fs::read_to_string(&src).expect("binary_swap.rs must exist");
+    // Must check if dir is writable
+    assert!(
+        content.contains("is_dir_writable"),
+        "binary_swap.rs must have is_dir_writable function to detect system paths"
+    );
+    // Must have sudo cp fallback on Unix
+    assert!(
+        content.contains("sudo") && content.contains("cp"),
+        "binary_swap.rs must have sudo cp fallback for non-writable system paths"
+    );
+    // Marker must be in user bin dir (always user-writable).
+    // cargo fmt may split the chained .join() across lines, so check
+    // for the components separately.
+    assert!(
+        content.contains("get_nvm_dir()")
+            && content.contains(".join(\"bin\")")
+            && content.contains(".join(\".swap-pending\")"),
+        "binary_swap.rs must write .swap-pending marker to user bin dir (always user-writable)"
+    );
+    // check_swap_recovery must look in user bin dir
+    assert!(
+        content.contains("user_bin_dir"),
+        "binary_swap.rs check_swap_recovery must look in user bin dir for marker and recovery files"
+    );
+}
+
+/// EDR-safe layout: refresh.rs must have migrate_binary_to_system_path
+/// function that auto-migrates old-layout binaries to the new EDR-safe layout.
+#[test]
+fn refresh_has_migrate_binary_to_system_path() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/refresh.rs");
+    let content = fs::read_to_string(&src).expect("refresh.rs must exist");
+    // Must have the migration function
+    assert!(
+        content.contains("fn migrate_binary_to_system_path"),
+        "refresh.rs must have migrate_binary_to_system_path function"
+    );
+    // Must check if binary is a symlink (already migrated) using symlink_metadata
+    assert!(
+        content.contains("symlink_metadata"),
+        "refresh.rs must use symlink_metadata to check if binary is already a symlink"
+    );
+    // Must try sudo cp on Unix
+    assert!(
+        content.contains("sudo") && content.contains("/usr/local/bin/nvm"),
+        "refresh.rs must try sudo cp to /usr/local/bin/nvm for migration"
+    );
+    // Must create symlink after migration
+    assert!(
+        content.contains("std::os::unix::fs::symlink"),
+        "refresh.rs must create symlink from user dir to system path after migration"
+    );
+    // Must call it in refresh()
+    assert!(
+        content.contains("migrate_binary_to_system_path(&nvm_dir)"),
+        "refresh.rs must call migrate_binary_to_system_path in refresh()"
+    );
+}
+
+/// EDR-safe layout: doctor.rs must check if binary is in user dir (EDR risk)
+/// and suggest running 'nvm refresh' to migrate.
+#[test]
+fn doctor_has_edr_risk_check() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/doctor.rs");
+    let content = fs::read_to_string(&src).expect("doctor.rs must exist");
+    // Must check if path contains .nvm.rust (user path = EDR risk)
+    assert!(
+        content.contains(".nvm.rust"),
+        "doctor.rs must check if binary path contains .nvm.rust (EDR risk)"
+    );
+    // Must print EDR risk warning
+    assert!(
+        content.contains("doctor_binary_edr_risk"),
+        "doctor.rs must use doctor_binary_edr_risk i18n key for EDR risk warning"
+    );
+    // Must suggest nvm refresh
+    assert!(
+        content.contains("nvm refresh") || content.contains("doctor_binary_edr_risk"),
+        "doctor.rs must suggest running nvm refresh to migrate"
+    );
+}

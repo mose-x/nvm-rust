@@ -45,14 +45,25 @@ fn check_binary() {
     let exe = std::env::current_exe().ok();
     let ver = env!("CARGO_PKG_VERSION");
     match exe {
-        Some(path) => println!(
-            "  {} {}",
-            "✓".green().bold(),
-            format_t(
-                "doctor_binary_ok",
-                &[ver.to_string(), path.display().to_string()]
-            )
-        ),
+        Some(path) => {
+            // Check if the binary lives in a user-writable dir that EDR
+            // software may flag (e.g. ~/.nvm.rust/bin/). If the path
+            // contains ".nvm.rust", it's the old EDR-risky layout —
+            // suggest running `nvm refresh` to migrate to the system path.
+            let path_str = path.to_string_lossy();
+            if path_str.contains(".nvm.rust") {
+                println!("  {} {}", "⚠".yellow().bold(), T("doctor_binary_edr_risk"));
+            } else {
+                println!(
+                    "  {} {}",
+                    "✓".green().bold(),
+                    format_t(
+                        "doctor_binary_ok",
+                        &[ver.to_string(), path.display().to_string()]
+                    )
+                );
+            }
+        }
         None => println!("  {} {}", "✗".red().bold(), T("doctor_binary_fail")),
     }
 }

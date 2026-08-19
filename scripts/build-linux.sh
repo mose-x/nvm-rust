@@ -107,11 +107,27 @@ esac
 _copy_binary() {
     local mode="$1"
     local src="target/${mode}/nvm"
+    local system_bin="/usr/local/bin/nvm"
     local install_dir="${NVM_INSTALL_DIR:-$HOME/.nvm.rust/bin}"
+    local user_bin="${install_dir}/nvm"
     if [ -f "$src" ]; then
         mkdir -p "$install_dir"
-        cp "$src" "$install_dir/nvm"
-        chmod +x "$install_dir/nvm"
-        echo "[OK] Copied to $install_dir/nvm"
+        # Try system path first (EDR-safe: real binary in /usr/local/bin)
+        if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
+            cp "$src" "$system_bin"
+            chmod +x "$system_bin"
+            ln -sf "$system_bin" "$user_bin"
+            echo "[OK] Copied to $system_bin (system path, EDR-safe)"
+        elif command -v sudo &>/dev/null; then
+            sudo cp "$src" "$system_bin"
+            sudo chmod +x "$system_bin"
+            ln -sf "$system_bin" "$user_bin"
+            echo "[OK] Copied to $system_bin (system path via sudo, EDR-safe)"
+        else
+            # Fallback: user path (EDR risk)
+            cp "$src" "$user_bin"
+            chmod +x "$user_bin"
+            echo "[OK] Copied to $user_bin (user path — EDR may block)"
+        fi
     fi
 }

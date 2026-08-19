@@ -73,6 +73,23 @@ pub(crate) fn extract_binary(archive_path: &Path, dest_dir: &Path) -> Result<Pat
     Ok(bin)
 }
 
+/// Check if a directory is writable by attempting to create a temp file.
+/// Returns false if the dir doesn't exist or is not writable.
+/// Used to detect system paths like `/usr/local/bin` that require sudo.
+fn is_dir_writable(dir: &Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    let tmp = dir.join(format!(".nvm_writable_test_{}", std::process::id()));
+    match fs::File::create(&tmp) {
+        Ok(_) => {
+            let _ = fs::remove_file(&tmp);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 /// Swap `new_bin` into `bin_path`, backing up the current binary to
 /// `bin_path.bak` first.
 ///
@@ -83,6 +100,11 @@ pub(crate) fn extract_binary(archive_path: &Path, dest_dir: &Path) -> Result<Pat
 /// On Windows, the running exe is locked and cannot be overwritten. We
 /// rename the current binary to `.bak` first (Windows allows renaming a
 /// locked file as long as we don't delete it), then move the new one in.
+///
+/// If `bin_path`'s parent dir is not writable (system path like
+/// `/usr/local/bin`), the three-step swap can't write temp/backup files
+/// there. Instead, on Unix we fall back to `sudo cp`; on Windows we print
+/// instructions to run as admin.
 pub(crate) fn swap_binary(bin_path: &Path, new_bin: &Path) -> Result<()> {
     // Append `.bak` to the full filename (e.g. `nvm` → `nvm.bak`,
     // `nvm.exe` → `nvm.exe.bak`). Using `with_extension` would mangle the
@@ -95,14 +117,76 @@ pub(crate) fn swap_binary(bin_path: &Path, new_bin: &Path) -> Result<()> {
             .unwrap_or_default(),
         BAK_SUFFIX
     ));
-    // Crash recovery marker: written before the risky step 2 (rename old→bak),
-    // removed after step 3 (rename tmp→bin) completes. If nvm crashes or is
-    // killed between steps 2 and 3, the marker survives and the next nvm
-    // invocation (or install.sh) can detect the interrupted swap and recover.
-    let pending = bin_path
-        .parent()
-        .unwrap_or(Path::new("."))
+    // Crash recovery marker: written to the user bin dir
+    // (`~/.nvm.rust/bin/.swap-pending`) which is always user-writable, so
+    // crash recovery works even when the binary lives in a system path like
+    // `/usr/local/bin` (where we can't write the marker next to the binary).
+    let pending = crate::system::get_nvm_dir()
+        .join("bin")
         .join(".swap-pending");
+
+    // If the binary's parent dir is not writable (system path), skip the
+    // three-step swap and use sudo cp (Unix) or print instructions (Windows).
+    let bin_parent = bin_path.parent().unwrap_or(Path::new("."));
+    if !is_dir_writable(bin_parent) {
+        #[cfg(unix)]
+        {
+            eprintln!(
+                "  {} {}",
+                "⚠".yellow().bold(),
+                format_t(
+                    "upgrade_sudo_required",
+                    std::slice::from_ref(&bin_path.display().to_string())
+                )
+            );
+            let status = std::process::Command::new("sudo")
+                .args([
+                    "cp",
+                    "-f",
+                    &new_bin.display().to_string(),
+                    &bin_path.display().to_string(),
+                ])
+                .status();
+            match status {
+                Ok(s) if s.success() => {
+                    // Ensure executable permissions on the copied binary.
+                    let _ = std::process::Command::new("sudo")
+                        .args(["chmod", "755", &bin_path.display().to_string()])
+                        .status();
+                    println!("  {} {}", "✓".green().bold(), T("upgrade_sudo_success"));
+                }
+                _ => {
+                    eprintln!(
+                        "  {} {}",
+                        "✗".red().bold(),
+                        format_t(
+                            "upgrade_sudo_failed",
+                            &[
+                                new_bin.display().to_string(),
+                                bin_path.display().to_string()
+                            ]
+                        )
+                    );
+                }
+            }
+            return Ok(());
+        }
+        #[cfg(not(unix))]
+        {
+            eprintln!(
+                "  {} Binary at {} requires admin to update",
+                "⚠".yellow().bold(),
+                bin_path.display()
+            );
+            eprintln!("  Run install.ps1 again as admin, or:");
+            eprintln!(
+                "    Start-Process -Verb RunAs -ArgumentList 'Copy-Item \"{}\" \"{}\" -Force'",
+                new_bin.display(),
+                bin_path.display()
+            );
+            return Ok(());
+        }
+    }
 
     println!(
         "  {} {} → {}",
@@ -167,21 +251,22 @@ pub(crate) fn swap_binary(bin_path: &Path, new_bin: &Path) -> Result<()> {
 }
 
 /// Check for and recover an interrupted swap_binary() operation.
-/// Called from main() on startup. If `.swap-pending` exists in the nvm bin
-/// directory, a previous upgrade crashed mid-swap. Try to recover:
+/// Called from main() on startup. If `.swap-pending` exists in the user
+/// bin dir (`~/.nvm.rust/bin/`), a previous upgrade crashed mid-swap. Try
+/// to recover:
 /// - If `nvm.tmp` exists → rename it to `nvm` (finish step 4)
 /// - If `nvm.bak` exists and `nvm` doesn't → rename `bak` back to `nvm`
 /// - Clean up the marker
+///
+/// The marker and recovery files live in the user bin dir (always
+/// user-writable) so recovery works even when the binary itself is in a
+/// system path like `/usr/local/bin` (where we can't write temp files).
 pub fn check_swap_recovery() {
-    let exe = match std::env::current_exe() {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    let bin_dir = match exe.parent() {
-        Some(d) => d,
-        None => return,
-    };
-    let pending = bin_dir.join(".swap-pending");
+    // The marker is always written to the user bin dir, not next to the
+    // binary. This ensures crash recovery works regardless of where the
+    // binary lives (system path or user path).
+    let user_bin_dir = crate::system::get_nvm_dir().join("bin");
+    let pending = user_bin_dir.join(".swap-pending");
     if !pending.exists() {
         return;
     }
@@ -192,9 +277,9 @@ pub fn check_swap_recovery() {
     );
 
     let bin_name = if cfg!(windows) { "nvm.exe" } else { "nvm" };
-    let bin_path = bin_dir.join(bin_name);
-    let tmp_path = bin_dir.join("nvm.tmp");
-    let bak_path = bin_dir.join(format!("{}{}", bin_name, BAK_SUFFIX));
+    let bin_path = user_bin_dir.join(bin_name);
+    let tmp_path = user_bin_dir.join("nvm.tmp");
+    let bak_path = user_bin_dir.join(format!("{}{}", bin_name, BAK_SUFFIX));
 
     // Case 1: nvm.tmp exists → swap was interrupted at step 4, finish it
     if tmp_path.exists() && !bin_path.exists() {
@@ -308,9 +393,46 @@ pub(crate) fn rollback_binary(bin_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::system::ENV_TESTS_MUTEX;
+    use std::env;
+    use tempfile::TempDir;
+
+    /// Guard that sets NVM_DIR to a temp dir for the test and restores the
+    /// old value on drop. This prevents the marker write in swap_binary
+    /// from touching the real ~/.nvm.rust/ directory.
+    struct NvmDirGuard {
+        old_value: Option<String>,
+        _dir: TempDir,
+        _mutex: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for NvmDirGuard {
+        fn drop(&mut self) {
+            match &self.old_value {
+                Some(v) => env::set_var("NVM_DIR", v),
+                None => env::remove_var("NVM_DIR"),
+            }
+        }
+    }
+
+    fn setup_temp_nvm_dir() -> NvmDirGuard {
+        let mutex = ENV_TESTS_MUTEX.lock().expect("mutex");
+        let old_value = env::var("NVM_DIR").ok();
+        let dir = tempfile::tempdir().expect("tempdir");
+        env::set_var("NVM_DIR", dir.path());
+        NvmDirGuard {
+            old_value,
+            _dir: dir,
+            _mutex: mutex,
+        }
+    }
 
     #[test]
     fn test_swap_binary_creates_backup_and_replaces() {
+        // Set NVM_DIR to a temp dir so the .swap-pending marker (now written
+        // to the user bin dir) doesn't touch the real ~/.nvm.rust/.
+        let _guard = setup_temp_nvm_dir();
+
         let dir = std::env::temp_dir();
         let bin_path = dir.join(format!("nvm_swap_test_{}", std::process::id()));
         let new_bin = dir.join(format!("nvm_swap_new_{}", std::process::id()));
