@@ -193,22 +193,12 @@ set "USER_BIN=%USERPROFILE%\.nvm.rust\bin\nvm.exe"
 set "INSTALL_DIR=%USERPROFILE%\.nvm.rust\bin"
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%" 2>nul
 if exist "%BIN_SRC%" (
-    REM EDR probe-first: if admin, probe system path before installing.
+    REM Simple admin check: if admin, install to system path (no probe).
     net session >nul 2>&1
     if !ERRORLEVEL! equ 0 (
         if not exist "%SYSTEM_DIR%" mkdir "%SYSTEM_DIR%" 2>nul
-        REM Probe: copy + execute --version
-        copy /Y "%BIN_SRC%" "%SYSTEM_DIR%\.nvm_probe.exe" >nul
-        "%SYSTEM_DIR%\.nvm_probe.exe" --version >nul 2>&1
-        if !ERRORLEVEL! equ 0 (
-            del "%SYSTEM_DIR%\.nvm_probe.exe" >nul 2>&1
-            copy /Y "%BIN_SRC%" "%SYSTEM_DIR%\nvm.exe" >nul
-            echo [OK] Copied to %SYSTEM_DIR%\nvm.exe (system path, EDR-safe)
-        ) else (
-            del "%SYSTEM_DIR%\.nvm_probe.exe" >nul 2>&1
-            copy /Y "%BIN_SRC%" "%USER_BIN%" >nul
-            echo [OK] EDR blocked system path. Copied to %USER_BIN%
-        )
+        copy /Y "%BIN_SRC%" "%SYSTEM_DIR%\nvm.exe" >nul
+        echo [OK] Copied to %SYSTEM_DIR%\nvm.exe (system path, EDR-safe)
     ) else (
         copy /Y "%BIN_SRC%" "%USER_BIN%" >nul
         echo [OK] Copied to %USER_BIN% (user path — run as admin for EDR-safe)

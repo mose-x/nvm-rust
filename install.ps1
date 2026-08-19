@@ -236,65 +236,41 @@ function Main {
         $sourceDir = $tmpDir
     }
 
-    # Install binary — EDR probe-first: if running as admin, try installing to
-    # Program Files\nvm-rust\ (system path, EDR trusts). Before committing the
-    # real binary, copy a probe and execute --version to verify EDR is not
-    # blocking execution. If the probe fails, fall back to user dir with a
-    # warning. If not admin, install to user dir directly.
+    # Install binary — simple admin check: if running as admin, install to
+    # Program Files\nvm-rust\ (system path, EDR trusts). No probe. If not
+    # admin, fall back to user dir with a warning to run as admin.
     $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
     $exeSource = Join-Path $sourceDir "nvm.exe"
 
     if ($isAdmin) {
-        # Probe: copy to system path and verify execution
+        # Install directly to system path (no probe)
         $systemDir = Join-Path $env:ProgramFiles "nvm-rust"
         if (-not (Test-Path $systemDir)) {
             New-Item -ItemType Directory -Path $systemDir -Force | Out-Null
         }
-        $probePath = Join-Path $systemDir ".nvm_probe.exe"
-        Copy-Item -Path $exeSource -Destination $probePath -Force
-        $probeOk = $false
-        try {
-            $probeResult = & $probePath --version 2>$null
-            if ($LASTEXITCODE -eq 0) { $probeOk = $true }
-        } catch {}
-        Remove-Item $probePath -Force -ErrorAction SilentlyContinue
+        $exeDest = Join-Path $systemDir "nvm.exe"
+        Copy-Item -Path $exeSource -Destination $exeDest -Force
+        Write-Success "Installed to $exeDest (system path, EDR-safe)"
 
-        if ($probeOk) {
-            # EDR-safe! Install real binary to system path
-            $exeDest = Join-Path $systemDir "nvm.exe"
-            Copy-Item -Path $exeSource -Destination $exeDest -Force
-            Write-Success "Installed to $exeDest (system path, EDR-safe)"
+        # Also create user bin dir (for nvm.sh/shell scripts that reference
+        # ~/.nvm.rust/bin/) and put a copy there too (Windows can't symlink
+        # without admin/developer mode, so we copy).
+        if (-not (Test-Path $InstallDir)) {
+            New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+        }
+        $userExe = Join-Path $InstallDir "nvm.exe"
+        Copy-Item -Path $exeSource -Destination $userExe -Force
 
-            # Also create user bin dir (for nvm.sh/shell scripts that reference
-            # ~/.nvm.rust/bin/) and put a copy there too (Windows can't symlink
-            # without admin/developer mode, so we copy).
-            if (-not (Test-Path $InstallDir)) {
-                New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-            }
-            $userExe = Join-Path $InstallDir "nvm.exe"
-            Copy-Item -Path $exeSource -Destination $userExe -Force
-
-            # Add system dir to user PATH (if not already there)
-            $pathKey = [Environment]::GetEnvironmentVariable("Path", "User")
-            $pathElements = if ($pathKey) { $pathKey -split ';' } else { @() }
-            if (-not ($pathElements -contains $systemDir)) {
-                $newPath = @($systemDir) + $pathElements
-                $newPathStr = $newPath -join ';'
-                [Environment]::SetEnvironmentVariable("Path", $newPathStr, "User")
-                $env:Path = "$systemDir;$env:Path"
-                Write-Success "Added $systemDir to PATH"
-            }
-        } else {
-            # EDR blocked execution in system path — fall back to user dir
-            Write-Warn "EDR blocked execution in $systemDir. Falling back to user dir."
-            if (-not (Test-Path $InstallDir)) {
-                New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-            }
-            $exeDest = Join-Path $InstallDir "nvm.exe"
-            Copy-Item -Path $exeSource -Destination $exeDest -Force
-            Write-Success "Installed to $exeDest"
-            Write-Warn "Contact IT to whitelist nvm in $systemDir"
+        # Add system dir to user PATH (if not already there)
+        $pathKey = [Environment]::GetEnvironmentVariable("Path", "User")
+        $pathElements = if ($pathKey) { $pathKey -split ';' } else { @() }
+        if (-not ($pathElements -contains $systemDir)) {
+            $newPath = @($systemDir) + $pathElements
+            $newPathStr = $newPath -join ';'
+            [Environment]::SetEnvironmentVariable("Path", $newPathStr, "User")
+            $env:Path = "$systemDir;$env:Path"
+            Write-Success "Added $systemDir to PATH"
         }
     } else {
         # Fallback: user dir (EDR risk)
@@ -304,7 +280,7 @@ function Main {
         $exeDest = Join-Path $InstallDir "nvm.exe"
         Copy-Item -Path $exeSource -Destination $exeDest -Force
         Write-Success "Installed to $exeDest"
-        Write-Warn "Installed to user dir — EDR may block. Run as admin for system path."
+        Write-Warn "Run as admin for system path (EDR-safe)"
     }
 
     # Install shell integration scripts shipped inside the tarball.

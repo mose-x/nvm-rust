@@ -90,70 +90,6 @@ pub(crate) fn is_dir_writable(dir: &Path) -> bool {
     }
 }
 
-/// Probe whether `dir` is EDR-safe: copy `probe_src` into `dir` as a
-/// hidden probe binary, execute `--version` with a 5s timeout, and return
-/// `true` only if the probe exited successfully.
-///
-/// EDR (Endpoint Detection & Response) software may allow file writes to
-/// system paths like `/usr/local/bin` but kill execution of binaries that
-/// weren't signed/allow-listed. Checking writability alone is insufficient;
-/// this probe-first approach verifies the binary can actually run.
-///
-/// - `dir`: candidate system bin directory (e.g. `/usr/local/bin`).
-/// - `probe_src`: path to the nvm binary to copy as the probe.
-///
-/// Returns `false` on any failure: copy error, spawn error, timeout, or
-/// non-zero exit. The probe file is always cleaned up.
-#[cfg_attr(not(unix), allow(dead_code))]
-pub(crate) fn probe_dir_for_edr(dir: &Path, probe_src: &Path) -> bool {
-    let probe_name = format!(".nvm_probe_{}", std::process::id());
-    let probe_path = dir.join(&probe_name);
-
-    // Copy probe binary
-    if fs::copy(probe_src, &probe_path).is_err() {
-        return false;
-    }
-
-    // Make executable (Unix)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&probe_path, fs::Permissions::from_mode(0o755));
-    }
-
-    // Execute with 5s timeout
-    let mut child = match std::process::Command::new(&probe_path)
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => {
-            let _ = fs::remove_file(&probe_path);
-            return false;
-        }
-    };
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let ok = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.success(),
-            Ok(None) if std::time::Instant::now() > deadline => {
-                let _ = child.kill();
-                break false;
-            }
-            Ok(None) => {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            Err(_) => break false,
-        }
-    };
-
-    let _ = fs::remove_file(&probe_path);
-    ok
-}
-
 /// Swap `new_bin` into `bin_path`, backing up the current binary to
 /// `bin_path.bak` first.
 ///
@@ -496,45 +432,29 @@ mod tests {
     }
 
     #[test]
-    fn test_probe_dir_for_edr_returns_false_for_nonexistent_dir() {
+    fn test_is_dir_writable_true_for_writable_dir() {
         let _guard = setup_temp_nvm_dir();
-        let probe_src = std::env::current_exe().expect("current exe");
-        let fake_dir = std::path::Path::new("/nonexistent/nvm/probe/test");
+        let dir = std::env::temp_dir();
+        assert!(dir.is_dir(), "temp dir should exist");
         assert!(
-            !probe_dir_for_edr(fake_dir, &probe_src),
-            "probe_dir_for_edr should return false for non-existent dir"
+            is_dir_writable(&dir),
+            "is_dir_writable should return true for a writable dir"
+        );
+        // Verify the probe temp file was cleaned up
+        let probe = dir.join(format!(".nvm_writable_test_{}", std::process::id()));
+        assert!(
+            !probe.exists(),
+            "is_dir_writable should clean up its probe temp file"
         );
     }
 
-    #[cfg(unix)]
     #[test]
-    fn test_probe_dir_for_edr_returns_true_for_writable_executable_dir() {
-        // probe_dir_for_edr copies the probe_src into a temp dir, executes
-        // --version, and returns true on success. Use a shell script that
-        // exits 0 as the probe source (the test binary itself doesn't
-        // handle --version because its entry point is the test harness,
-        // not main()).
+    fn test_is_dir_writable_false_for_nonexistent_dir() {
         let _guard = setup_temp_nvm_dir();
-        // Create a simple script that exits 0 as the probe source
-        let probe_src = std::env::temp_dir().join(format!("nvm_probe_src_{}", std::process::id()));
-        std::fs::write(&probe_src, "#!/bin/sh\nexit 0\n").expect("write probe script");
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&probe_src, std::fs::Permissions::from_mode(0o755));
-
-        let dir = std::env::temp_dir();
-        assert!(dir.is_dir());
-        let result = probe_dir_for_edr(&dir, &probe_src);
+        let fake_dir = std::path::Path::new("/nonexistent/nvm/writable/test");
         assert!(
-            result,
-            "probe_dir_for_edr should return true for writable+executable dir (probe script exits 0)"
+            !is_dir_writable(fake_dir),
+            "is_dir_writable should return false for a non-existent dir"
         );
-        // Verify probe file was cleaned up
-        let probe_name = format!(".nvm_probe_{}", std::process::id());
-        assert!(
-            !dir.join(&probe_name).exists(),
-            "probe file should be cleaned up after probe_dir_for_edr"
-        );
-        // Clean up probe source
-        let _ = std::fs::remove_file(&probe_src);
     }
 }
