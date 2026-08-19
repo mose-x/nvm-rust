@@ -13,6 +13,44 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
+/// Sanitize proxy environment variables for corepack child processes.
+///
+/// Corepack (via undici) rejects proxy URLs that don't start with `http:` or
+/// `https:` — including empty strings, bare `host:port`, and `socks5://`.
+/// This function checks each proxy env var and returns overrides that either
+/// fix the scheme (prepend `http://` if missing) or clear the var entirely
+/// (empty/socks/unparseable). Returns a Vec suitable for `Command::envs()`.
+fn sanitize_proxy_env_for_corepack() -> Vec<(String, String)> {
+    let mut overrides = Vec::new();
+    for key in &[
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        if let Ok(val) = std::env::var(key) {
+            if val.is_empty() {
+                // Empty string → clear it (undici rejects empty proxy URLs)
+                overrides.push((key.to_string(), String::new()));
+            } else if val.starts_with("http://") || val.starts_with("https://") {
+                // Valid HTTP(S) proxy — keep as-is
+            } else if val.starts_with("socks") {
+                // SOCKS proxy → undici can't use it, clear to avoid error
+                overrides.push((key.to_string(), String::new()));
+            } else if val.contains("://") {
+                // Other scheme (ftp://, etc.) → clear
+                overrides.push((key.to_string(), String::new()));
+            } else {
+                // Bare host:port → prepend http://
+                overrides.push((key.to_string(), format!("http://{}", val)));
+            }
+        }
+    }
+    overrides
+}
+
 use crate::config::load_config;
 use crate::i18n::{format_t, T};
 use crate::system::{exe_path, get_nvm_dir, prepend_to_path, version_bin_dir, NPM_REGISTRY};
@@ -366,6 +404,10 @@ pub(crate) fn install_latest_pnpm_via_corepack(version: &str) -> Result<()> {
     );
 
     let path_env = prepend_to_path(&bin_dir);
+    // Sanitize proxy env vars for corepack: undici's ProxyAgent rejects
+    // empty/malformed values (e.g. `https_proxy=""` or `socks5://...`).
+    // If nvm's proxy is off, clear them entirely; if on, ensure http:// prefix.
+    let proxy_env_overrides = sanitize_proxy_env_for_corepack();
     if let Err(e) = crate::corepack::corepack_enable(Some(version)) {
         eprintln!(
             "  {} corepack enable failed: {} — continuing with prepare",
@@ -377,6 +419,8 @@ pub(crate) fn install_latest_pnpm_via_corepack(version: &str) -> Result<()> {
     let status = Command::new(&corepack_path)
         .args(["prepare", "pnpm@latest", "--activate"])
         .env("PATH", &path_env)
+        .env("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0")
+        .envs(proxy_env_overrides)
         .status()
         .context(format_t(
             "package_upgrade_spawn_failed",
@@ -390,6 +434,8 @@ pub(crate) fn install_latest_pnpm_via_corepack(version: &str) -> Result<()> {
         if let Ok(mut child) = Command::new(&corepack_path)
             .args(["pnpm", "--version"])
             .env("PATH", &path_env)
+            .env("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0")
+            .envs(sanitize_proxy_env_for_corepack())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -421,6 +467,94 @@ pub fn install_latest_pnpm(version: Option<&str>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_sanitize_proxy_clears_empty_string() {
+        let _guard = crate::system::ENV_TESTS_MUTEX
+            .lock()
+            .expect("ENV_TESTS_MUTEX poisoned");
+        std::env::set_var("http_proxy", "");
+        let overrides = sanitize_proxy_env_for_corepack();
+        let http_proxy = overrides
+            .iter()
+            .find(|(k, _)| k == "http_proxy")
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("UNSET");
+        assert_eq!(
+            http_proxy, "",
+            "empty proxy should be cleared to empty string"
+        );
+        std::env::remove_var("http_proxy");
+    }
+
+    #[test]
+    fn test_sanitize_proxy_clears_socks() {
+        let _guard = crate::system::ENV_TESTS_MUTEX
+            .lock()
+            .expect("ENV_TESTS_MUTEX poisoned");
+        std::env::set_var("https_proxy", "socks5://127.0.0.1:7890");
+        let overrides = sanitize_proxy_env_for_corepack();
+        let https = overrides
+            .iter()
+            .find(|(k, _)| k == "https_proxy")
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("UNSET");
+        assert_eq!(https, "", "socks5 proxy should be cleared");
+        std::env::remove_var("https_proxy");
+    }
+
+    #[test]
+    fn test_sanitize_proxy_prepends_http_to_bare_host() {
+        let _guard = crate::system::ENV_TESTS_MUTEX
+            .lock()
+            .expect("ENV_TESTS_MUTEX poisoned");
+        std::env::set_var("HTTP_PROXY", "127.0.0.1:7890");
+        let overrides = sanitize_proxy_env_for_corepack();
+        let http = overrides
+            .iter()
+            .find(|(k, _)| k == "HTTP_PROXY")
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("UNSET");
+        assert_eq!(
+            http, "http://127.0.0.1:7890",
+            "bare host should get http:// prefix"
+        );
+        std::env::remove_var("HTTP_PROXY");
+    }
+
+    #[test]
+    fn test_sanitize_proxy_keeps_valid_http() {
+        let _guard = crate::system::ENV_TESTS_MUTEX
+            .lock()
+            .expect("ENV_TESTS_MUTEX poisoned");
+        std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:7890");
+        let overrides = sanitize_proxy_env_for_corepack();
+        // Valid http:// proxy should NOT appear in overrides (kept as-is, no override needed)
+        let has_override = overrides.iter().any(|(k, _)| k == "HTTPS_PROXY");
+        assert!(
+            !has_override,
+            "valid http:// proxy should not need override"
+        );
+        std::env::remove_var("HTTPS_PROXY");
+    }
+
+    #[test]
+    fn test_sanitize_proxy_no_env_returns_empty() {
+        let _guard = crate::system::ENV_TESTS_MUTEX
+            .lock()
+            .expect("ENV_TESTS_MUTEX poisoned");
+        std::env::remove_var("HTTP_PROXY");
+        std::env::remove_var("HTTPS_PROXY");
+        std::env::remove_var("http_proxy");
+        std::env::remove_var("https_proxy");
+        std::env::remove_var("ALL_PROXY");
+        std::env::remove_var("all_proxy");
+        let overrides = sanitize_proxy_env_for_corepack();
+        assert!(
+            overrides.is_empty(),
+            "no proxy env vars should return empty overrides"
+        );
+    }
 
     /// Build a real SRI `sha512-<base64>` integrity string for `contents`
     /// so the verify_npm_integrity tests don't depend on a hardcoded hash.

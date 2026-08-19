@@ -358,13 +358,28 @@ pub fn corepack_enable(version: Option<&str>) -> anyhow::Result<()> {
             resolved.white().bold()
         );
     } else if shims_present {
-        // Already enabled (e.g. shims pre-existed from a previous run).
-        println!(
-            "{} {} {}",
-            "✓".green().bold(),
-            T("corepack_enabled_for").green(),
-            resolved.white().bold()
-        );
+        // Shims exist, but verify they're actually corepack-managed (not
+        // leftover npm-installed shims from a previous fallback).
+        let is_corepack_shim = COREPACK_SHIMS.iter().any(|t| {
+            let p = exe_path(&version_bin, t);
+            p.exists()
+                && std::fs::read_to_string(&p)
+                    .map(|c| c.contains("corepack"))
+                    .unwrap_or(false)
+        });
+        if is_corepack_shim {
+            println!(
+                "{} {} {}",
+                "✓".green().bold(),
+                T("corepack_enabled_for").green(),
+                resolved.white().bold()
+            );
+        } else {
+            anyhow::bail!(
+                "{}",
+                format_t("corepack_enable_failed", std::slice::from_ref(&resolved))
+            );
+        }
     } else {
         anyhow::bail!(
             "{}",

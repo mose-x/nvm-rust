@@ -408,3 +408,74 @@ fn install_ps1_shim_respects_nvm_dir() {
         "install.ps1 shim script must respect existing NVM_DIR (if not defined)"
     );
 }
+
+/// Issue 1: .cargo/config.toml must have devbuild alias for auto-copy.
+#[test]
+fn cargo_config_has_devbuild_alias() {
+    let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(".cargo")
+        .join("config.toml");
+    let content = fs::read_to_string(&config).expect(".cargo/config.toml must exist");
+    assert!(
+        content.contains("devbuild"),
+        ".cargo/config.toml must have devbuild alias"
+    );
+}
+
+/// Issue 3: package_upgrade.rs must set COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+/// to suppress the interactive "Do you want to continue?" prompt.
+#[test]
+fn package_upgrade_sets_download_prompt_off() {
+    let src =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/package_upgrade.rs");
+    let content = fs::read_to_string(&src).expect("package_upgrade.rs must exist");
+    assert!(
+        content.contains("COREPACK_ENABLE_DOWNLOAD_PROMPT"),
+        "package_upgrade.rs must set COREPACK_ENABLE_DOWNLOAD_PROMPT"
+    );
+}
+
+/// Issue 4: info.rs must have probe_tool_version for corepack shim detection.
+#[test]
+fn info_has_probe_tool_version() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/info.rs");
+    let content = fs::read_to_string(&src).expect("info.rs must exist");
+    assert!(
+        content.contains("fn probe_tool_version"),
+        "info.rs must have probe_tool_version for corepack shim fallback"
+    );
+}
+
+/// Issue 5: shell_config.rs source line must have [ -f ] guard.
+#[test]
+fn shell_config_source_has_file_guard() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shell_config.rs");
+    let content = fs::read_to_string(&src).expect("shell_config.rs must exist");
+    assert!(
+        content.contains("[ -f "),
+        "shell_config.rs source line must have [ -f ] guard"
+    );
+}
+
+/// Issue 5: refresh.rs must NOT skip download when nvm.sh is missing.
+#[test]
+fn refresh_does_not_skip_missing_nvm_sh() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/refresh.rs");
+    let content = fs::read_to_string(&src).expect("refresh.rs must exist");
+    assert!(
+        !content.contains("if !nvm_sh_path.exists()"),
+        "refresh.rs must not skip when nvm.sh is missing (should download/create)"
+    );
+}
+
+/// Issue 6: corepack.rs must verify shim content contains "corepack"
+/// before reporting "already enabled" (prevents false positive on npm shims).
+#[test]
+fn corepack_verifies_shim_content() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/corepack.rs");
+    let content = fs::read_to_string(&src).expect("corepack.rs must exist");
+    assert!(
+        content.contains("is_corepack_shim"),
+        "corepack.rs must verify shim content contains 'corepack' (not just file existence)"
+    );
+}

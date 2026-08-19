@@ -130,12 +130,10 @@ fn validate_current(nvm_dir: &Path) -> CurrentStatus {
 }
 
 /// Download the latest nvm.sh from GitHub raw, overwriting the local copy.
-/// Skips if nvm.sh doesn't exist (user didn't install via install.sh).
+/// Creates the file if it doesn't exist (e.g. user installed via cargo
+/// install, not install.sh — nvm.sh was never copied to bin/).
 fn refresh_nvm_sh(nvm_dir: &Path) -> Result<()> {
     let nvm_sh_path = nvm_dir.join("bin").join("nvm.sh");
-    if !nvm_sh_path.exists() {
-        return Ok(());
-    }
 
     let url = "https://raw.githubusercontent.com/mose-x/nvm-rust/main/shell/nvm.sh";
     let client = crate::proxy::build_http_client();

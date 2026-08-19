@@ -355,7 +355,7 @@ pub fn migrate_rc_to_shim_mode() -> Result<()> {
                 r#"export PATH="{}:{}:{}:$PATH""#,
                 shims, active_bin, nvm_bin
             ),
-            format!(r#"source "{}""#, nvm_sh_path),
+            format!(r#"[ -f "{}" ] && source "{}""#, nvm_sh_path, nvm_sh_path),
         )
     };
 
@@ -637,11 +637,19 @@ export PATH="{nvm}/shims:{nvm}/v22.0.0/bin:$PATH"
             content.contains("active"),
             "migrated rc must include active in PATH: {content}"
         );
-        // P0-2: source/Import-Module reference must be present
+        // P0-2: source/Import-Module reference must be present, with [ -f ] guard
+        // (prevents .zshrc error when nvm.sh doesn't exist yet)
         assert!(
             content.contains("nvm.sh") || content.contains("nvm.psm1"),
             "migrated rc must include nvm.sh or nvm.psm1 reference: {content}"
         );
+        // Unix source line must have [ -f ] guard (Issue 5 fix)
+        if !cfg!(windows) {
+            assert!(
+                content.contains("[ -f ") || content.contains("Import-Module"),
+                "rc source line must have [ -f ] guard (Unix) or Import-Module (Windows): {content}"
+            );
+        }
         // Old version-specific path must be gone
         assert!(
             !content.contains("v22.0.0/bin"),
