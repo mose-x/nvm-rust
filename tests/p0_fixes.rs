@@ -582,26 +582,27 @@ fn build_scripts_have_auto_copy() {
     );
 }
 
-/// EDR-safe layout: install.sh must use a probe-first candidate chain.
-/// Instead of hardcoded /usr/local/bin + sudo, it probes each candidate
-/// by copying a probe binary and executing --version. No auto-sudo.
+/// EDR-safe layout: install.sh must use a simple writability check (not a
+/// probe-first approach). It checks [ -w "/usr/local/bin" ] directly, copies
+/// the binary + creates a reverse symlink. No probe, no auto-sudo.
 #[test]
-fn install_sh_uses_probe_chain() {
+fn install_sh_uses_writability_check() {
     let install_sh = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
     let content = fs::read_to_string(&install_sh).expect("install.sh must exist");
-    // Must have the probe candidate chain
+    // Must check writability of /usr/local/bin directly
     assert!(
-        content.contains("SYSTEM_CANDIDATES"),
-        "install.sh must define SYSTEM_CANDIDATES for probe chain"
+        content.contains("[ -w \"/usr/local/bin\""),
+        "install.sh must check [ -w \"/usr/local/bin\" ] for writability"
     );
+    // Must NOT use probe binary
     assert!(
-        content.contains("/usr/local/bin") && content.contains("/opt/homebrew/bin"),
-        "install.sh must include /usr/local/bin and /opt/homebrew/bin as candidates"
+        !content.contains(".nvm_probe_"),
+        "install.sh must NOT use a probe binary (.nvm_probe_) — use writability check"
     );
-    // Must have probe binary name
+    // Must NOT define SYSTEM_CANDIDATES
     assert!(
-        content.contains(".nvm_probe_"),
-        "install.sh must copy a probe binary (.nvm_probe_) before executing"
+        !content.contains("SYSTEM_CANDIDATES"),
+        "install.sh must NOT define SYSTEM_CANDIDATES — use direct /usr/local/bin"
     );
     // Must create symlink from user dir to system path
     assert!(
@@ -618,18 +619,18 @@ fn install_sh_uses_probe_chain() {
         content.contains("EDR"),
         "install.sh must warn about EDR when falling back to user dir"
     );
-    // Uninstall must try all candidates
+    // Uninstall must target /usr/local/bin
     assert!(
-        content.contains("/opt/homebrew/bin"),
-        "install.sh uninstall must try /opt/homebrew/bin as well as /usr/local/bin"
+        content.contains("/usr/local/bin/${BINARY_NAME}"),
+        "install.sh uninstall must target /usr/local/bin"
     );
 }
 
-/// EDR-safe layout: binary_swap.rs must have probe_dir_for_edr function
+/// EDR-safe layout: binary_swap.rs must have is_dir_writable (not probe)
 /// and must NOT auto-sudo in swap_binary. Instead, it prints explicit
 /// manual instructions when the system path is not writable.
 #[test]
-fn binary_swap_has_probe_and_no_auto_sudo() {
+fn binary_swap_has_writability_check_and_no_auto_sudo() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/binary_swap.rs");
     let content = fs::read_to_string(&src).expect("binary_swap.rs must exist");
     // Must have is_dir_writable to detect system paths
@@ -637,10 +638,10 @@ fn binary_swap_has_probe_and_no_auto_sudo() {
         content.contains("is_dir_writable"),
         "binary_swap.rs must have is_dir_writable function to detect system paths"
     );
-    // Must have probe_dir_for_edr for EDR-safe probing
+    // Must NOT have probe_dir_for_edr (removed in favor of writability check)
     assert!(
-        content.contains("fn probe_dir_for_edr"),
-        "binary_swap.rs must have probe_dir_for_edr function for EDR probe-first"
+        !content.contains("fn probe_dir_for_edr"),
+        "binary_swap.rs must NOT have probe_dir_for_edr — use is_dir_writable"
     );
     // Must have .swap-pending marker in user bin dir.
     // cargo fmt may split the chained .join() across lines, so check
@@ -664,8 +665,8 @@ fn binary_swap_has_probe_and_no_auto_sudo() {
 }
 
 /// EDR-safe layout: refresh.rs must have migrate_binary_to_system_path
-/// function that uses probe_dir_for_edr to auto-migrate old-layout binaries
-/// to the new EDR-safe layout. No auto-sudo.
+/// function that uses is_dir_writable to auto-migrate old-layout binaries
+/// to the new EDR-safe layout. No auto-sudo, no probe.
 #[test]
 fn refresh_has_migrate_binary_to_system_path() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/refresh.rs");
@@ -680,10 +681,15 @@ fn refresh_has_migrate_binary_to_system_path() {
         content.contains("symlink_metadata"),
         "refresh.rs must use symlink_metadata to check if binary is already a symlink"
     );
-    // Must use probe_dir_for_edr for EDR-safe probing (not just writability)
+    // Must use is_dir_writable for writability check (not probe)
     assert!(
-        content.contains("probe_dir_for_edr"),
-        "refresh.rs must use probe_dir_for_edr to verify EDR-safe execution before migration"
+        content.contains("is_dir_writable"),
+        "refresh.rs must use is_dir_writable to check system path writability before migration"
+    );
+    // Must NOT use probe_dir_for_edr (removed in favor of writability check)
+    assert!(
+        !content.contains("probe_dir_for_edr"),
+        "refresh.rs must NOT use probe_dir_for_edr — use is_dir_writable"
     );
     // Must create symlink after migration
     assert!(
@@ -725,12 +731,11 @@ fn doctor_has_edr_risk_check() {
     );
 }
 
-/// P2-1: install.sh and build scripts must check /usr/local/bin exists
-/// and use a probe-first approach (no auto-sudo). Previously scripts checked
-/// `command -v sudo` before sudo cp; now they check `[ -d` and `[ -w` on
-/// each candidate and probe by executing --version.
+/// P2-1: install.sh and build scripts must check /usr/local/bin writability
+/// (no probe, no auto-sudo). They use [ -d and [ -w on /usr/local/bin
+/// instead of probing by executing --version.
 #[test]
-fn scripts_use_probe_chain_no_auto_sudo() {
+fn scripts_use_writability_check_no_auto_sudo() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     for script in &[
         "install.sh",
@@ -740,16 +745,16 @@ fn scripts_use_probe_chain_no_auto_sudo() {
     ] {
         let path = manifest.join(script);
         let content = fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} must exist", script));
-        // Must have a probe binary name pattern
+        // Must NOT use a probe binary
         assert!(
-            content.contains(".nvm_probe_"),
-            "{} must use a probe binary (.nvm_probe_) for EDR probe-first",
+            !content.contains(".nvm_probe_"),
+            "{} must NOT use a probe binary (.nvm_probe_) — use writability check",
             script
         );
-        // Must check directory existence before probing
+        // Must check /usr/local/bin existence and writability
         assert!(
-            content.contains("[ -d "),
-            "{} must check directory existence ([ -d) before probing",
+            content.contains("[ -d \"/usr/local/bin\""),
+            "{} must check /usr/local/bin existence ([ -d) and writability",
             script
         );
     }
@@ -796,11 +801,11 @@ fn edr_i18n_keys_exist() {
     }
 }
 
-/// Fix 1: refresh.rs must check writability and probe EDR safety before
-/// installing to system path. The old code used `can_write` + sudo; the
-/// new code uses `is_dir_writable` + `probe_dir_for_edr`.
+/// Fix 1: refresh.rs must check writability before installing to system
+/// path. The old code used `can_write` + sudo; the new code uses
+/// `is_dir_writable` (no probe).
 #[test]
-fn refresh_checks_writability_and_probes() {
+fn refresh_checks_writability() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/refresh.rs");
     let content = fs::read_to_string(&src).expect("refresh.rs must exist");
     assert!(
@@ -808,8 +813,8 @@ fn refresh_checks_writability_and_probes() {
         "refresh.rs must check writability with is_dir_writable before installing to system path"
     );
     assert!(
-        content.contains("probe_dir_for_edr"),
-        "refresh.rs must probe EDR safety with probe_dir_for_edr before installing"
+        !content.contains("probe_dir_for_edr"),
+        "refresh.rs must NOT use probe_dir_for_edr — writability check only"
     );
 }
 
@@ -907,26 +912,6 @@ fn run_isolated_sets_home() {
     );
 }
 
-/// EDR probe-first: system.rs must define system bin candidate constants.
-#[test]
-fn system_has_bin_candidate_constants() {
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/system.rs");
-    let content = fs::read_to_string(&src).expect("system.rs must exist");
-    assert!(
-        content.contains("SYSTEM_BIN_CANDIDATES_UNIX"),
-        "system.rs must define SYSTEM_BIN_CANDIDATES_UNIX constant"
-    );
-    assert!(
-        content.contains("SYSTEM_BIN_CANDIDATE_WINDOWS"),
-        "system.rs must define SYSTEM_BIN_CANDIDATE_WINDOWS constant"
-    );
-    // Unix candidates must include /usr/local/bin and /opt/homebrew/bin
-    assert!(
-        content.contains("/usr/local/bin") && content.contains("/opt/homebrew/bin"),
-        "SYSTEM_BIN_CANDIDATES_UNIX must include /usr/local/bin and /opt/homebrew/bin"
-    );
-}
-
 /// Config ownership: main.rs must check config.json ownership (root-owned
 /// warning on Unix).
 #[test]
@@ -958,55 +943,62 @@ fn doctor_has_config_ownership_check() {
     );
 }
 
-/// EDR probe-first: install.ps1 must probe system path before installing.
+/// EDR-safe layout: install.ps1 must use a simple admin check (not a probe)
+/// to install to system path. No probe binary.
 #[test]
-fn install_ps1_uses_probe_chain() {
+fn install_ps1_uses_admin_check() {
     let install_ps1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.ps1");
     let content = fs::read_to_string(&install_ps1).expect("install.ps1 must exist");
-    // Must have probe binary
+    // Must NOT use a probe binary
     assert!(
-        content.contains(".nvm_probe"),
-        "install.ps1 must use a probe binary (.nvm_probe) for EDR probe-first"
+        !content.contains(".nvm_probe"),
+        "install.ps1 must NOT use a probe binary (.nvm_probe) — use simple admin check"
     );
-    // Must execute probe with --version
+    // Must check admin status via IsInRole
     assert!(
-        content.contains("--version"),
-        "install.ps1 must execute probe with --version to verify EDR safety"
+        content.contains("IsInRole"),
+        "install.ps1 must check admin status via IsInRole"
     );
-    // Must have EDR fallback warning
+    // Must have EDR warning for fallback
     assert!(
         content.contains("EDR"),
-        "install.ps1 must warn about EDR when probe fails"
+        "install.ps1 must warn about EDR when falling back to user dir"
     );
 }
 
-/// EDR probe-first: build-windows.bat must probe system path before installing.
+/// EDR-safe layout: build-windows.bat must use a simple admin check (not a
+/// probe) to install to system path.
 #[test]
-fn build_windows_uses_probe_chain() {
+fn build_windows_uses_admin_check() {
     let bat = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/build-windows.bat");
     let content = fs::read_to_string(&bat).expect("build-windows.bat must exist");
+    // Must NOT use a probe binary
     assert!(
-        content.contains(".nvm_probe"),
-        "build-windows.bat must use a probe binary for EDR probe-first"
+        !content.contains(".nvm_probe"),
+        "build-windows.bat must NOT use a probe binary — use simple admin check"
     );
+    // Must check admin via net session
     assert!(
-        content.contains("--version"),
-        "build-windows.bat must execute probe with --version"
+        content.contains("net session"),
+        "build-windows.bat must check admin via 'net session'"
     );
 }
 
-/// EDR probe-first: devbuild.bat must probe system path before installing.
+/// EDR-safe layout: devbuild.bat must use a simple admin check (not a
+/// probe) to install to system path.
 #[test]
-fn devbuild_bat_uses_probe_chain() {
+fn devbuild_bat_uses_admin_check() {
     let bat = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/devbuild.bat");
     let content = fs::read_to_string(&bat).expect("devbuild.bat must exist");
+    // Must NOT use a probe binary
     assert!(
-        content.contains(".nvm_probe"),
-        "devbuild.bat must use a probe binary for EDR probe-first"
+        !content.contains(".nvm_probe"),
+        "devbuild.bat must NOT use a probe binary — use simple admin check"
     );
+    // Must check admin via net session
     assert!(
-        content.contains("--version"),
-        "devbuild.bat must execute probe with --version"
+        content.contains("net session"),
+        "devbuild.bat must check admin via 'net session'"
     );
 }
 

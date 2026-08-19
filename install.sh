@@ -365,41 +365,27 @@ main() {
         source_dir="$tmp_dir"
     fi
 
-    # Install binary — EDR probe-first: try each system candidate by
-    # copying a probe binary and executing --version. Only if the probe
-    # succeeds (EDR not blocking) do we install the real binary there and
-    # create a reverse symlink (user dir → system path).
-    # No auto-sudo: if a candidate dir is not writable, it is skipped.
-    # The user can run `sudo install.sh` to make system dirs writable.
-    # Fallback: user dir with an EDR warning.
+    # Install binary — simple writability check: try /usr/local/bin directly.
+    # If the dir exists and is writable, copy the real binary there and create
+    # a reverse symlink (user dir → system path). No probe, no auto-sudo.
+    # If not writable but sudo is available, suggest the manual sudo command
+    # and fall back to the user dir. Otherwise install to the user dir.
     mkdir -p "$INSTALL_DIR"
-    SYSTEM_CANDIDATES="/usr/local/bin /opt/homebrew/bin"
-    INSTALL_DONE=0
-    for cand in $SYSTEM_CANDIDATES; do
-        [ -d "$cand" ] || continue
-        [ -w "$cand" ] || continue
-        # Probe: copy + execute
-        cp -f "${source_dir}/${BINARY_NAME}" "$cand/.nvm_probe_$$"
-        chmod +x "$cand/.nvm_probe_$$"
-        if "$cand/.nvm_probe_$$" --version >/dev/null 2>&1; then
-            # EDR-safe! Install real binary + reverse symlink
-            cp -f "${source_dir}/${BINARY_NAME}" "$cand/${BINARY_NAME}"
-            chmod +x "$cand/${BINARY_NAME}"
-            ln -sf "$cand/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
-            success "Installed to $cand/${BINARY_NAME} (EDR-safe)"
-            INSTALL_DONE=1
-            break
-        fi
-        rm -f "$cand/.nvm_probe_$$"
-    done
-
-    if [ "$INSTALL_DONE" = "0" ]; then
-        # Fallback: user dir with EDR warning
+    if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
+        cp -f "${source_dir}/${BINARY_NAME}" "/usr/local/bin/${BINARY_NAME}"
+        chmod +x "/usr/local/bin/${BINARY_NAME}"
+        ln -sf "/usr/local/bin/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+        success "Installed to /usr/local/bin/${BINARY_NAME} (EDR-safe)"
+    elif [ -d "/usr/local/bin" ] && command -v sudo &>/dev/null; then
+        # Suggest sudo (no auto-sudo)
+        warn "Run for system path: sudo cp ${BINARY_NAME} /usr/local/bin/${BINARY_NAME} && sudo ln -sf /usr/local/bin/${BINARY_NAME} ${INSTALL_DIR}/${BINARY_NAME}"
         cp -f "${source_dir}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
         chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
-        warn "EDR blocked all system paths. Installed to user dir."
-        warn "Contact IT to whitelist nvm in /usr/local/bin or /opt/homebrew/bin"
-        warn "Or run: sudo install.sh"
+        success "Installed to ${INSTALL_DIR}/${BINARY_NAME} (user dir fallback)"
+    else
+        cp -f "${source_dir}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+        chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
+        warn "Installed to user dir — EDR may block"
     fi
 
     # Create shim scripts for node/npm/npx/corepack so they resolve
@@ -517,16 +503,14 @@ main() {
     # the binary is in the user dir). With the new EDR-safe layout, the
     # symlink is already created (user dir → system path), so this only
     # runs in the fallback case where the binary ended up in the user dir.
-    for cand in $SYSTEM_CANDIDATES; do
-        [ -d "$cand" ] || continue
-        [ -w "$cand" ] || continue
-        local sys_link="$cand/${BINARY_NAME}"
+    if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
+        local sys_link="/usr/local/bin/${BINARY_NAME}"
         if [ ! -f "$sys_link" ] && [ ! -L "$sys_link" ]; then
             ln -sf "${INSTALL_DIR}/${BINARY_NAME}" "$sys_link" 2>/dev/null && \
                 success "Symlink created: $sys_link" || \
                 warn "Could not create symlink at $sys_link (permission denied)"
         fi
-    done
+    fi
 
     echo ""
     success "nvm-rs $version installed successfully!"
@@ -570,15 +554,13 @@ uninstall_self() {
     rm -f "${nvm_dir}/bin/nvm" "${nvm_dir}/bin/nvm.sh" 2>/dev/null || true
     rm -rf "${nvm_dir}/shims" 2>/dev/null || true
     rm -f "${nvm_dir}/current" 2>/dev/null || true
-    # System-path binary may be at any candidate dir (root-owned if installed
-    # via sudo). Try regular rm first, then sudo if needed. Try all candidates.
-    for cand in /usr/local/bin /opt/homebrew/bin; do
-        local sys_link="$cand/${BINARY_NAME}"
-        rm -f "$sys_link" 2>/dev/null || true
-        if [ -e "$sys_link" ] && command -v sudo &>/dev/null; then
-            sudo rm -f "$sys_link" 2>/dev/null || true
-        fi
-    done
+    # System-path binary may be in /usr/local/bin (root-owned if installed
+    # via sudo). Try regular rm first, then sudo if it still exists.
+    local sys_link="/usr/local/bin/${BINARY_NAME}"
+    rm -f "$sys_link" 2>/dev/null || true
+    if [ -e "$sys_link" ] && command -v sudo &>/dev/null; then
+        sudo rm -f "$sys_link" 2>/dev/null || true
+    fi
     clean_shell_config
 
     echo ""
@@ -599,15 +581,13 @@ uninstall_all() {
 
     local nvm_dir="$NVM_DIR"
     rm -rf "$nvm_dir" 2>/dev/null || true
-    # System-path binary may be at any candidate dir (root-owned if installed
-    # via sudo). Try regular rm first, then sudo if needed. Try all candidates.
-    for cand in /usr/local/bin /opt/homebrew/bin; do
-        local sys_link="$cand/${BINARY_NAME}"
-        rm -f "$sys_link" 2>/dev/null || true
-        if [ -e "$sys_link" ] && command -v sudo &>/dev/null; then
-            sudo rm -f "$sys_link" 2>/dev/null || true
-        fi
-    done
+    # System-path binary may be in /usr/local/bin (root-owned if installed
+    # via sudo). Try regular rm first, then sudo if it still exists.
+    local sys_link="/usr/local/bin/${BINARY_NAME}"
+    rm -f "$sys_link" 2>/dev/null || true
+    if [ -e "$sys_link" ] && command -v sudo &>/dev/null; then
+        sudo rm -f "$sys_link" 2>/dev/null || true
+    fi
     clean_shell_config
 
     echo ""

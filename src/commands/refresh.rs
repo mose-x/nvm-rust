@@ -129,11 +129,11 @@ pub fn refresh() -> Result<()> {
 /// ~/.nvm.rust/bin/nvm          ← symlink → /usr/local/bin/nvm
 /// ```
 ///
-/// This function probes each system bin candidate by copying a probe
-/// binary and executing `--version`. Only if the probe succeeds (EDR is
-/// not blocking) does it install the real binary and create the reverse
-/// symlink. No auto-sudo — if no candidate is writable+executable, it
-/// prints an explicit message telling the user how to do it manually.
+/// This function tries `/usr/local/bin` directly: if the directory
+/// exists and is writable, it copies the real binary there and creates the
+/// reverse symlink. No probe, no auto-sudo — if the directory is not
+/// writable, it prints an explicit message telling the user how to do it
+/// manually.
 ///
 /// Safe to call on all platforms. On Windows, prints a warning suggesting
 /// admin install. No-op if the binary is already a symlink or doesn't exist.
@@ -161,66 +161,45 @@ fn migrate_binary_to_system_path(nvm_dir: &Path) {
     {
         eprintln!("  {} {}", "ℹ".cyan().bold(), T("refresh_binary_migrating"));
 
-        // Probe each candidate: check writability, then probe EDR safety.
-        // Uses the shared constant from system.rs as the single source of
-        // truth for system bin candidate paths.
-        let candidates = crate::system::SYSTEM_BIN_CANDIDATES_UNIX;
-
-        for cand in candidates {
-            let system_dir = std::path::Path::new(cand);
-            if !system_dir.is_dir() {
-                continue;
-            }
-            if !crate::commands::binary_swap::is_dir_writable(system_dir) {
-                continue;
-            }
-            // Probe: copy + execute
-            if crate::commands::binary_swap::probe_dir_for_edr(system_dir, &user_bin) {
-                // EDR-safe! Copy + symlink
-                let system_bin = system_dir.join(bin_name);
-                match std::fs::copy(&user_bin, &system_bin) {
-                    Ok(_) => {
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-                            let _ = std::fs::set_permissions(
-                                &system_bin,
-                                std::fs::Permissions::from_mode(0o755),
-                            );
-                        }
-                        // Remove the real file and create a symlink → system path.
-                        if std::fs::remove_file(&user_bin).is_ok() {
-                            if std::os::unix::fs::symlink(&system_bin, &user_bin).is_ok() {
-                                println!(
-                                    "  {} {}",
-                                    "✓".green().bold(),
-                                    T("refresh_binary_migrated")
-                                );
-                                return;
-                            } else {
-                                let _ = std::fs::copy(&system_bin, &user_bin);
-                                eprintln!(
-                                    "  {} {}",
-                                    "⚠".yellow().bold(),
-                                    T("refresh_binary_symlink_failed")
-                                );
-                                return;
-                            }
-                        } else {
-                            eprintln!(
-                                "  {} {}",
-                                "⚠".yellow().bold(),
-                                T("refresh_binary_remove_failed")
-                            );
-                            return;
-                        }
+        // Simple writability check: try /usr/local/bin directly. If it exists
+        // and is writable, copy the real binary there and create a reverse
+        // symlink (user dir → system path). No probe, no auto-sudo.
+        let system_dir = std::path::Path::new("/usr/local/bin");
+        if system_dir.is_dir() && crate::commands::binary_swap::is_dir_writable(system_dir) {
+            let system_bin = system_dir.join(bin_name);
+            if std::fs::copy(&user_bin, &system_bin).is_ok() {
+                use std::os::unix::fs::PermissionsExt;
+                let _ =
+                    std::fs::set_permissions(&system_bin, std::fs::Permissions::from_mode(0o755));
+                // Remove the real file and create a symlink → system path.
+                if std::fs::remove_file(&user_bin).is_ok() {
+                    if std::os::unix::fs::symlink(&system_bin, &user_bin).is_ok() {
+                        println!("  {} {}", "✓".green().bold(), T("refresh_binary_migrated"));
+                        return;
+                    } else {
+                        // Restore the real binary so the user isn't left
+                        // without a working nvm.
+                        let _ = std::fs::copy(&system_bin, &user_bin);
+                        eprintln!(
+                            "  {} {}",
+                            "⚠".yellow().bold(),
+                            T("refresh_binary_symlink_failed")
+                        );
+                        return;
                     }
-                    Err(_) => continue,
+                } else {
+                    eprintln!(
+                        "  {} {}",
+                        "⚠".yellow().bold(),
+                        T("refresh_binary_remove_failed")
+                    );
+                    return;
                 }
             }
         }
 
-        // All candidates failed — print explicit manual instructions (no auto-sudo)
+        // System path not writable or copy failed — print explicit manual
+        // instructions (no auto-sudo).
         eprintln!(
             "  {} {}",
             "⚠".yellow().bold(),
@@ -239,13 +218,8 @@ fn migrate_binary_to_system_path(nvm_dir: &Path) {
         // closest is %ProgramFiles%\nvm-rust\. Suggest running
         // install.ps1 as admin for the system-path install.
         let system_dir = std::env::var("ProgramFiles")
-            .map(|pf| format!("{}\\{}", pf, crate::system::SYSTEM_BIN_CANDIDATE_WINDOWS))
-            .unwrap_or_else(|_| {
-                format!(
-                    "C:\\Program Files\\{}",
-                    crate::system::SYSTEM_BIN_CANDIDATE_WINDOWS
-                )
-            });
+            .map(|pf| format!("{}\\nvm-rust", pf))
+            .unwrap_or_else(|_| "C:\\Program Files\\nvm-rust".to_string());
         eprintln!(
             "  {} {} (system path candidate: {})",
             "⚠".yellow().bold(),

@@ -115,26 +115,20 @@ _copy_binary() {
     local user_bin="${install_dir}/nvm"
     if [ -f "$src" ]; then
         mkdir -p "$install_dir"
-        # EDR probe-first: try each system candidate by copying a probe
-        # binary and executing --version. No auto-sudo.
-        local SYSTEM_CANDIDATES="/usr/local/bin /opt/homebrew/bin"
-        local INSTALL_DONE=0
-        for cand in $SYSTEM_CANDIDATES; do
-            [ -d "$cand" ] || continue
-            [ -w "$cand" ] || continue
-            cp -f "$src" "$cand/.nvm_probe_$$"
-            chmod +x "$cand/.nvm_probe_$$"
-            if "$cand/.nvm_probe_$$" --version >/dev/null 2>&1; then
-                cp -f "$src" "$cand/nvm"
-                chmod +x "$cand/nvm"
-                ln -sf "$cand/nvm" "$user_bin"
-                echo "[OK] Copied to $cand/nvm (system path, EDR-safe)"
-                INSTALL_DONE=1
-                break
-            fi
-            rm -f "$cand/.nvm_probe_$$"
-        done
-        if [ "$INSTALL_DONE" = "0" ]; then
+        # Simple writability check: try /usr/local/bin directly. No probe,
+        # no auto-sudo.
+        if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
+            cp -f "$src" "/usr/local/bin/nvm"
+            chmod +x "/usr/local/bin/nvm"
+            ln -sf "/usr/local/bin/nvm" "$user_bin"
+            echo "[OK] Copied to /usr/local/bin/nvm (system path, EDR-safe)"
+        elif command -v sudo &>/dev/null && [ -d "/usr/local/bin" ]; then
+            # Suggest sudo (no auto-sudo); fall back to user dir
+            echo "[WARN] Run for system path: sudo cp $src /usr/local/bin/nvm && sudo ln -sf /usr/local/bin/nvm $user_bin"
+            cp "$src" "$user_bin"
+            chmod +x "$user_bin"
+            echo "[OK] Copied to $user_bin (user path fallback)"
+        else
             cp "$src" "$user_bin"
             chmod +x "$user_bin"
             echo "[OK] Copied to $user_bin (user path — EDR may block)"
