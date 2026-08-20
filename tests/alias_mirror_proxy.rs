@@ -57,11 +57,13 @@ fn alias_unalias_nonexistent_bails() {
 fn alias_set_then_unalias_roundtrip() {
     // Create a fake installed version, set an alias to it, then remove it.
     let (dir, nvm_dir) = common::isolated_nvm_dir();
+    let home = tempfile::tempdir().expect("tempdir for HOME");
     create_fake_version(dir.path(), "v20.0.0", false);
 
     let set = std::process::Command::new(common::nvm_bin())
         .args(["alias", "myalias", "v20.0.0"])
         .env("NVM_DIR", &nvm_dir)
+        .env("HOME", home.path())
         .output()
         .expect("run nvm alias set");
     assert!(
@@ -73,6 +75,7 @@ fn alias_set_then_unalias_roundtrip() {
     let rm = std::process::Command::new(common::nvm_bin())
         .args(["unalias", "myalias"])
         .env("NVM_DIR", &nvm_dir)
+        .env("HOME", home.path())
         .output()
         .expect("run nvm unalias");
     assert!(
@@ -98,17 +101,20 @@ fn alias_set_concurrent_no_lost_update() {
     // without the fix (each process's load-modify-save window overlaps with
     // the others' if they all start at the same time).
     let (dir, nvm_dir) = common::isolated_nvm_dir();
+    let home = tempfile::tempdir().expect("tempdir for HOME");
     create_fake_version(dir.path(), "v20.0.0", false);
 
     let n = 10;
     let mut handles = Vec::with_capacity(n);
     for i in 0..n {
         let nvm_dir = nvm_dir.clone();
+        let home_path = home.path().to_path_buf();
         let alias_name = format!("concurrent_{i:02}");
         handles.push(std::thread::spawn(move || {
             let out = std::process::Command::new(common::nvm_bin())
                 .args(["alias", &alias_name, "v20.0.0"])
                 .env("NVM_DIR", &nvm_dir)
+                .env("HOME", &home_path)
                 .output()
                 .expect("run nvm alias");
             (alias_name, out)
@@ -144,10 +150,12 @@ fn alias_set_concurrent_no_lost_update() {
 #[test]
 fn mirror_set_taobao_then_status_shows_it() {
     let (dir, nvm_dir) = common::isolated_nvm_dir();
+    let home = tempfile::tempdir().expect("tempdir for HOME");
 
     let set = std::process::Command::new(common::nvm_bin())
         .args(["mirror", "taobao"])
         .env("NVM_DIR", &nvm_dir)
+        .env("HOME", home.path())
         .output()
         .expect("run nvm mirror taobao");
     assert!(
@@ -159,6 +167,7 @@ fn mirror_set_taobao_then_status_shows_it() {
     let status = std::process::Command::new(common::nvm_bin())
         .args(["mirror"])
         .env("NVM_DIR", dir.path())
+        .env("HOME", home.path())
         .output()
         .expect("run nvm mirror");
     assert!(status.status.success(), "mirror status should succeed");
@@ -172,17 +181,20 @@ fn mirror_set_taobao_then_status_shows_it() {
 #[test]
 fn mirror_set_official_clears_mirror() {
     let (dir, nvm_dir) = common::isolated_nvm_dir();
+    let home = tempfile::tempdir().expect("tempdir for HOME");
 
     // Set taobao first, then reset to official.
     let _ = std::process::Command::new(common::nvm_bin())
         .args(["mirror", "taobao"])
         .env("NVM_DIR", &nvm_dir)
+        .env("HOME", home.path())
         .output()
         .expect("mirror taobao");
 
     let official = std::process::Command::new(common::nvm_bin())
         .args(["mirror", "official"])
         .env("NVM_DIR", &nvm_dir)
+        .env("HOME", home.path())
         .output()
         .expect("mirror official");
     assert!(
@@ -194,6 +206,7 @@ fn mirror_set_official_clears_mirror() {
     let status = std::process::Command::new(common::nvm_bin())
         .args(["mirror"])
         .env("NVM_DIR", dir.path())
+        .env("HOME", home.path())
         .output()
         .expect("mirror status");
     let s = stdout(&status);
@@ -206,11 +219,13 @@ fn mirror_set_official_clears_mirror() {
 #[test]
 fn mirror_set_custom_url_persists() {
     let (dir, nvm_dir) = common::isolated_nvm_dir();
+    let home = tempfile::tempdir().expect("tempdir for HOME");
     let custom = "https://my-mirror.example.com/node/";
 
     let set = std::process::Command::new(common::nvm_bin())
         .args(["mirror", custom])
         .env("NVM_DIR", &nvm_dir)
+        .env("HOME", home.path())
         .output()
         .expect("mirror custom");
     assert!(
@@ -222,6 +237,7 @@ fn mirror_set_custom_url_persists() {
     let status = std::process::Command::new(common::nvm_bin())
         .args(["mirror"])
         .env("NVM_DIR", dir.path())
+        .env("HOME", home.path())
         .output()
         .expect("mirror status");
     let s = stdout(&status);

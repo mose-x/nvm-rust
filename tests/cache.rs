@@ -28,19 +28,15 @@ fn cache_clear_empty_succeeds_and_reports_zero() {
 
 #[test]
 fn cache_list_shows_files_and_hides_part_files() {
-    let (dir, nvm_dir) = common::isolated_nvm_dir();
-    let cache = dir.path().join("cache");
+    let (mut cmd, nvm_dir, _home) = common::isolated_command(&["cache", "list"]);
+    let cache = nvm_dir.path().join("cache");
     fs::create_dir_all(&cache).expect("create cache dir");
 
     // A real cached file and an in-flight .part file.
     fs::write(cache.join("node-v20.0.0.tar.xz"), b"hello").expect("write cached file");
     fs::write(cache.join("node-v20.0.0.tar.xz.part"), b"partial").expect("write .part");
 
-    let out = std::process::Command::new(common::nvm_bin())
-        .args(["cache", "list"])
-        .env("NVM_DIR", &nvm_dir)
-        .output()
-        .expect("run nvm cache list");
+    let out = cmd.output().expect("run nvm cache list");
     assert!(out.status.success(), "cache list should succeed");
     let s = stdout(&out);
     assert!(
@@ -60,8 +56,8 @@ fn cache_list_shows_files_and_hides_part_files() {
 // `list_cached_files_hides_inflight_sidecars` unit test in src/download.rs.
 #[test]
 fn cache_list_hides_ifrange_sidecar() {
-    let (dir, nvm_dir) = common::isolated_nvm_dir();
-    let cache = dir.path().join("cache");
+    let (mut cmd, nvm_dir, _home) = common::isolated_command(&["cache", "list"]);
+    let cache = nvm_dir.path().join("cache");
     fs::create_dir_all(&cache).expect("create cache dir");
 
     fs::write(cache.join("node-v20.0.0.tar.xz"), b"hello").expect("write cached file");
@@ -72,11 +68,7 @@ fn cache_list_hides_ifrange_sidecar() {
     )
     .expect("write ifrange sidecar");
 
-    let out = std::process::Command::new(common::nvm_bin())
-        .args(["cache", "list"])
-        .env("NVM_DIR", &nvm_dir)
-        .output()
-        .expect("run nvm cache list");
+    let out = cmd.output().expect("run nvm cache list");
     assert!(out.status.success(), "cache list should succeed");
     let s = stdout(&out);
     assert!(
@@ -95,16 +87,12 @@ fn cache_list_hides_ifrange_sidecar() {
 
 #[test]
 fn cache_clear_removes_files_and_reports_bytes() {
-    let (dir, nvm_dir) = common::isolated_nvm_dir();
-    let cache = dir.path().join("cache");
+    let (mut cmd, nvm_dir, _home) = common::isolated_command(&["cache", "clear"]);
+    let cache = nvm_dir.path().join("cache");
     fs::create_dir_all(&cache).expect("create cache dir");
     fs::write(cache.join("node-v20.0.0.tar.xz"), b"hello world").expect("write cached file");
 
-    let out = std::process::Command::new(common::nvm_bin())
-        .args(["cache", "clear"])
-        .env("NVM_DIR", &nvm_dir)
-        .output()
-        .expect("run nvm cache clear");
+    let out = cmd.output().expect("run nvm cache clear");
     assert!(out.status.success(), "cache clear should succeed");
 
     // The cached file should be gone.
@@ -121,8 +109,8 @@ fn cache_clear_removes_files_and_reports_bytes() {
 // `clear_cache_skips_inflight_part_files` unit test in src/download.rs.
 #[test]
 fn cache_clear_preserves_inflight_ifrange_sidecar() {
-    let (dir, nvm_dir) = common::isolated_nvm_dir();
-    let cache = dir.path().join("cache");
+    let (mut cmd, nvm_dir, _home) = common::isolated_command(&["cache", "clear"]);
+    let cache = nvm_dir.path().join("cache");
     fs::create_dir_all(&cache).expect("create cache dir");
 
     // Completed download: should be cleared.
@@ -135,11 +123,7 @@ fn cache_clear_preserves_inflight_ifrange_sidecar() {
     )
     .expect("write ifrange sidecar");
 
-    let out = std::process::Command::new(common::nvm_bin())
-        .args(["cache", "clear"])
-        .env("NVM_DIR", &nvm_dir)
-        .output()
-        .expect("run nvm cache clear");
+    let out = cmd.output().expect("run nvm cache clear");
     assert!(out.status.success(), "cache clear should succeed");
 
     assert!(

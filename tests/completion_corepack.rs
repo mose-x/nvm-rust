@@ -14,18 +14,14 @@ use std::fs;
 
 #[test]
 fn completion_bash_writes_file() {
-    let (dir, nvm_dir) = common::isolated_nvm_dir();
-    let out = std::process::Command::new(common::nvm_bin())
-        .args(["completion", "bash"])
-        .env("NVM_DIR", &nvm_dir)
-        .output()
-        .expect("run nvm completion bash");
+    let (mut cmd, nvm_dir, _home) = common::isolated_command(&["completion", "bash"]);
+    let out = cmd.output().expect("run nvm completion bash");
     assert!(
         out.status.success(),
         "completion bash should succeed: {}",
         stdout(&out)
     );
-    let file = dir.path().join("completions").join("nvm.bash");
+    let file = nvm_dir.path().join("completions").join("nvm.bash");
     assert!(file.exists(), "nvm.bash should exist");
     let content = fs::read_to_string(&file).expect("read nvm.bash");
     assert!(!content.trim().is_empty(), "nvm.bash should be non-empty");
@@ -33,18 +29,14 @@ fn completion_bash_writes_file() {
 
 #[test]
 fn completion_zsh_writes_file() {
-    let (dir, nvm_dir) = common::isolated_nvm_dir();
-    let out = std::process::Command::new(common::nvm_bin())
-        .args(["completion", "zsh"])
-        .env("NVM_DIR", &nvm_dir)
-        .output()
-        .expect("run nvm completion zsh");
+    let (mut cmd, nvm_dir, _home) = common::isolated_command(&["completion", "zsh"]);
+    let out = cmd.output().expect("run nvm completion zsh");
     assert!(
         out.status.success(),
         "completion zsh should succeed: {}",
         stdout(&out)
     );
-    let file = dir.path().join("completions").join("_nvm");
+    let file = nvm_dir.path().join("completions").join("_nvm");
     assert!(file.exists(), "_nvm should exist");
     let content = fs::read_to_string(&file).expect("read _nvm");
     assert!(!content.trim().is_empty(), "_nvm should be non-empty");
@@ -52,18 +44,14 @@ fn completion_zsh_writes_file() {
 
 #[test]
 fn completion_fish_writes_file() {
-    let (dir, nvm_dir) = common::isolated_nvm_dir();
-    let out = std::process::Command::new(common::nvm_bin())
-        .args(["completion", "fish"])
-        .env("NVM_DIR", &nvm_dir)
-        .output()
-        .expect("run nvm completion fish");
+    let (mut cmd, nvm_dir, _home) = common::isolated_command(&["completion", "fish"]);
+    let out = cmd.output().expect("run nvm completion fish");
     assert!(
         out.status.success(),
         "completion fish should succeed: {}",
         stdout(&out)
     );
-    let file = dir.path().join("completions").join("nvm.fish");
+    let file = nvm_dir.path().join("completions").join("nvm.fish");
     assert!(file.exists(), "nvm.fish should exist");
     let content = fs::read_to_string(&file).expect("read nvm.fish");
     assert!(!content.trim().is_empty(), "nvm.fish should be non-empty");
@@ -71,18 +59,14 @@ fn completion_fish_writes_file() {
 
 #[test]
 fn completion_powershell_writes_file() {
-    let (dir, nvm_dir) = common::isolated_nvm_dir();
-    let out = std::process::Command::new(common::nvm_bin())
-        .args(["completion", "powershell"])
-        .env("NVM_DIR", &nvm_dir)
-        .output()
-        .expect("run nvm completion powershell");
+    let (mut cmd, nvm_dir, _home) = common::isolated_command(&["completion", "powershell"]);
+    let out = cmd.output().expect("run nvm completion powershell");
     assert!(
         out.status.success(),
         "completion powershell should succeed: {}",
         stdout(&out)
     );
-    let file = dir.path().join("completions").join("nvm.ps1");
+    let file = nvm_dir.path().join("completions").join("nvm.ps1");
     assert!(file.exists(), "nvm.ps1 should exist");
     let content = fs::read_to_string(&file).expect("read nvm.ps1");
     assert!(!content.trim().is_empty(), "nvm.ps1 should be non-empty");
@@ -170,21 +154,17 @@ fn corepack_enable_no_version_no_current_bails() {
 // alias resolution.
 
 /// Helper: create an isolated NVM_DIR with `current` set to `system:v20.0.0`.
-fn isolated_with_system_current() -> (std::process::Output, tempfile::TempDir) {
-    let (dir, nvm_dir) = common::isolated_nvm_dir();
-    let current_file = dir.path().join("current");
+fn isolated_with_system_current() -> (std::process::Output, tempfile::TempDir, tempfile::TempDir) {
+    let (mut cmd, nvm_dir, home) = common::isolated_command(&["corepack", "status"]);
+    let current_file = nvm_dir.path().join("current");
     std::fs::write(&current_file, "system:v20.0.0").expect("write current file");
-    let out = std::process::Command::new(common::nvm_bin())
-        .args(["corepack", "status"])
-        .env("NVM_DIR", &nvm_dir)
-        .output()
-        .expect("run nvm corepack status");
-    (out, dir)
+    let out = cmd.output().expect("run nvm corepack status");
+    (out, nvm_dir, home)
 }
 
 #[test]
 fn corepack_status_no_arg_with_system_current_succeeds() {
-    let (out, _dir) = isolated_with_system_current();
+    let (out, _dir, _home) = isolated_with_system_current();
     assert!(
         out.status.success(),
         "corepack status (current=system:) should succeed, got: {}",
@@ -207,14 +187,10 @@ fn corepack_status_no_arg_with_system_current_succeeds() {
 
 #[test]
 fn corepack_enable_no_arg_with_system_current_bails_with_clear_message() {
-    let (dir, nvm_dir) = common::isolated_nvm_dir();
-    let current_file = dir.path().join("current");
+    let (mut cmd, nvm_dir, _home) = common::isolated_command(&["corepack", "enable"]);
+    let current_file = nvm_dir.path().join("current");
     std::fs::write(&current_file, "system:v20.0.0").expect("write current file");
-    let out = std::process::Command::new(common::nvm_bin())
-        .args(["corepack", "enable"])
-        .env("NVM_DIR", &nvm_dir)
-        .output()
-        .expect("run nvm corepack enable");
+    let out = cmd.output().expect("run nvm corepack enable");
     assert!(
         !out.status.success(),
         "corepack enable (current=system:) should refuse, got: {}",
@@ -235,14 +211,10 @@ fn corepack_enable_no_arg_with_system_current_bails_with_clear_message() {
 
 #[test]
 fn corepack_disable_no_arg_with_system_current_bails_with_clear_message() {
-    let (dir, nvm_dir) = common::isolated_nvm_dir();
-    let current_file = dir.path().join("current");
+    let (mut cmd, nvm_dir, _home) = common::isolated_command(&["corepack", "disable"]);
+    let current_file = nvm_dir.path().join("current");
     std::fs::write(&current_file, "system:v20.0.0").expect("write current file");
-    let out = std::process::Command::new(common::nvm_bin())
-        .args(["corepack", "disable"])
-        .env("NVM_DIR", &nvm_dir)
-        .output()
-        .expect("run nvm corepack disable");
+    let out = cmd.output().expect("run nvm corepack disable");
     assert!(
         !out.status.success(),
         "corepack disable (current=system:) should refuse, got: {}",

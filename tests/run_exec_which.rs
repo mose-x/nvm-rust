@@ -78,14 +78,10 @@ fn which_nonexistent_version_bails_not_installed() {
 fn which_succeeds_when_version_installed() {
     // Create a fake v20.0.0 with a node binary; `which v20.0.0` should
     // print its bin/node path and exit 0.
-    let (dir, nvm_dir) = common::isolated_nvm_dir();
-    create_fake_version(dir.path(), "v20.0.0", true);
+    let (mut cmd, nvm_dir, _home) = common::isolated_command(&["which", "v20.0.0"]);
+    create_fake_version(nvm_dir.path(), "v20.0.0", true);
 
-    let out = std::process::Command::new(common::nvm_bin())
-        .args(["which", "v20.0.0"])
-        .env("NVM_DIR", &nvm_dir)
-        .output()
-        .expect("run nvm which");
+    let out = cmd.output().expect("run nvm which");
     assert!(
         out.status.success(),
         "which v20.0.0 should succeed: {}",
