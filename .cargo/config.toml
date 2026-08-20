@@ -8,5 +8,5 @@
 rustflags = ["-C", "target-feature=+crt-static"]
 
 # Build + auto-copy binary to ~/.nvm.rust/bin/:
-#   Unix:   ./scripts/devbuild.sh
-#   Windows: scripts\devbuild.bat
+#   Unix:    ./build.sh
+#   Windows: build.bat

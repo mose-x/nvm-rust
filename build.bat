@@ -1,7 +1,11 @@
 @echo off
 setlocal enabledelayedexpansion
-REM devbuild.bat — build debug binary and auto-copy to system path or .nvm.rust\bin\
-REM Usage: scripts\devbuild.bat
+REM build.bat — build nvm from source and auto-copy to .nvm.rust\bin\ or Program Files\nvm-rust\
+REM
+REM Use this if you downloaded the source and want to build locally.
+REM If you just want to install (no Rust toolchain needed), use: install.ps1
+REM
+REM Usage: build.bat
 REM
 REM Simple admin check: if admin, copies to Program Files\nvm-rust\ (no probe).
 REM Falls back to user path if not admin.
