@@ -130,13 +130,11 @@ pub fn uninstall_self() -> Result<()> {
         let user_bin = nvm_dir.join("bin").join("nvm");
         if system_bin.exists() {
             let is_ours = is_system_bin_ours(&user_bin, system_bin);
-            if is_ours {
-                if fs::remove_file(system_bin).is_err() {
-                    eprintln!(
-                        "  {} /usr/local/bin/nvm may be root-owned. Remove: sudo rm -f /usr/local/bin/nvm",
-                        "⚠".yellow().bold()
-                    );
-                }
+            if is_ours && fs::remove_file(system_bin).is_err() {
+                eprintln!(
+                    "  {} /usr/local/bin/nvm may be root-owned. Remove: sudo rm -f /usr/local/bin/nvm",
+                    "⚠".yellow().bold()
+                );
             }
             // If not ours, leave it alone — could be another tool's binary.
         }
@@ -199,13 +197,11 @@ pub fn uninstall_all() -> Result<()> {
         let user_bin = nvm_dir.join("bin").join("nvm");
         if system_bin.exists() {
             let is_ours = is_system_bin_ours(&user_bin, system_bin);
-            if is_ours {
-                if fs::remove_file(system_bin).is_err() {
-                    eprintln!(
-                        "  {} /usr/local/bin/nvm may be root-owned. Remove: sudo rm -f /usr/local/bin/nvm",
-                        "⚠".yellow().bold()
-                    );
-                }
+            if is_ours && fs::remove_file(system_bin).is_err() {
+                eprintln!(
+                    "  {} /usr/local/bin/nvm may be root-owned. Remove: sudo rm -f /usr/local/bin/nvm",
+                    "⚠".yellow().bold()
+                );
             }
             // If not ours, leave it alone — could be another tool's binary.
         }
