@@ -1,5 +1,9 @@
-# nvm-rs PowerShell installer
+# nvm-rs PowerShell installer — downloads a pre-built binary from GitHub Releases.
+# No Rust toolchain required.
+#
 # Usage: irm https://raw.githubusercontent.com/mose-x/nvm-rust/main/install.ps1 | iex
+#
+# To build from source instead (requires Rust): build.bat
 
 param(
     [string]$Version = "",

@@ -2,8 +2,12 @@
 
 set -euo pipefail
 
-# nvm-rs installer script
+# nvm-rs installer script — downloads a pre-built binary from GitHub Releases.
+# No Rust toolchain required.
+#
 # Usage: curl -fsSL https://raw.githubusercontent.com/mose-x/nvm-rust/main/install.sh | bash
+#
+# To build from source instead (requires Rust): ./build.sh
 
 REPO_OWNER="mose-x"
 REPO_NAME="nvm-rust"

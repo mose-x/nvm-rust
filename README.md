@@ -63,6 +63,10 @@ nvm use 22
 - **Recursive .nvmrc search** — auto-switch searches parent directories
 - **package.json engines.node** — reads Node.js version requirement from `package.json`, searched recursively up to the project root
 - **Multi-shell support** — bash, zsh, Fish, PowerShell with auto-switch
+- **Full Shim mode** — `active` symlink for instant version switching, no `source ~/.zshrc` needed after `nvm use`
+- **EDR-safe layout** — binary in `/usr/local/bin` (system path), symlink in user dir; EDR software won't kill the binary
+- **Diagnostics** — `nvm doctor` checks binary, shims, config, shell integration, path conflicts, and optionally network
+- **Auto-repair** — `nvm refresh` fixes shims, completions, `current` file, `nvm.sh`, and migrates to EDR-safe layout
 
 ## Comparison with fnm and nvm-sh
 
@@ -181,14 +185,20 @@ brew tap mose-x/tap
 brew install nvm-rust
 ```
 
-### Build from source
+### Build from source (requires Rust toolchain)
 
 ```bash
 git clone https://github.com/mose-x/nvm-rust.git
 cd nvm-rust
-cargo build --release
-sudo cp target/release/nvm /usr/local/bin/
+./build.sh          # macOS/Linux — builds + auto-copies to ~/.nvm.rust/bin/ or /usr/local/bin/
+build.bat           # Windows — same
 ```
+
+`build.sh` / `build.bat` compiles the debug binary and copies it to the
+same location as `install.sh` would, so shell integration and shims work
+out of the box. If `/usr/local/bin` is writable (or you run as admin on
+Windows), the binary is placed there (EDR-safe); otherwise it falls back
+to `~/.nvm.rust/bin/` with a warning.
 
 ### Download manually
 
@@ -665,6 +675,9 @@ Config files inside `NVM_DIR`:
 | `nvm version` | Show current node/npm |
 | `nvm version-remote` | Show recent remote versions |
 | `nvm -v` / `nvm -V` / `nvm --version` | Show nvm version |
+| `nvm doctor [--fix] [--network]` | Diagnose installation issues (binary, shims, config, shell, paths) |
+| `nvm init` | One-time setup: create shims, completions, shell config, active symlink |
+| `nvm refresh` | Re-create shims, validate/fix current file, download nvm.sh, migrate to EDR-safe layout |
 
 ## Supported Platforms
 

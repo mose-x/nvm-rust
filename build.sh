@@ -1,9 +1,13 @@
 #!/bin/bash
-# devbuild.sh — build debug binary and auto-copy to system path or ~/.nvm.rust/bin/
-# Usage: ./scripts/devbuild.sh  or  bash scripts/devbuild.sh
+# build.sh — build nvm from source and auto-copy to ~/.nvm.rust/bin/ or /usr/local/bin/
 #
-# Simple writability check: tries /usr/local/bin directly. No probe, no
-# auto-sudo. Falls back to user path if not writable.
+# Use this if you downloaded the source and want to build locally.
+# If you just want to install (no Rust toolchain needed), use: ./install.sh
+#
+# Usage: ./build.sh  or  bash build.sh
+#
+# Simple writability check: tries /usr/local/bin directly. No auto-sudo.
+# Falls back to user path if not writable.
 set -e
 cargo build
 
