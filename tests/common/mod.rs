@@ -76,6 +76,23 @@ pub fn run_isolated_with_home(args: &[&str]) -> (Output, TempDir, TempDir) {
     (output, nvm, home)
 }
 
+/// Returns a `Command` for the nvm binary with `NVM_DIR` and `HOME` (and
+/// `USERPROFILE` on Windows) pre-set to isolated tempdirs. The caller must
+/// keep the returned `TempDir` guards alive for the duration of the command.
+pub fn isolated_command(args: &[&str]) -> (Command, TempDir, TempDir) {
+    let nvm = TempDir::new().expect("tempdir for NVM_DIR");
+    let home = TempDir::new().expect("tempdir for HOME");
+    let mut cmd = Command::new(nvm_bin());
+    cmd.args(args)
+        .env("NVM_DIR", nvm.path())
+        .env("HOME", home.path());
+    #[cfg(windows)]
+    {
+        cmd.env("USERPROFILE", home.path());
+    }
+    (cmd, nvm, home)
+}
+
 /// Run `nvm` inheriting the current process's environment (used for pure
 /// help/version checks that never touch NVM_DIR).
 pub fn run(args: &[&str]) -> Output {

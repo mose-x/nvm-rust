@@ -317,24 +317,13 @@ pub fn remove_from_shell_config() -> Result<()> {
 /// it from env (which broke test isolation — the env `NVM_DIR` could point
 /// at a temp dir while the caller held a specific `nvm_dir`).
 pub fn migrate_rc_to_shim_mode_with_dir(nvm_dir: &Path) -> Result<()> {
-    // Test-isolation guard: if nvm_dir lives under $TMPDIR (test sandbox) but
-    // HOME does NOT (real user home still set), refuse to write to the real
-    // ~/.zshrc / ~/.bashrc. This catches the case where setup_temp_nvm_dir()
-    // sandboxed NVM_DIR but forgot to also sandbox HOME. When HOME IS also
-    // under TMPDIR (properly sandboxed test), writing is safe and allowed.
-    // Guarded by #[cfg(test)] so production is unaffected.
-    #[cfg(test)]
-    {
-        if let Ok(tmpdir) = std::env::var("TMPDIR") {
-            let nvm_in_tmp = nvm_dir.starts_with(&tmpdir);
-            let home = std::env::var("HOME").unwrap_or_default();
-            let home_in_tmp = std::path::Path::new(&home).starts_with(&tmpdir);
-            if nvm_in_tmp && !home_in_tmp {
-                eprintln!(
-                    "  ⚠ Refusing to write shell config: nvm_dir in TMPDIR but HOME not sandboxed (test isolation?)"
-                );
-                return Ok(());
-            }
+    // Test-isolation guard: if nvm_dir lives under $TMPDIR, something is
+    // wrong (test isolation leak or misconfigured env). In production,
+    // nvm_dir should never be in TMPDIR. Refusing to write the rc file is
+    // the safe choice — it prevents polluting the real ~/.zshrc / ~/.bashrc.
+    if let Ok(tmpdir) = std::env::var("TMPDIR") {
+        if !tmpdir.is_empty() && nvm_dir.starts_with(&tmpdir) {
+            return Ok(());
         }
     }
 
@@ -596,15 +585,21 @@ mod tests {
         let old_home = std::env::var_os("HOME");
         let old_nvm_dir = std::env::var_os("NVM_DIR");
         let old_userprofile = std::env::var_os("USERPROFILE");
+        let old_tmpdir = std::env::var_os("TMPDIR");
         std::env::set_var("HOME", home.path());
         if cfg!(windows) {
             std::env::set_var("USERPROFILE", home.path());
         }
         std::env::set_var("NVM_DIR", nvm_tmp.path());
+        // Clear TMPDIR so the production TMPDIR guard doesn't prevent the
+        // migration (on macOS, TempDir::new() creates under TMPDIR, which
+        // would trigger the guard and skip the write).
+        std::env::remove_var("TMPDIR");
         struct Guard {
             old_home: Option<std::ffi::OsString>,
             old_nvm_dir: Option<std::ffi::OsString>,
             old_userprofile: Option<std::ffi::OsString>,
+            old_tmpdir: Option<std::ffi::OsString>,
         }
         impl Drop for Guard {
             fn drop(&mut self) {
@@ -621,12 +616,17 @@ mod tests {
                         std::env::set_var("USERPROFILE", v);
                     }
                 }
+                match &self.old_tmpdir {
+                    Some(v) => std::env::set_var("TMPDIR", v),
+                    None => std::env::remove_var("TMPDIR"),
+                }
             }
         }
         let _g = Guard {
             old_home,
             old_nvm_dir,
             old_userprofile,
+            old_tmpdir,
         };
         // Find what rc file detect_shell_config will look for
         let rc_path = detect_shell_config().expect("detect_shell_config should find a path");
@@ -677,6 +677,90 @@ export PATH="{nvm}/shims:{nvm}/v22.0.0/bin:$PATH"
         assert!(
             !content.contains("v22.0.0/bin"),
             "migrated rc must NOT contain version-specific path: {content}"
+        );
+    }
+
+    #[test]
+    fn migrate_rc_refuses_when_nvm_dir_under_tmpdir() {
+        // The TMPDIR guard must prevent writing to the real rc file when
+        // nvm_dir is under TMPDIR. In production this should never happen,
+        // but if it does (test isolation leak, misconfigured env), refusing
+        // to write is the safe choice.
+        let _guard = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmpdir_base = tempfile::TempDir::new().expect("tempdir for TMPDIR");
+        let nvm_tmp = tempfile::TempDir::new_in(tmpdir_base.path()).expect("nvm dir under TMPDIR");
+        let home = tempfile::TempDir::new().expect("tempdir for HOME");
+
+        let old_tmpdir = std::env::var_os("TMPDIR");
+        let old_home = std::env::var_os("HOME");
+        let old_nvm_dir = std::env::var_os("NVM_DIR");
+        let old_userprofile = std::env::var_os("USERPROFILE");
+        std::env::set_var("TMPDIR", tmpdir_base.path());
+        std::env::set_var("HOME", home.path());
+        if cfg!(windows) {
+            std::env::set_var("USERPROFILE", home.path());
+        }
+        std::env::set_var("NVM_DIR", nvm_tmp.path());
+        struct EnvGuard {
+            old_tmpdir: Option<std::ffi::OsString>,
+            old_home: Option<std::ffi::OsString>,
+            old_nvm_dir: Option<std::ffi::OsString>,
+            old_userprofile: Option<std::ffi::OsString>,
+        }
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.old_tmpdir {
+                    Some(v) => std::env::set_var("TMPDIR", v),
+                    None => std::env::remove_var("TMPDIR"),
+                }
+                match &self.old_home {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
+                match &self.old_nvm_dir {
+                    Some(v) => std::env::set_var("NVM_DIR", v),
+                    None => std::env::remove_var("NVM_DIR"),
+                }
+                if cfg!(windows) {
+                    if let Some(v) = &self.old_userprofile {
+                        std::env::set_var("USERPROFILE", v);
+                    }
+                }
+            }
+        }
+        let _g = EnvGuard {
+            old_tmpdir,
+            old_home,
+            old_nvm_dir,
+            old_userprofile,
+        };
+
+        // Find the rc file path and write old-format content to it.
+        let rc_path = detect_shell_config().expect("detect_shell_config should find a path");
+        let rc = std::path::Path::new(&rc_path);
+        if let Some(parent) = rc.parent() {
+            std::fs::create_dir_all(parent).expect("create rc parent");
+        }
+        let nvm_dir_str = nvm_tmp.path().display().to_string();
+        let old_content = format!(
+            r#"alias ll='ls -l'
+# NVM Rust
+export NVM_HOME="{nvm}"
+export PATH="{nvm}/shims:{nvm}/v22.0.0/bin:$PATH"
+"#,
+            nvm = nvm_dir_str
+        );
+        std::fs::write(rc, &old_content).expect("write rc");
+
+        // Call migrate with nvm_dir under TMPDIR — the guard should prevent
+        // any modification to the rc file.
+        migrate_rc_to_shim_mode_with_dir(nvm_tmp.path()).expect("migrate should succeed");
+
+        // The rc file must be unchanged — the TMPDIR guard returned early.
+        let content = std::fs::read_to_string(rc).expect("read rc");
+        assert_eq!(
+            content, old_content,
+            "rc file must not be modified when nvm_dir is under TMPDIR"
         );
     }
 }

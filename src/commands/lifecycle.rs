@@ -14,6 +14,18 @@ use crate::i18n::{format_t, T};
 use crate::system::get_nvm_dir;
 use crate::utils::atomic_write;
 
+/// Returns true if `user_bin` is a symlink pointing to `system_bin`, meaning
+/// the system binary is ours (EDR-safe layout) and safe to remove. If
+/// `user_bin` is a real file (old layout) or doesn't exist, returns false —
+/// the system bin might be a symlink pointing the other way or belong to
+/// another tool entirely.
+#[cfg(unix)]
+fn is_system_bin_ours(user_bin: &std::path::Path, system_bin: &std::path::Path) -> bool {
+    std::fs::read_link(user_bin)
+        .map(|target| target == system_bin)
+        .unwrap_or(false)
+}
+
 pub fn deactivate() -> Result<()> {
     let nvm_dir = get_nvm_dir();
     let current_file = nvm_dir.join("current");
@@ -106,24 +118,33 @@ pub fn uninstall_self() -> Result<()> {
     let nvm_sh = nvm_dir.join("bin").join("nvm.sh");
     let _ = fs::remove_file(&nvm_sh);
 
+    // Remove /usr/local/bin/nvm — only if it's provably ours: the user-dir
+    // copy must be a symlink pointing to it (EDR-safe layout). Must check
+    // BEFORE removing the user binary, since read_link needs the symlink to
+    // still exist. If the user-dir copy is a real file (old layout), leave
+    // /usr/local/bin/nvm alone — it might point the other way or be another
+    // tool's binary entirely.
+    #[cfg(unix)]
+    {
+        let system_bin = std::path::Path::new("/usr/local/bin/nvm");
+        let user_bin = nvm_dir.join("bin").join("nvm");
+        if system_bin.exists() {
+            let is_ours = is_system_bin_ours(&user_bin, system_bin);
+            if is_ours && fs::remove_file(system_bin).is_err() {
+                eprintln!(
+                    "  {} /usr/local/bin/nvm may be root-owned. Remove: sudo rm -f /usr/local/bin/nvm",
+                    "⚠".yellow().bold()
+                );
+            }
+            // If not ours, leave it alone — could be another tool's binary.
+        }
+    }
+
     // Remove nvm binary
     let bin_name = if cfg!(windows) { "nvm.exe" } else { "nvm" };
     let nvm_bin = nvm_dir.join("bin").join(bin_name);
     let _ = fs::remove_file(&nvm_bin);
 
-    // Remove /usr/local/bin/nvm — REAL binary in EDR-safe layout.
-    // May be root-owned if installed via sudo. Try regular rm, suggest
-    // sudo if it still exists (zero auto-sudo).
-    #[cfg(unix)]
-    {
-        let system_bin = std::path::Path::new("/usr/local/bin/nvm");
-        if system_bin.exists() && fs::remove_file(system_bin).is_err() {
-            eprintln!(
-                "  {} /usr/local/bin/nvm may be root-owned. Remove: sudo rm -f /usr/local/bin/nvm",
-                "⚠".yellow().bold()
-            );
-        }
-    }
     #[cfg(windows)]
     {
         let system_dir = std::path::Path::new(&std::env::var("ProgramFiles").unwrap_or_default())
@@ -166,6 +187,26 @@ pub fn uninstall_all() -> Result<()> {
     // can still read the nvm dir path for stripping)
     crate::config::remove_from_shell_config()?;
 
+    // Remove /usr/local/bin/nvm — only if it's provably ours: the user-dir
+    // copy must be a symlink pointing to it (EDR-safe layout). Must check
+    // BEFORE removing the nvm directory, since read_link needs the symlink
+    // to still exist. If not ours, leave it alone.
+    #[cfg(unix)]
+    {
+        let system_bin = std::path::Path::new("/usr/local/bin/nvm");
+        let user_bin = nvm_dir.join("bin").join("nvm");
+        if system_bin.exists() {
+            let is_ours = is_system_bin_ours(&user_bin, system_bin);
+            if is_ours && fs::remove_file(system_bin).is_err() {
+                eprintln!(
+                    "  {} /usr/local/bin/nvm may be root-owned. Remove: sudo rm -f /usr/local/bin/nvm",
+                    "⚠".yellow().bold()
+                );
+            }
+            // If not ours, leave it alone — could be another tool's binary.
+        }
+    }
+
     // Remove the entire ~/.nvm.rust/ directory
     // This removes: binary, nvm.sh, shims, all v* version dirs, config.json,
     // alias.json, cache/, completions/, current, .nvm.lock
@@ -173,17 +214,6 @@ pub fn uninstall_all() -> Result<()> {
         fs::remove_dir_all(&nvm_dir).context("failed to remove nvm directory")?;
     }
 
-    // Remove /usr/local/bin/nvm — REAL binary, may be root-owned.
-    #[cfg(unix)]
-    {
-        let system_bin = std::path::Path::new("/usr/local/bin/nvm");
-        if system_bin.exists() && fs::remove_file(system_bin).is_err() {
-            eprintln!(
-                "  {} /usr/local/bin/nvm may be root-owned. Remove: sudo rm -f /usr/local/bin/nvm",
-                "⚠".yellow().bold()
-            );
-        }
-    }
     #[cfg(windows)]
     {
         let system_dir = std::path::Path::new(&std::env::var("ProgramFiles").unwrap_or_default())
@@ -199,4 +229,54 @@ pub fn uninstall_all() -> Result<()> {
 
     println!("{} {}", "✓".green().bold(), T("uninstall_all_done"));
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    // EDR-safe layout: user_bin is a symlink to system_bin → ours.
+    #[cfg(unix)]
+    #[test]
+    fn test_is_system_bin_ours_symlink_points_to_system() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let user_bin = tmp.path().join("nvm");
+        let system_bin = std::path::Path::new("/usr/local/bin/nvm");
+        std::os::unix::fs::symlink(system_bin, &user_bin).expect("create symlink");
+        assert!(super::is_system_bin_ours(&user_bin, system_bin));
+    }
+
+    // Old layout: user_bin is a real file, not a symlink → not ours.
+    #[cfg(unix)]
+    #[test]
+    fn test_is_system_bin_ours_real_file_not_symlink() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let user_bin = tmp.path().join("nvm");
+        std::fs::write(&user_bin, b"binary").expect("write file");
+        let system_bin = std::path::Path::new("/usr/local/bin/nvm");
+        assert!(!super::is_system_bin_ours(&user_bin, system_bin));
+    }
+
+    // user_bin doesn't exist → can't be ours.
+    #[cfg(unix)]
+    #[test]
+    fn test_is_system_bin_ours_nonexistent_file() {
+        let user_bin = std::path::Path::new("/nonexistent/nvm");
+        let system_bin = std::path::Path::new("/usr/local/bin/nvm");
+        assert!(!super::is_system_bin_ours(user_bin, system_bin));
+    }
+
+    // user_bin is a symlink but points somewhere else → not ours.
+    #[cfg(unix)]
+    #[test]
+    fn test_is_system_bin_ours_symlink_points_elsewhere() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let user_bin = tmp.path().join("nvm");
+        let other_target = std::path::Path::new("/some/other/path");
+        std::os::unix::fs::symlink(other_target, &user_bin).expect("create symlink");
+        let system_bin = std::path::Path::new("/usr/local/bin/nvm");
+        assert!(!super::is_system_bin_ours(&user_bin, system_bin));
+    }
 }

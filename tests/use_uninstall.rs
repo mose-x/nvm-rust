@@ -36,15 +36,10 @@ fn use_nonexistent_version_bails_not_installed() {
 #[test]
 fn use_succeeds_when_version_dir_exists() {
     // Create a fake v20.0.0 with a node binary so `use` switches to it.
-    let (dir, nvm_dir) = common::isolated_nvm_dir();
-    create_fake_version(dir.path(), "v20.0.0", true);
+    let (mut cmd, nvm_dir, _home) = common::isolated_command(&["use", "v20.0.0"]);
+    create_fake_version(nvm_dir.path(), "v20.0.0", true);
 
-    let out = std::process::Command::new(common::nvm_bin())
-        .arg("use")
-        .arg("v20.0.0")
-        .env("NVM_DIR", &nvm_dir)
-        .output()
-        .expect("run nvm use");
+    let out = cmd.output().expect("run nvm use");
     assert!(
         out.status.success(),
         "use v20.0.0 should succeed: {}",
@@ -57,19 +52,15 @@ fn use_no_arg_falls_back_to_default_when_nvmrc_absent() {
     // P1-9: `nvm use` with no arg and no .nvmrc should switch to the
     // `default` version (config.default_version) instead of bailing. We seed
     // a fake v18.0.0 install + a config.json defaulting to it, then `use`.
-    let (dir, nvm_dir) = common::isolated_nvm_dir();
-    create_fake_version(dir.path(), "v18.0.0", true);
+    let (mut cmd, nvm_dir, _home) = common::isolated_command(&["use"]);
+    create_fake_version(nvm_dir.path(), "v18.0.0", true);
     std::fs::write(
-        dir.path().join("config.json"),
+        nvm_dir.path().join("config.json"),
         r#"{"default_version":"v18.0.0"}"#,
     )
     .expect("write config.json");
 
-    let out = std::process::Command::new(common::nvm_bin())
-        .arg("use")
-        .env("NVM_DIR", &nvm_dir)
-        .output()
-        .expect("run nvm use");
+    let out = cmd.output().expect("run nvm use");
     assert!(
         out.status.success(),
         "use (no arg) with default set should succeed: {}",
@@ -181,18 +172,10 @@ fn use_with_use_on_cd_persists_config_flag_and_writes_current() {
     // `update_shell_config`, which probes HOME for `.bashrc`/`.zshrc` and
     // rewrites the first one it finds. Without isolating HOME the test
     // would clobber the developer's real shell rc.
-    let (dir, nvm_dir) = common::isolated_nvm_dir();
-    let home = tempfile::tempdir().expect("tempdir for HOME");
-    create_fake_version(dir.path(), "v20.0.0", true);
+    let (mut cmd, nvm_dir, _home) = common::isolated_command(&["use", "v20.0.0", "--use-on-cd"]);
+    create_fake_version(nvm_dir.path(), "v20.0.0", true);
 
-    let out = std::process::Command::new(common::nvm_bin())
-        .arg("use")
-        .arg("v20.0.0")
-        .arg("--use-on-cd")
-        .env("NVM_DIR", &nvm_dir)
-        .env("HOME", home.path())
-        .output()
-        .expect("run nvm use --use-on-cd");
+    let out = cmd.output().expect("run nvm use --use-on-cd");
     assert!(
         out.status.success(),
         "use v20.0.0 --use-on-cd should succeed: {}",
@@ -200,7 +183,7 @@ fn use_with_use_on_cd_persists_config_flag_and_writes_current() {
     );
 
     // `current` must reflect the switched version.
-    let current = std::fs::read_to_string(dir.path().join("current"))
+    let current = std::fs::read_to_string(nvm_dir.path().join("current"))
         .expect("current file should exist after use");
     assert_eq!(
         current.trim(),
@@ -211,7 +194,7 @@ fn use_with_use_on_cd_persists_config_flag_and_writes_current() {
     // config.json must persist `use_on_cd: true` — this is the flag's
     // entire purpose, and the cd hook installer checks this to decide
     // whether to fire `nvm auto` on cd.
-    let config = std::fs::read_to_string(dir.path().join("config.json"))
+    let config = std::fs::read_to_string(nvm_dir.path().join("config.json"))
         .expect("config.json should exist after use --use-on-cd");
     assert!(
         config.contains("\"use_on_cd\":true") || config.contains("\"use_on_cd\": true"),
@@ -242,18 +225,13 @@ fn auto_silent_switches_version_and_produces_no_stdout() {
     // rc rewrite — `nvm auto` resolves the version via `get_home_dir()` in
     // some paths, and we don't want a future code change to silently start
     // touching the real HOME.
-    let (dir, nvm_dir) = common::isolated_nvm_dir();
-    let home = tempfile::tempdir().expect("tempdir for HOME");
-    create_fake_version(dir.path(), "v20.0.0", true);
+    let (mut cmd, nvm_dir, _home) = common::isolated_command(&["auto", "--silent"]);
+    create_fake_version(nvm_dir.path(), "v20.0.0", true);
     // .nvmrc lives in CWD; `nvm auto` reads it via find_nvmrc_recursive.
-    std::fs::write(dir.path().join(".nvmrc"), "v20.0.0\n").expect("write .nvmrc");
+    std::fs::write(nvm_dir.path().join(".nvmrc"), "v20.0.0\n").expect("write .nvmrc");
 
-    let out = std::process::Command::new(common::nvm_bin())
-        .arg("auto")
-        .arg("--silent")
-        .env("NVM_DIR", &nvm_dir)
-        .env("HOME", home.path())
-        .current_dir(dir.path())
+    let out = cmd
+        .current_dir(nvm_dir.path())
         .output()
         .expect("run nvm auto --silent");
     assert!(
@@ -263,7 +241,7 @@ fn auto_silent_switches_version_and_produces_no_stdout() {
     );
 
     // The version switch must still happen despite silence.
-    let current = std::fs::read_to_string(dir.path().join("current"))
+    let current = std::fs::read_to_string(nvm_dir.path().join("current"))
         .expect("current file should exist after auto --silent");
     assert_eq!(
         current.trim(),
@@ -372,12 +350,10 @@ fn uninstall_no_args_shows_hint() {
 #[test]
 fn uninstall_all_cancelled_by_default() {
     // No 'y' on stdin → should cancel
-    let (dir, nvm_dir) = common::isolated_nvm_dir();
-    create_fake_version(dir.path(), "v20.0.0", true);
+    let (mut cmd, nvm_dir, _home) = common::isolated_command(&["uninstall", "--all"]);
+    create_fake_version(nvm_dir.path(), "v20.0.0", true);
 
-    let out = std::process::Command::new(common::nvm_bin())
-        .args(["uninstall", "--all"])
-        .env("NVM_DIR", &nvm_dir)
+    let out = cmd
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -388,7 +364,7 @@ fn uninstall_all_cancelled_by_default() {
 
     assert!(out.status.success(), "cancelled uninstall should exit 0");
     assert!(
-        dir.path().exists(),
+        nvm_dir.path().exists(),
         "nvm dir should still exist after cancellation"
     );
     let s = String::from_utf8_lossy(&out.stdout).to_string();
@@ -400,20 +376,17 @@ fn uninstall_all_cancelled_by_default() {
 
 #[test]
 fn uninstall_all_with_y_removes_everything() {
-    let (dir, nvm_dir) = common::isolated_nvm_dir();
-    create_fake_version(dir.path(), "v20.0.0", true);
-    create_fake_version(dir.path(), "v22.0.0", true);
+    let (mut cmd, nvm_dir, _home) = common::isolated_command(&["uninstall", "--all"]);
+    create_fake_version(nvm_dir.path(), "v20.0.0", true);
+    create_fake_version(nvm_dir.path(), "v22.0.0", true);
 
-    let out = std::process::Command::new(common::nvm_bin())
-        .args(["uninstall", "--all"])
-        .env("NVM_DIR", &nvm_dir)
+    let mut child = cmd
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn");
 
-    let mut child = out;
     use std::io::Write;
     if let Some(stdin) = child.stdin.as_mut() {
         let _ = stdin.write_all(b"y\n");
@@ -425,26 +398,23 @@ fn uninstall_all_with_y_removes_everything() {
         "uninstall --all with y should succeed"
     );
     assert!(
-        !dir.path().exists(),
+        !nvm_dir.path().exists(),
         "nvm dir should be removed after --all"
     );
 }
 
 #[test]
 fn uninstall_self_preserves_node_versions() {
-    let (dir, nvm_dir) = common::isolated_nvm_dir();
-    create_fake_version(dir.path(), "v20.0.0", true);
+    let (mut cmd, nvm_dir, _home) = common::isolated_command(&["uninstall", "--self"]);
+    create_fake_version(nvm_dir.path(), "v20.0.0", true);
 
-    let out = std::process::Command::new(common::nvm_bin())
-        .args(["uninstall", "--self"])
-        .env("NVM_DIR", &nvm_dir)
+    let mut child = cmd
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn");
 
-    let mut child = out;
     use std::io::Write;
     if let Some(stdin) = child.stdin.as_mut() {
         let _ = stdin.write_all(b"y\n");
@@ -456,11 +426,11 @@ fn uninstall_self_preserves_node_versions() {
         "uninstall --self with y should succeed"
     );
     assert!(
-        dir.path().join("v20.0.0").exists(),
+        nvm_dir.path().join("v20.0.0").exists(),
         "Node version should be preserved after --self"
     );
     assert!(
-        !dir.path().join("shims").exists(),
+        !nvm_dir.path().join("shims").exists(),
         "shims should be removed after --self"
     );
 }
