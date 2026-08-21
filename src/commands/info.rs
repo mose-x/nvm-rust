@@ -686,7 +686,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("nvm_probe_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let node = dir.join("node.cmd");
-        std::fs::write(&node, "@echo off\r\necho v20.0.0^|10.0.0^|none^|none\r\n").unwrap();
+        // Only print under -p, like the unix fake: reverting the flag to -e
+        // leaves stdout empty and fails this test on Windows CI too.
+        std::fs::write(
+            &node,
+            "@echo off\r\nif /i not \"%~1\"==\"-p\" exit /b 0\r\necho v20.0.0^|10.0.0^|none^|none\r\n",
+        )
+        .unwrap();
 
         let parts = probe_versions(&node).expect("probe_versions should parse the output");
         assert_eq!(parts[0], "v20.0.0");
@@ -694,6 +700,37 @@ mod tests {
         assert_eq!(parts[2], "none");
         assert_eq!(parts[3], "none");
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Malformed output (not 4 pipe-separated fields) must yield None, not a
+    /// partially filled or panicking result.
+    #[cfg(unix)]
+    #[test]
+    fn probe_versions_garbage_output_returns_none() {
+        let dir = std::env::temp_dir().join(format!("nvm_probe_garbage_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let node = dir.join("node");
+        std::fs::write(&node, "#!/bin/sh\necho 'not|enough'\n").unwrap();
+        std::process::Command::new("chmod")
+            .arg("755")
+            .arg(&node)
+            .status()
+            .unwrap();
+
+        assert!(probe_versions(&node).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn probe_versions_garbage_output_returns_none() {
+        let dir = std::env::temp_dir().join(format!("nvm_probe_garbage_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let node = dir.join("node.cmd");
+        std::fs::write(&node, "@echo off\r\necho not^|enough\r\n").unwrap();
+
+        assert!(probe_versions(&node).is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 
