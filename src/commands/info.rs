@@ -340,7 +340,10 @@ pub fn auto_switch(silent: bool) -> Result<()> {
     use_version_silent(None, false, false, false, silent)
 }
 
-/// Probe node/npm/yarn/pnpm versions in a single `node -e` invocation.
+/// Probe node/npm/yarn/pnpm versions in a single `node -p` invocation.
+/// `-p` (not `-e`) is required: the probe script is an IIFE whose value must
+/// be printed; `node -e` evaluates but discards the result, leaving stdout
+/// empty and making every probe look like a failure.
 /// Each tool is probed via `require.resolve`: if the package is installed
 /// globally, resolve returns its path and we read the version from
 /// `require().version`; otherwise we emit "none" so the caller can show an
@@ -360,7 +363,7 @@ fn probe_versions(node_bin: &Path) -> Option<[String; 4]> {
         ")"
     );
     let out = Command::new(node_bin)
-        .arg("-e")
+        .arg("-p")
         .arg(probe_script)
         .output()
         .ok()?;
@@ -639,4 +642,105 @@ pub fn cmd_language(lang: Option<&str>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The probe script is an IIFE: only `node -p` prints its return value.
+    /// The fake node below emits nothing for `-e` and the version string for
+    /// `-p`, so reverting the flag to `-e` makes this test fail.
+    #[cfg(unix)]
+    #[test]
+    fn probe_versions_requires_print_flag() {
+        let dir = std::env::temp_dir().join(format!("nvm_probe_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let node = dir.join("node");
+        std::fs::write(
+            &node,
+            "#!/bin/sh\n\
+             if [ \"$1\" = \"-p\" ]; then\n\
+             echo 'v20.0.0|10.0.0|none|none'\n\
+             fi\n",
+        )
+        .unwrap();
+        std::process::Command::new("chmod")
+            .arg("755")
+            .arg(&node)
+            .status()
+            .unwrap();
+
+        let parts = probe_versions(&node).expect("probe_versions should parse the -p output");
+        assert_eq!(parts[0], "v20.0.0");
+        assert_eq!(parts[1], "10.0.0");
+        assert_eq!(parts[2], "none");
+        assert_eq!(parts[3], "none");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn probe_versions_parses_pipe_separated_output() {
+        let dir = std::env::temp_dir().join(format!("nvm_probe_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let node = dir.join("node.cmd");
+        // Only print under -p, like the unix fake: reverting the flag to -e
+        // leaves stdout empty and fails this test on Windows CI too.
+        std::fs::write(
+            &node,
+            "@echo off\r\nif /i not \"%~1\"==\"-p\" exit /b 0\r\necho v20.0.0^|10.0.0^|none^|none\r\n",
+        )
+        .unwrap();
+
+        let parts = probe_versions(&node).expect("probe_versions should parse the output");
+        assert_eq!(parts[0], "v20.0.0");
+        assert_eq!(parts[1], "10.0.0");
+        assert_eq!(parts[2], "none");
+        assert_eq!(parts[3], "none");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Malformed output (not 4 pipe-separated fields) must yield None, not a
+    /// partially filled or panicking result.
+    #[cfg(unix)]
+    #[test]
+    fn probe_versions_garbage_output_returns_none() {
+        let dir = std::env::temp_dir().join(format!("nvm_probe_garbage_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let node = dir.join("node");
+        std::fs::write(&node, "#!/bin/sh\necho 'not|enough'\n").unwrap();
+        std::process::Command::new("chmod")
+            .arg("755")
+            .arg(&node)
+            .status()
+            .unwrap();
+
+        assert!(probe_versions(&node).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn probe_versions_garbage_output_returns_none() {
+        let dir = std::env::temp_dir().join(format!("nvm_probe_garbage_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let node = dir.join("node.cmd");
+        std::fs::write(&node, "@echo off\r\necho not^|enough\r\n").unwrap();
+
+        assert!(probe_versions(&node).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn probe_versions_missing_node_returns_none() {
+        let missing = std::env::temp_dir().join(format!(
+            "nvm_probe_missing_{}_{}/node",
+            std::process::id(),
+            u32::MAX
+        ));
+        assert!(probe_versions(&missing).is_none());
+    }
 }
