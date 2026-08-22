@@ -347,7 +347,11 @@ pub fn auto_switch(silent: bool) -> Result<()> {
 /// Each tool is probed via `require.resolve`: if the package is installed
 /// globally, resolve returns its path and we read the version from
 /// `require().version`; otherwise we emit "none" so the caller can show an
-/// install hint. Returns `None` if node itself is missing or the probe failed.
+/// install hint. The `-p` script resolves modules from the CWD, so bundled
+/// packages (npm on Windows ships in the node dir, not the CWD) often fail
+/// to resolve — any "none" gets a second chance via `probe_tool_version`,
+/// which runs the tool binary directly (`npm.cmd --version` etc.).
+/// Returns `None` if node itself is missing or the probe failed.
 fn probe_versions(node_bin: &Path) -> Option<[String; 4]> {
     let probe_script = concat!(
         "(",
@@ -369,21 +373,33 @@ fn probe_versions(node_bin: &Path) -> Option<[String; 4]> {
         .ok()?;
     let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let parts: Vec<&str> = line.split('|').collect();
-    if parts.len() == 4 {
-        Some([
-            parts[0].to_string(),
-            parts[1].to_string(),
-            parts[2].to_string(),
-            parts[3].to_string(),
-        ])
-    } else {
-        None
+    if parts.len() != 4 {
+        return None;
     }
+    let mut result = [
+        parts[0].to_string(),
+        parts[1].to_string(),
+        parts[2].to_string(),
+        parts[3].to_string(),
+    ];
+    // Fallback for packages `require.resolve` can't see from the CWD:
+    // npm on Windows (bundled in the node dir) and corepack-managed
+    // pnpm/yarn (shims in bin/, not packages in node_modules/). Run the
+    // binary directly with --version.
+    for (slot, tool) in [(1, "npm"), (2, "yarn"), (3, "pnpm")] {
+        if result[slot] == "none" {
+            if let Some(ver) = probe_tool_version(node_bin, tool) {
+                result[slot] = ver;
+            }
+        }
+    }
+    Some(result)
 }
 
 /// Probe a package manager's version by running its binary directly.
-/// Used as a fallback for corepack-managed pnpm/yarn that `require.resolve`
-/// can't find (they're shims in bin/, not packages in node_modules/).
+/// Fallback for tools `require.resolve` can't find from the CWD: npm
+/// bundled in the Windows node dir, and corepack-managed pnpm/yarn (shims
+/// in bin/, not packages in node_modules/).
 fn probe_tool_version(node_bin: &Path, tool: &str) -> Option<String> {
     let bin_dir = node_bin.parent()?;
     let tool_path = exe_path(bin_dir, tool);
@@ -439,21 +455,9 @@ pub fn show_version_info() -> Result<()> {
                 println!("  {}{}", T("lts_badge").green(), codename_str);
             }
 
-            // Single node invocation to get node + npm + yarn + pnpm versions.
-            if let Some(mut parts) = probe_versions(&node_bin) {
-                // Fallback for corepack-managed pnpm/yarn: require.resolve
-                // can't find them (shims in bin/, not node_modules/).
-                // Try running the binary directly with --version.
-                if parts[2] == "none" {
-                    if let Some(ver) = probe_tool_version(&node_bin, "yarn") {
-                        parts[2] = ver;
-                    }
-                }
-                if parts[3] == "none" {
-                    if let Some(ver) = probe_tool_version(&node_bin, "pnpm") {
-                        parts[3] = ver;
-                    }
-                }
+            // Single node invocation to get node + npm + yarn + pnpm versions
+            // (probe_versions applies the binary --version fallback internally).
+            if let Some(parts) = probe_versions(&node_bin) {
                 // node
                 println!("  {} {}", T("node_label").dimmed(), parts[0].white());
                 // npm
@@ -742,5 +746,63 @@ mod tests {
             u32::MAX
         ));
         assert!(probe_versions(&missing).is_none());
+    }
+
+    /// The `-p` script resolves modules from the CWD, so bundled npm
+    /// (Windows: shipped inside the node dir) fails require.resolve and
+    /// reports "none". probe_versions must then fall back to running
+    /// `npm --version` directly — without this, `nvm version` silently
+    /// dropped the npm line while yarn/pnpm (which had the fallback) showed.
+    #[cfg(unix)]
+    #[test]
+    fn probe_versions_npm_fallback_to_binary() {
+        let dir = std::env::temp_dir().join(format!("nvm_probe_npmfb_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let node = dir.join("node");
+        std::fs::write(
+            &node,
+            "#!/bin/sh\n\
+             if [ \"$1\" = \"-p\" ]; then\n\
+             echo 'v20.0.0|none|none|none'\n\
+             fi\n",
+        )
+        .unwrap();
+        let npm = dir.join("npm");
+        std::fs::write(&npm, "#!/bin/sh\necho 10.9.0\n").unwrap();
+        std::process::Command::new("chmod")
+            .arg("755")
+            .arg(&node)
+            .status()
+            .unwrap();
+        std::process::Command::new("chmod")
+            .arg("755")
+            .arg(&npm)
+            .status()
+            .unwrap();
+
+        let parts = probe_versions(&node).expect("probe should succeed");
+        assert_eq!(parts[1], "10.9.0", "npm must fall back to the binary");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn probe_versions_npm_fallback_to_binary() {
+        let dir = std::env::temp_dir().join(format!("nvm_probe_npmfb_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let node = dir.join("node.cmd");
+        std::fs::write(
+            &node,
+            "@echo off\r\nif /i not \"%~1\"==\"-p\" exit /b 0\r\necho v20.0.0^|none^|none^|none\r\n",
+        )
+        .unwrap();
+        let npm = dir.join("npm.cmd");
+        std::fs::write(&npm, "@echo off\r\necho 10.9.0\r\n").unwrap();
+
+        let parts = probe_versions(&node).expect("probe should succeed");
+        assert_eq!(parts[1], "10.9.0", "npm must fall back to npm.cmd");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
