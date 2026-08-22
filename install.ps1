@@ -412,25 +412,41 @@ goto :eof
         Write-Info "PowerShell execution policy: $currentPolicy"
     }
 
-    # Add to PowerShell profile
+    # Clean up legacy PowerShell profile injection.
+    # Pre-2.4.0 installers added `Import-Module nvm.psm1` to the profile;
+    # that module exported an `nvm` function which shadowed nvm.exe and
+    # broke `nvm -v`/exit codes. The binary is on PATH permanently now —
+    # no profile hook is needed for normal use.
     $profilePath = $PROFILE
-    $profileDir = Split-Path $profilePath -Parent
-
-    if (-not (Test-Path $profileDir)) {
-        New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
+    if (-not $profilePath) {
+        $profilePath = Join-Path $env:USERPROFILE "Documents\PowerShell\Microsoft.PowerShell_profile.ps1"
     }
-
     if (Test-Path $profilePath) {
         $profileContent = Get-Content $profilePath -Raw -ErrorAction SilentlyContinue
-        if ($profileContent -notlike "*nvm.psm1*") {
-            Add-Content -Path $profilePath -Value "`n# nvm-rs`nImport-Module `"$shellDir\nvm.psm1`""
-            Write-Success "Added PowerShell module to profile: $profilePath"
-        } else {
-            Write-Info "PowerShell module already in profile"
+        if ($profileContent -and $profileContent -like "*nvm.psm1*") {
+            # Remove only the installer's marker+import pair (matches the
+            # binary's ps_repair logic). Bare imports — added by the user to
+            # opt into the cd auto-switch hook — are kept.
+            $lines = $profileContent -split "`r?`n"
+            $keep = New-Object System.Collections.Generic.List[string]
+            $changed = $false
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+                if ($lines[$i].Trim() -eq '# nvm-rs' -and ($i + 1) -lt $lines.Count `
+                        -and $lines[$i + 1].Trim() -match '^Import-Module\s+.*nvm\.psm1') {
+                    $i++
+                    $changed = $true
+                    continue
+                }
+                $keep.Add($lines[$i])
+            }
+            if ($changed) {
+                Copy-Item -Path $profilePath -Destination "$profilePath.bak-nvm" -Force
+                Set-Content -Path $profilePath -Value ($keep -join "`r`n")
+                Write-Success "Removed legacy nvm.psm1 import from profile (backup: $profilePath.bak-nvm)"
+            } else {
+                Write-Info "PowerShell profile clean (no legacy nvm.psm1 injection)"
+            }
         }
-    } else {
-        Set-Content -Path $profilePath -Value "# nvm-rs`nImport-Module `"$shellDir\nvm.psm1`""
-        Write-Success "Created PowerShell profile with nvm module"
     }
 
     # Auto-install tab-completion for PowerShell.
@@ -440,10 +456,10 @@ goto :eof
     Write-Host ""
     Write-Success "nvm-rs $Version installed successfully!"
     Write-Host ""
-    Write-Info "To activate now, run:"
-    Write-Host "  Import-Module `"$shellDir\nvm.psm1`""
+    Write-Info "Open a new terminal (PowerShell/CMD) and run 'nvm' — it is on PATH."
     Write-Host ""
-    Write-Info "Or open a new PowerShell window to apply changes automatically."
+    Write-Info "Optional: auto-switch Node version on 'cd' via .nvmrc (PowerShell only):"
+    Write-Host "  Add-Content `$PROFILE 'Import-Module `"$shellDir\nvm.psm1`"'"
     Write-Host ""
     Write-Info "Quick start:"
     Write-Host "  nvm install 20          # Install Node.js 20"

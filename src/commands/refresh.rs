@@ -96,7 +96,14 @@ pub fn refresh() -> Result<()> {
     // `[ -f ]` guard, causing .zshrc errors when nvm.sh is missing).
     fix_rc_source_guard(&nvm_dir);
 
-    // 8. zsh cache tip
+    // 8. Windows: repair PowerShell integration. Pre-2.4.0 installers
+    // injected `Import-Module nvm.psm1` into the profile; that module
+    // shadowed nvm.exe and broke `nvm -v`/exit codes. `nvm upgrade` execs
+    // this same `refresh` on the NEW binary, so updating self-heals.
+    #[cfg(windows)]
+    repair_powershell(&nvm_dir);
+
+    // 9. zsh cache tip
     if std::env::var("SHELL")
         .map(|s| s.ends_with("zsh"))
         .unwrap_or(false)
@@ -285,6 +292,27 @@ fn fix_rc_source_guard(nvm_dir: &Path) {
             "  {} Fixed: nvm.sh source line now has [ -f ] guard",
             "✓".green().bold()
         );
+    }
+}
+
+/// Windows-only: rewrite the fixed nvm.psm1 and strip the legacy
+/// `Import-Module` profile injection left by pre-2.4.0 installers.
+/// Never fails the refresh — a repair error only warns.
+#[cfg(windows)]
+fn repair_powershell(nvm_dir: &Path) {
+    match crate::ps_repair::repair(nvm_dir) {
+        Ok(report) => {
+            if report.psm1_written || report.profiles_cleaned > 0 {
+                println!("  {} {}", "✓".green().bold(), T("refresh_ps_repaired"));
+            } else {
+                println!("  {} {}", "✓".green().bold(), T("refresh_ps_clean"));
+            }
+        }
+        Err(e) => eprintln!(
+            "  {} {}",
+            "⚠".yellow().bold(),
+            format_t("refresh_ps_failed", std::slice::from_ref(&e.to_string()))
+        ),
     }
 }
 

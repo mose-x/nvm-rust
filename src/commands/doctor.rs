@@ -29,6 +29,7 @@ pub fn doctor(fix: bool, network: bool) -> Result<()> {
     check_corepack(&nvm_dir, fix);
     check_pnpm_source(&nvm_dir);
     check_path_conflicts(&nvm_dir);
+    check_powershell(&nvm_dir, fix);
 
     if network {
         check_network();
@@ -457,6 +458,60 @@ fn check_path_conflicts(nvm_dir: &Path) {
             );
         }
         None => println!("  {} {}", "ℹ".cyan().bold(), T("doctor_path_no_node")),
+    }
+}
+
+/// Detect the legacy PowerShell module injection (pre-2.4.0 installers
+/// added `Import-Module nvm.psm1` to the profile, which shadowed nvm.exe
+/// and broke `nvm -v`/exit codes) and a stale on-disk module. `--fix`
+/// runs the same repair as `nvm refresh`. Non-Windows: no-op.
+fn check_powershell(nvm_dir: &Path, fix: bool) {
+    if !cfg!(windows) {
+        return;
+    }
+
+    let legacy_profiles: Vec<String> = crate::ps_repair::ps_profile_candidates()
+        .into_iter()
+        .filter(|p| {
+            std::fs::read_to_string(p)
+                .map(|c| crate::ps_repair::has_legacy_injection(&c))
+                .unwrap_or(false)
+        })
+        .map(|p| p.display().to_string())
+        .collect();
+
+    let psm1 = nvm_dir.join("shell").join("nvm.psm1");
+    let stale = psm1.exists() && !crate::ps_repair::psm1_is_current(&psm1);
+
+    if legacy_profiles.is_empty() && !stale {
+        println!("  {} {}", "✓".green().bold(), T("doctor_ps_ok"));
+        return;
+    }
+
+    if fix {
+        match crate::ps_repair::repair(nvm_dir) {
+            Ok(_) => println!("  {} {}", "⚠".yellow().bold(), T("doctor_ps_fixed")),
+            Err(e) => println!(
+                "  {} {}",
+                "✗".red().bold(),
+                format_t("doctor_ps_fix_failed", std::slice::from_ref(&e.to_string()))
+            ),
+        }
+        return;
+    }
+
+    if !legacy_profiles.is_empty() {
+        println!(
+            "  {} {}",
+            "✗".red().bold(),
+            format_t(
+                "doctor_ps_legacy",
+                std::slice::from_ref(&legacy_profiles.len().to_string())
+            )
+        );
+    }
+    if stale {
+        println!("  {} {}", "⚠".yellow().bold(), T("doctor_ps_stale"));
     }
 }
 

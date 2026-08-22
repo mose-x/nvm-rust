@@ -17,6 +17,7 @@ mod lts;
 mod mirror;
 mod project_detect;
 mod proxy;
+mod ps_repair;
 mod semver_range;
 mod shell_config;
 mod shim;
