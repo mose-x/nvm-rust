@@ -129,35 +129,37 @@ fn p1_8_nvm_fish_adds_shims_to_path() {
     );
 }
 
-/// P1-9: nvm.psm1 Set-Location must guard for null $Path.
+/// P1-9: nvm.psm1 Set-Location must forward every parameter to the real
+/// cmdlet via @PSBoundParameters. The old wrapper only knew -Path and
+/// needed an explicit null guard; forwarding makes bare `cd`/null paths
+/// safe by construction and keeps -LiteralPath/-StackName/-PassThru working.
 #[test]
-fn p1_9_psm1_set_location_guards_null_path() {
+fn p1_9_psm1_set_location_forwards_all_params() {
     let nvm_psm1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("shell")
         .join("nvm.psm1");
     let content = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
 
     assert!(
-        content.contains("if (-not $Path)"),
-        "Set-Location must guard for null/empty $Path"
+        content.contains("Microsoft.PowerShell.Management\\Set-Location @PSBoundParameters"),
+        "Set-Location must delegate to the original cmdlet with all bound parameters"
     );
 }
 
-/// P1-10: nvm.psm1 ValidateSet must include new commands.
+/// P1-10: nvm.psm1 needs no per-command entries at all: the pass-through
+/// forwards every subcommand (install-yarn, install-pnpm, upgrade, migrate,
+/// or anything added later) without a whitelist to maintain.
 #[test]
-fn p1_10_psm1_validateset_includes_new_commands() {
+fn p1_10_psm1_no_whitelist_for_new_commands() {
     let nvm_psm1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("shell")
         .join("nvm.psm1");
     let content = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
 
-    for cmd in &["install-yarn", "install-pnpm", "upgrade", "migrate"] {
-        assert!(
-            content.contains(&format!("'{}'", cmd)),
-            "nvm.psm1 ValidateSet must include '{}'",
-            cmd
-        );
-    }
+    assert!(
+        !content.contains("ValidateSet"),
+        "nvm.psm1 must not enumerate subcommands — new ones must work without edits"
+    );
 }
 
 /// P1-11: nvm.fish help text must include new commands.
@@ -340,12 +342,13 @@ fn p1_1_wrappers_forward_auto_args() {
         "nvm.fish must not pass literal 'auto' to nvm binary (drops --silent)"
     );
 
-    // nvm.psm1: auto case must pass $Arguments
+    // nvm.psm1: the nvm function is a pure pass-through — every argument
+    // (including `auto --silent`) reaches the binary verbatim.
     let nvm_psm1 = manifest.join("shell/nvm.psm1");
     let psm1 = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
     assert!(
-        psm1.contains("& $NvmExe auto $Arguments"),
-        "nvm.psm1 must pass $Arguments to nvm auto (forwards --silent)"
+        psm1.contains("& $NvmExe @args"),
+        "nvm.psm1 must be a pure pass-through (forwards --silent and everything else)"
     );
 }
 
@@ -412,21 +415,25 @@ fn p1_3_fish_has_strip_path() {
     );
 }
 
-/// P1-8: nvm.psm1 ValidateSet must include version/help flags so they pass
-/// through to the binary instead of being rejected by validation.
+/// P1-8: nvm.psm1 must NOT use a command whitelist (ValidateSet). A whitelist
+/// is exactly what broke `nvm -v`/`--version`: PowerShell binds leading-dash
+/// arguments as parameter names, and any new subcommand the binary gains is
+/// rejected until the whitelist is edited. The module must be a pure
+/// pass-through so every flag/subcommand reaches the binary.
 #[test]
-fn p1_8_psm1_validateset_includes_version_flags() {
+fn p1_8_psm1_no_whitelist_passthrough_flags() {
     let nvm_psm1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("shell")
         .join("nvm.psm1");
     let content = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
-    for flag in &["--version", "-V", "-v", "--help", "-h"] {
-        assert!(
-            content.contains(&format!("'{}'", flag)),
-            "nvm.psm1 ValidateSet must include '{}'",
-            flag
-        );
-    }
+    assert!(
+        !content.contains("ValidateSet"),
+        "nvm.psm1 must not whitelist commands (breaks -v/--version and new subcommands)"
+    );
+    assert!(
+        content.contains("& $NvmExe @args"),
+        "nvm.psm1 must pass every argument straight to the binary"
+    );
 }
 
 /// P1-9: nvm.psm1 Remove-NvmFromPath must remove entries from the CURRENT
@@ -576,35 +583,35 @@ fn p2_2_psm1_init_path_uses_element_comparison() {
     );
 }
 
-/// P2-3: nvm.psm1 auto case must call Initialize-NvmPath after binary,
-/// matching nvm.sh's _nvm_prepend_path call after auto.
+/// P2-3: nvm.psm1 must ensure bin + shims are on PATH at module load. The
+/// old per-case Initialize-NvmPath calls are gone with the switch block —
+/// the module now runs it once on import.
 #[test]
-fn p2_3_psm1_auto_calls_init_path() {
+fn p2_3_psm1_init_path_on_load() {
     let nvm_psm1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("shell")
         .join("nvm.psm1");
-    let content = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
-    let auto_pos = content.find("'auto' {").expect("must have auto case");
-    let auto_section = &content[auto_pos..];
-    let auto_end = auto_section.find('}').unwrap_or(50);
-    let auto_body = &auto_section[..auto_end + 1];
+    let content = fs::read_to_string(&nvm_psm1)
+        .expect("nvm.psm1 must exist")
+        .replace("\r\n", "\n");
     assert!(
-        auto_body.contains("Initialize-NvmPath"),
-        "nvm.psm1 auto case must call Initialize-NvmPath"
+        content.contains("\nInitialize-NvmPath\n"),
+        "nvm.psm1 must call Initialize-NvmPath at module load"
     );
 }
 
-/// P2-4: nvm.psm1 upgrade/refresh must re-import the module so updated
-/// function definitions take effect (matches nvm.sh's re-source behavior).
+/// P2-4: nvm.psm1 must not self-reimport on upgrade/refresh. With the pure
+/// pass-through there are no function definitions to refresh, and the module
+/// file itself is rewritten by the binary (`nvm refresh` ps_repair step).
 #[test]
-fn p2_4_psm1_upgrade_reimports_module() {
+fn p2_4_psm1_no_self_reimport() {
     let nvm_psm1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("shell")
         .join("nvm.psm1");
     let content = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
     assert!(
-        content.contains("Import-Module") && content.contains("Remove-Module"),
-        "nvm.psm1 upgrade/refresh must re-import module (Remove+Import)"
+        !content.contains("Remove-Module"),
+        "nvm.psm1 must not self-reimport — the binary refreshes the module file"
     );
 }
 
@@ -655,30 +662,27 @@ fn p1_2_psm1_nvmrc_first_token() {
     );
 }
 
-/// P1-3: nvm.psm1 deactivate must disable auto-switch via $script:AutoSwitchEnabled.
+/// P1-3: nvm.psm1 cd hook must skip auto-switch when deactivated. The old
+/// in-memory $script:AutoSwitchEnabled flag is gone (it reset on every
+/// module load); the hook now reads the real state: `nvm deactivate` writes
+/// "none" to the current file, and the hook bails on "none" or missing.
 #[test]
-fn p1_3_psm1_deactivate_disables_auto_switch() {
+fn p1_3_psm1_deactivate_skips_auto_switch() {
     let nvm_psm1 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("shell")
         .join("nvm.psm1");
     let content = fs::read_to_string(&nvm_psm1).expect("nvm.psm1 must exist");
-    assert!(
-        content.contains("AutoSwitchEnabled"),
-        "nvm.psm1 must have $script:AutoSwitchEnabled flag"
-    );
-    let deact_pos = content
-        .find("'deactivate' {")
-        .expect("must have deactivate switch case");
-    let deact_section = &content[deact_pos..deact_pos + 300];
-    assert!(
-        deact_section.contains("AutoSwitchEnabled = $false"),
-        "nvm.psm1 deactivate must set AutoSwitchEnabled = $false"
-    );
-    let set_loc_pos = content.find("function Set-Location").unwrap_or(0);
+    let set_loc_pos = content
+        .find("function Set-Location")
+        .expect("must have Set-Location override");
     let set_loc_section = &content[set_loc_pos..];
     assert!(
-        set_loc_section.contains("AutoSwitchEnabled"),
-        "nvm.psm1 Set-Location must check AutoSwitchEnabled flag"
+        set_loc_section.contains("'none'"),
+        "Set-Location must skip auto-switch when the current file says 'none' (deactivated)"
+    );
+    assert!(
+        !content.contains("AutoSwitchEnabled"),
+        "the in-memory AutoSwitchEnabled flag must be gone (read real state instead)"
     );
 }
 
