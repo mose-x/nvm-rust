@@ -266,17 +266,12 @@ pub fn upgrade(
     // (Program Files real + user dir copy). Upgrade only updates the one
     // current_exe() resolves to. Sync the other to prevent version drift.
     #[cfg(windows)]
-    {
-        let user_bin = crate::system::get_nvm_dir().join("bin").join("nvm.exe");
-        if user_bin.exists() && user_bin != bin_path {
-            if let Err(e) = std::fs::copy(&extracted_bin, &user_bin) {
-                eprintln!(
-                    "  {} Failed to sync user-dir copy: {}",
-                    "⚠".yellow().bold(),
-                    e
-                );
-            }
-        }
+    if let Err(e) = sync_user_dir_copy(&bin_path, &extracted_bin, can_write) {
+        eprintln!(
+            "  {} Failed to sync user-dir copy: {}",
+            "⚠".yellow().bold(),
+            e
+        );
     }
 
     // Migrate to shim architecture: create shim scripts for all SHIM_COMMANDS.
@@ -338,6 +333,27 @@ pub fn upgrade(
     );
 
     Ok(())
+}
+
+/// Sync the user-dir copy of the binary on Windows (admin installs have two
+/// copies: the real one in Program Files and a synced copy in the user dir).
+/// `swapped` tells whether `swap_binary` ran: it MOVES the extracted temp
+/// binary into `bin_path`, so after a swap the temp file no longer exists
+/// and the fresh bytes must be copied from `bin_path` itself. Copying the
+/// consumed temp path was the os error 2 bug. No-op when there is no
+/// user-dir copy or it IS the binary that was just updated.
+#[cfg(windows)]
+fn sync_user_dir_copy(
+    bin_path: &std::path::Path,
+    extracted_bin: &std::path::Path,
+    swapped: bool,
+) -> std::io::Result<()> {
+    let user_bin = crate::system::get_nvm_dir().join("bin").join("nvm.exe");
+    if !user_bin.exists() || user_bin == bin_path {
+        return Ok(());
+    }
+    let source = if swapped { bin_path } else { extracted_bin };
+    std::fs::copy(source, &user_bin).map(|_| ())
 }
 
 /// Where the currently-running nvm binary lives on disk.
@@ -448,5 +464,104 @@ mod tests {
             "host_target() returned '{}' but no matching asset found in build_assets_from_tag",
             target
         );
+    }
+
+    #[cfg(windows)]
+    mod sync_tests {
+        use super::*;
+        use crate::system::ENV_TESTS_MUTEX;
+        use std::env;
+        use tempfile::TempDir;
+
+        struct NvmDirGuard {
+            old_value: Option<String>,
+            _dir: TempDir,
+            _mutex: std::sync::MutexGuard<'static, ()>,
+        }
+
+        impl Drop for NvmDirGuard {
+            fn drop(&mut self) {
+                match &self.old_value {
+                    Some(v) => env::set_var("NVM_DIR", v),
+                    None => env::remove_var("NVM_DIR"),
+                }
+            }
+        }
+
+        fn setup() -> (NvmDirGuard, TempDir) {
+            let mutex = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            let old_value = env::var("NVM_DIR").ok();
+            let nvm_dir = tempfile::tempdir().expect("tempdir");
+            env::set_var("NVM_DIR", nvm_dir.path());
+            let work = tempfile::tempdir().expect("tempdir");
+            (
+                NvmDirGuard {
+                    old_value,
+                    _dir: nvm_dir,
+                    _mutex: mutex,
+                },
+                work,
+            )
+        }
+
+        fn write_user_bin(nvm_dir: &std::path::Path, content: &[u8]) -> std::path::PathBuf {
+            let bin_dir = nvm_dir.join("bin");
+            std::fs::create_dir_all(&bin_dir).unwrap();
+            let user_bin = bin_dir.join("nvm.exe");
+            std::fs::write(&user_bin, content).unwrap();
+            user_bin
+        }
+
+        /// The regression: after a successful swap the extracted temp binary
+        /// is gone (moved into bin_path). Syncing must copy from bin_path,
+        /// not from the consumed temp path (that was os error 2).
+        #[test]
+        fn sync_after_swap_copies_from_bin_path() {
+            let (guard, work) = setup();
+            let user_bin = write_user_bin(guard._dir.path(), b"old");
+            let bin_path = work.path().join("ProgramFiles").join("nvm.exe");
+            std::fs::create_dir_all(bin_path.parent().unwrap()).unwrap();
+            std::fs::write(&bin_path, b"new").unwrap();
+            let consumed_temp = work.path().join("temp").join("nvm.exe"); // never created
+
+            sync_user_dir_copy(&bin_path, &consumed_temp, true).unwrap();
+            assert_eq!(std::fs::read(&user_bin).unwrap(), b"new");
+        }
+
+        /// Swap skipped (system path not writable): the temp binary still
+        /// exists and is the right source.
+        #[test]
+        fn sync_without_swap_copies_from_extracted() {
+            let (guard, work) = setup();
+            let user_bin = write_user_bin(guard._dir.path(), b"old");
+            let bin_path = work.path().join("ProgramFiles").join("nvm.exe");
+            std::fs::create_dir_all(bin_path.parent().unwrap()).unwrap();
+            std::fs::write(&bin_path, b"stale").unwrap();
+            let extracted = work.path().join("temp").join("nvm.exe");
+            std::fs::create_dir_all(extracted.parent().unwrap()).unwrap();
+            std::fs::write(&extracted, b"new").unwrap();
+
+            sync_user_dir_copy(&bin_path, &extracted, false).unwrap();
+            assert_eq!(std::fs::read(&user_bin).unwrap(), b"new");
+        }
+
+        #[test]
+        fn sync_noop_when_user_bin_is_the_updated_binary() {
+            let (guard, work) = setup();
+            let user_bin = write_user_bin(guard._dir.path(), b"keep");
+
+            sync_user_dir_copy(&user_bin, &work.path().join("missing.exe"), true).unwrap();
+            assert_eq!(std::fs::read(&user_bin).unwrap(), b"keep");
+        }
+
+        #[test]
+        fn sync_noop_when_no_user_copy_exists() {
+            let (guard, work) = setup();
+            let bin_path = work.path().join("nvm.exe");
+            std::fs::write(&bin_path, b"new").unwrap();
+
+            sync_user_dir_copy(&bin_path, &work.path().join("missing.exe"), true).unwrap();
+            assert!(!guard._dir.path().join("bin").join("nvm.exe").exists());
+        }
     }
 }
