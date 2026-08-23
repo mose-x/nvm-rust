@@ -134,6 +134,24 @@ pub fn upgrade(
         return Ok(());
     }
 
+    // Windows admin-install guard: the binary sits in a directory this
+    // (non-elevated) process cannot write — typically Program Files from an
+    // admin install. Bail BEFORE downloading instead of failing halfway with
+    // a misleading "upgrade complete". The read-only paths above (--check,
+    // up-to-date notice) are intentionally not guarded. Unix flow untouched.
+    #[cfg(windows)]
+    if upgrade_blocked_needs_admin(&bin_path) {
+        let path_str = bin_path.display().to_string();
+        eprintln!(
+            "{}  {}",
+            "✗".red().bold(),
+            format_t("upgrade_admin_required", std::slice::from_ref(&path_str)).red()
+        );
+        eprintln!("  {} {}", "ℹ".cyan().bold(), T("upgrade_admin_hint").cyan());
+        eprintln!("    {}", T("upgrade_admin_command").dimmed());
+        anyhow::bail!("{}", T("upgrade_needs_admin"));
+    }
+
     if !newer && force {
         println!(
             "{}  {}",
@@ -333,6 +351,17 @@ pub fn upgrade(
     );
 
     Ok(())
+}
+
+/// Windows-only: true when the binary lives in a directory the current
+/// process cannot write — an admin (Program Files) install being updated
+/// from a non-elevated terminal. `nvm upgrade` is then blocked up front
+/// with clear guidance instead of failing halfway with a false success.
+/// User-dir installs are writable, so they pass through untouched.
+#[cfg(windows)]
+fn upgrade_blocked_needs_admin(bin_path: &std::path::Path) -> bool {
+    let bin_parent = bin_path.parent().unwrap_or(std::path::Path::new("."));
+    !is_dir_writable(bin_parent)
 }
 
 /// Sync the user-dir copy of the binary on Windows (admin installs have two
@@ -570,6 +599,35 @@ mod tests {
 
             sync_user_dir_copy(&canonical, &work.path().join("missing.exe"), true).unwrap();
             assert_eq!(std::fs::read(&user_bin).unwrap(), b"keep");
+        }
+
+        /// Normal user-dir installs are writable and must NOT be blocked.
+        #[test]
+        fn admin_guard_passes_for_writable_dir() {
+            let (_guard, work) = setup();
+            let bin = work.path().join("nvm.exe");
+            std::fs::write(&bin, b"x").unwrap();
+            assert!(!upgrade_blocked_needs_admin(&bin));
+        }
+
+        /// Admin install (binary dir not writable by this terminal) must be
+        /// blocked up front. Windows ignores the read-only attribute for
+        /// directory access (verified empirically), so simulate the
+        /// unwritable-location decision deterministically: a parent that is
+        /// a file, and a parent that doesn't exist.
+        #[test]
+        fn admin_guard_blocks_non_writable_dir() {
+            let (_guard, work) = setup();
+
+            // Parent exists but is a FILE — not a writable directory.
+            let not_a_dir = work.path().join("blocked");
+            std::fs::write(&not_a_dir, b"x").unwrap();
+            let bin = not_a_dir.join("nvm.exe");
+            assert!(upgrade_blocked_needs_admin(&bin));
+
+            // Missing parent dir is equally non-writable.
+            let missing = work.path().join("no-such-dir").join("nvm.exe");
+            assert!(upgrade_blocked_needs_admin(&missing));
         }
 
         #[test]
