@@ -341,7 +341,10 @@ pub fn upgrade(
 /// binary into `bin_path`, so after a swap the temp file no longer exists
 /// and the fresh bytes must be copied from `bin_path` itself. Copying the
 /// consumed temp path was the os error 2 bug. No-op when there is no
-/// user-dir copy or it IS the binary that was just updated.
+/// user-dir copy or it IS the binary that was just updated (compared after
+/// canonicalization — a direct `==` never matches on Windows because
+/// `bin_path` carries a `\\?\` prefix, and the self-copy triggered a
+/// sharing violation, os error 32).
 #[cfg(windows)]
 fn sync_user_dir_copy(
     bin_path: &std::path::Path,
@@ -349,7 +352,7 @@ fn sync_user_dir_copy(
     swapped: bool,
 ) -> std::io::Result<()> {
     let user_bin = crate::system::get_nvm_dir().join("bin").join("nvm.exe");
-    if !user_bin.exists() || user_bin == bin_path {
+    if !user_bin.exists() || crate::system::same_file_canonical(bin_path, &user_bin) {
         return Ok(());
     }
     let source = if swapped { bin_path } else { extracted_bin };
@@ -551,6 +554,21 @@ mod tests {
             let user_bin = write_user_bin(guard._dir.path(), b"keep");
 
             sync_user_dir_copy(&user_bin, &work.path().join("missing.exe"), true).unwrap();
+            assert_eq!(std::fs::read(&user_bin).unwrap(), b"keep");
+        }
+
+        /// The os error 32 regression: `bin_path` arrives canonicalized
+        /// (`\\?\...` on Windows) and never `==`-matches the plain
+        /// `user_bin` path even when it IS the same file. The sync must
+        /// still recognize the same file and skip — otherwise it copies the
+        /// binary over itself and gets a sharing violation.
+        #[test]
+        fn sync_noop_when_canonicalized_paths_match() {
+            let (guard, work) = setup();
+            let user_bin = write_user_bin(guard._dir.path(), b"keep");
+            let canonical = user_bin.canonicalize().unwrap();
+
+            sync_user_dir_copy(&canonical, &work.path().join("missing.exe"), true).unwrap();
             assert_eq!(std::fs::read(&user_bin).unwrap(), b"keep");
         }
 
