@@ -61,7 +61,7 @@ exec "$NVM_DIR/$CURRENT/bin/$CMD" "$@"
 fn windows_shim_script() -> &'static str {
     r#"@echo off
 setlocal
-set NVM_DIR=%USERPROFILE%\.nvm.rust
+if not defined NVM_DIR set NVM_DIR=%USERPROFILE%\.nvm.rust
 set CMD=%~n0
 set CURRENT=
 if exist "%NVM_DIR%\current" for /f "delims=" %%a in (%NVM_DIR%\current) do set CURRENT=%%a
@@ -91,9 +91,13 @@ if not defined BIN (
 goto :eof
 
 :resolve
+REM Windows Node archives put executables at the version dir ROOT (no bin\);
+REM check the root first, keep bin\ as a fallback for custom layouts.
 set BIN=
 if not "%CURRENT%"=="" (
-    if exist "%NVM_DIR%\%CURRENT%\bin\%CMD%.exe" set "BIN=%NVM_DIR%\%CURRENT%\bin\%CMD%.exe"
+    if exist "%NVM_DIR%\%CURRENT%\%CMD%.exe" set "BIN=%NVM_DIR%\%CURRENT%\%CMD%.exe"
+    if not defined BIN if exist "%NVM_DIR%\%CURRENT%\%CMD%.cmd" set "BIN=%NVM_DIR%\%CURRENT%\%CMD%.cmd"
+    if not defined BIN if exist "%NVM_DIR%\%CURRENT%\bin\%CMD%.exe" set "BIN=%NVM_DIR%\%CURRENT%\bin\%CMD%.exe"
     if not defined BIN if exist "%NVM_DIR%\%CURRENT%\bin\%CMD%.cmd" set "BIN=%NVM_DIR%\%CURRENT%\bin\%CMD%.cmd"
 )
 goto :eof
@@ -381,6 +385,41 @@ mod tests {
     use super::*;
     use std::env;
     use std::fs;
+
+    /// P0 regression: Windows Node archives put executables at the version
+    /// dir ROOT (there is no bin\ subdir), so the dispatcher must look there
+    /// first. Before the fix it only checked bin\ and every dispatch failed
+    /// with "nvm: node not found".
+    #[test]
+    fn windows_shim_resolves_root_before_bin() {
+        let script = windows_shim_script();
+        assert!(
+            script.contains(r#"if exist "%NVM_DIR%\%CURRENT%\%CMD%.exe""#),
+            "dispatcher must check the version dir root (Windows node layout)"
+        );
+        assert!(
+            script.contains(r#"if exist "%NVM_DIR%\%CURRENT%\bin\%CMD%.exe""#),
+            "dispatcher must keep the bin\\ fallback for custom layouts"
+        );
+        let root_pos = script
+            .find(r#"%NVM_DIR%\%CURRENT%\%CMD%.exe"#)
+            .expect("root check present");
+        let bin_pos = script
+            .find(r#"%NVM_DIR%\%CURRENT%\bin\%CMD%.exe"#)
+            .expect("bin check present");
+        assert!(root_pos < bin_pos, "root must be checked before bin\\");
+    }
+
+    /// The dispatcher must respect an already-set NVM_DIR (custom installs);
+    /// clobbering it sends every lookup to the default dir.
+    #[test]
+    fn windows_shim_respects_existing_nvm_dir() {
+        let script = windows_shim_script();
+        assert!(
+            script.contains("if not defined NVM_DIR set NVM_DIR="),
+            "dispatcher must only default NVM_DIR when it is unset"
+        );
+    }
 
     /// Guard that restores NVM_DIR (and HOME/USERPROFILE) to their original
     /// values when dropped, BEFORE releasing the ENV_TESTS_MUTEX. This prevents
