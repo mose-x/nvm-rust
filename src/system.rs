@@ -108,6 +108,7 @@ pub fn exe_path(bin_dir: &Path, name: &str) -> PathBuf {
 /// and casing may differ, so direct `PathBuf ==` never matches even for the
 /// same file (that mismatch caused the upgrade self-copy sharing violation,
 /// os error 32). Falls back to literal comparison if canonicalization fails.
+#[cfg(any(windows, test))]
 pub(crate) fn same_file_canonical(a: &Path, b: &Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
         (Ok(x), Ok(y)) => x == y,
@@ -119,6 +120,7 @@ pub(crate) fn same_file_canonical(a: &Path, b: &Path) -> bool {
 /// happened. Size is checked first so an identical 20 MB binary is not
 /// re-read byte-for-byte. Used to keep the Windows user-dir copy of
 /// nvm.exe in sync without rewriting a file that may be locked.
+#[cfg(any(windows, test))]
 pub(crate) fn copy_if_different(src: &Path, dst: &Path) -> std::io::Result<bool> {
     let (sm, dm) = (fs::metadata(src)?, fs::metadata(dst)?);
     if sm.len() == dm.len() && fs::read(src)? == fs::read(dst)? {
