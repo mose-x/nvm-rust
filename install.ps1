@@ -365,10 +365,14 @@ if not defined BIN (
 goto :eof
 
 :resolve
+REM Windows Node archives put executables at the version dir ROOT (no bin\);
+REM check the root first, keep bin\ as a fallback for custom layouts.
 set BIN=
 if not "%CURRENT%"=="" (
-    if exist "%NVM_DIR%\%CURRENT%\bin\%CMD%.exe" set BIN=%NVM_DIR%\%CURRENT%\bin\%CMD%.exe
-    if not defined BIN if exist "%NVM_DIR%\%CURRENT%\bin\%CMD%.cmd" set BIN=%NVM_DIR%\%CURRENT%\bin\%CMD%.cmd
+    if exist "%NVM_DIR%\%CURRENT%\%CMD%.exe" set "BIN=%NVM_DIR%\%CURRENT%\%CMD%.exe"
+    if not defined BIN if exist "%NVM_DIR%\%CURRENT%\%CMD%.cmd" set "BIN=%NVM_DIR%\%CURRENT%\%CMD%.cmd"
+    if not defined BIN if exist "%NVM_DIR%\%CURRENT%\bin\%CMD%.exe" set "BIN=%NVM_DIR%\%CURRENT%\bin\%CMD%.exe"
+    if not defined BIN if exist "%NVM_DIR%\%CURRENT%\bin\%CMD%.cmd" set "BIN=%NVM_DIR%\%CURRENT%\bin\%CMD%.cmd"
 )
 goto :eof
 "@
