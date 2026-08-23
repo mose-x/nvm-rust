@@ -103,6 +103,31 @@ pub fn exe_path(bin_dir: &Path, name: &str) -> PathBuf {
     }
 }
 
+/// True if both paths point at the same file. Canonicalizes both sides
+/// first — required on Windows, where `canonicalize()` adds a `\\?\` prefix
+/// and casing may differ, so direct `PathBuf ==` never matches even for the
+/// same file (that mismatch caused the upgrade self-copy sharing violation,
+/// os error 32). Falls back to literal comparison if canonicalization fails.
+pub(crate) fn same_file_canonical(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
+    }
+}
+
+/// Copy `src` over `dst` only when contents differ; returns true if a copy
+/// happened. Size is checked first so an identical 20 MB binary is not
+/// re-read byte-for-byte. Used to keep the Windows user-dir copy of
+/// nvm.exe in sync without rewriting a file that may be locked.
+pub(crate) fn copy_if_different(src: &Path, dst: &Path) -> std::io::Result<bool> {
+    let (sm, dm) = (fs::metadata(src)?, fs::metadata(dst)?);
+    if sm.len() == dm.len() && fs::read(src)? == fs::read(dst)? {
+        return Ok(false);
+    }
+    fs::copy(src, dst)?;
+    Ok(true)
+}
+
 /// Get the user home directory cross-platform.
 ///
 /// Windows does not set `HOME`; it uses `USERPROFILE` instead (e.g. `C:\Users\name`).
@@ -881,5 +906,46 @@ mod tests {
         let status = verify_gpg_signature("https://nodejs.org/dist/", "v20.0.0", b"", false, false)
             .expect("no-gpg path never errors");
         assert_eq!(status, GpgStatus::SkippedNoGpg);
+    }
+
+    #[test]
+    fn same_file_canonical_matches_same_and_different_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.bin");
+        let b = dir.path().join("b.bin");
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::write(&b, b"x").unwrap();
+
+        // Same file, one side canonicalized (on Windows that adds a \\?\
+        // prefix — the exact shape that broke direct PathBuf equality).
+        assert!(same_file_canonical(&a, &a));
+        assert!(same_file_canonical(&a.canonicalize().unwrap(), &a));
+        // Different files with identical content are still different files.
+        assert!(!same_file_canonical(&a, &b));
+        // Missing file: falls back to literal comparison (not equal).
+        assert!(!same_file_canonical(&a, &dir.path().join("missing.bin")));
+    }
+
+    #[test]
+    fn copy_if_different_skips_identical_and_copies_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.bin");
+        let dst = dir.path().join("dst.bin");
+
+        std::fs::write(&src, b"same-content").unwrap();
+        std::fs::write(&dst, b"same-content").unwrap();
+        assert!(
+            !copy_if_different(&src, &dst).unwrap(),
+            "identical = no copy"
+        );
+
+        std::fs::write(&src, b"new-content!").unwrap();
+        assert!(copy_if_different(&src, &dst).unwrap(), "changed = copy");
+        assert_eq!(std::fs::read(&dst).unwrap(), b"new-content!");
+
+        // Same length, different bytes — must still copy.
+        std::fs::write(&src, b"old-content?").unwrap();
+        assert!(copy_if_different(&src, &dst).unwrap());
+        assert_eq!(std::fs::read(&dst).unwrap(), b"old-content?");
     }
 }

@@ -103,7 +103,14 @@ pub fn refresh() -> Result<()> {
     #[cfg(windows)]
     repair_powershell(&nvm_dir);
 
-    // 9. zsh cache tip
+    // 9. Windows: sync the user-dir binary copy from the RUNNING binary.
+    // `nvm upgrade` execs this refresh on the NEW binary, so drift left by
+    // an older binary's failed sync is repaired here — the fix takes effect
+    // immediately instead of one release later.
+    #[cfg(windows)]
+    sync_user_binary_copy(&nvm_dir);
+
+    // 10. zsh cache tip
     if std::env::var("SHELL")
         .map(|s| s.ends_with("zsh"))
         .unwrap_or(false)
@@ -312,6 +319,38 @@ fn repair_powershell(nvm_dir: &Path) {
             "  {} {}",
             "⚠".yellow().bold(),
             format_t("refresh_ps_failed", std::slice::from_ref(&e.to_string()))
+        ),
+    }
+}
+
+/// Windows-only: admin installs keep two copies of nvm.exe (Program Files +
+/// user dir). Sync the user-dir copy from the RUNNING binary, which — when
+/// called via `nvm upgrade`'s exec of the new binary — repairs any drift an
+/// older binary left behind. Idempotent: skips when there is no user copy,
+/// when it IS the running binary, or when contents already match.
+#[cfg(windows)]
+fn sync_user_binary_copy(nvm_dir: &Path) {
+    let user_bin = nvm_dir.join("bin").join("nvm.exe");
+    if !user_bin.exists() {
+        return;
+    }
+    let current = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    if crate::system::same_file_canonical(&current, &user_bin) {
+        return;
+    }
+    match crate::system::copy_if_different(&current, &user_bin) {
+        Ok(true) => println!("  {} {}", "✓".green().bold(), T("refresh_user_copy_synced")),
+        Ok(false) => {}
+        Err(e) => eprintln!(
+            "  {} {}",
+            "⚠".yellow().bold(),
+            format_t(
+                "refresh_user_copy_failed",
+                std::slice::from_ref(&e.to_string())
+            )
         ),
     }
 }
