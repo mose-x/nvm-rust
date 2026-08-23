@@ -645,9 +645,10 @@ refresh_ps_clean = "PowerShell 集成干净"
 refresh_ps_failed = "PowerShell 修复失败：{0}"
 refresh_user_copy_synced = "用户目录二进制副本已同步"
 refresh_user_copy_failed = "同步用户目录二进制副本失败：{0}"
-upgrade_admin_required = "二进制位于 {0}，需要管理员权限更新"
-upgrade_admin_hint = "以管理员重新运行 install.ps1，或："
-upgrade_admin_command = "Start-Process -Verb RunAs -ArgumentList 'Copy-Item \"{0}\" \"{1}\" -Force'"
+upgrade_admin_required = "二进制位于 {0}（系统路径），当前终端无写入权限"
+upgrade_admin_hint = "请以管理员身份打开终端后重新运行：nvm update"
+upgrade_admin_command = "一键提权（PowerShell）：Start-Process -Verb RunAs nvm -ArgumentList 'update'"
+upgrade_needs_admin = "系统路径安装需要管理员权限才能更新"
 
 [_meta]
 display_name = "中文"
