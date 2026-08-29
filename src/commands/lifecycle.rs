@@ -26,6 +26,146 @@ fn is_system_bin_ours(user_bin: &std::path::Path, system_bin: &std::path::Path) 
         .unwrap_or(false)
 }
 
+// ---------------------------------------------------------------------------
+// Windows self-delete helpers.
+//
+// Windows refuses to DELETE a running executable but allows RENAMING it.
+// Uninstalling nvm with nvm itself running therefore always hits a sharing
+// violation on the binary. Strategy: rename the locked file out of the way,
+// delete everything else immediately, then spawn a detached, windowless cmd
+// process that waits for us to exit and removes the leftovers. No reboot,
+// no manual steps, no console window.
+// ---------------------------------------------------------------------------
+
+#[cfg(windows)]
+const PENDING_DELETE_SUFFIX: &str = ".pending-delete";
+/// CREATE_NO_WINDOW | DETACHED_PROCESS — the cleanup cmd must never show a
+/// console window to the user.
+#[cfg(windows)]
+const CLEANUP_SPAWN_FLAGS: u32 = 0x0800_0000 | 0x0000_0008;
+
+/// Batch script that waits for `pid` to exit, then deletes `target`
+/// (directory when `is_dir`, single file otherwise) and removes itself.
+/// Uses `ping` for the sleep because `timeout` aborts immediately when
+/// stdin is redirected (which it is for a detached process).
+#[cfg(windows)]
+fn build_cleanup_script(pid: u32, target: &std::path::Path, is_dir: bool) -> String {
+    let remove_cmd = if is_dir {
+        format!("rd /s /q \"{}\"", target.display())
+    } else {
+        format!("del /q \"{}\"", target.display())
+    };
+    format!(
+        "@echo off\r\n\
+         :wait\r\n\
+         tasklist /FI \"PID eq {pid}\" /NH 2>nul | find \"{pid} \" >nul\r\n\
+         if not errorlevel 1 (\r\n\
+         \x20   ping -n 2 127.0.0.1 >nul\r\n\
+         \x20   goto wait\r\n\
+         )\r\n\
+         {remove_cmd}\r\n\
+         del /q \"%~f0\"\r\n",
+    )
+}
+
+/// Write the cleanup script to %TEMP% and spawn it detached + windowless.
+/// Returns false when the script could not be written or spawned.
+#[cfg(windows)]
+fn schedule_cleanup(target: &std::path::Path, is_dir: bool) -> bool {
+    let script = build_cleanup_script(std::process::id(), target, is_dir);
+    let script_path = std::env::temp_dir().join(format!("nvm-cleanup-{}.cmd", std::process::id()));
+    if fs::write(&script_path, script).is_err() {
+        return false;
+    }
+    let Some(script_str) = script_path.to_str() else {
+        return false;
+    };
+    use std::os::windows::process::CommandExt;
+    std::process::Command::new("cmd.exe")
+        .args(["/c", script_str])
+        .creation_flags(CLEANUP_SPAWN_FLAGS)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .is_ok()
+}
+
+/// `current_exe()` may carry a `\\?\` prefix; strip it so path-prefix
+/// comparisons against plain paths work.
+#[cfg(windows)]
+fn current_exe_plain() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let s = exe.to_string_lossy();
+    let stripped = s.strip_prefix(r"\\?\").unwrap_or(&s);
+    Some(std::path::PathBuf::from(stripped))
+}
+
+/// Rename a locked file (running binary) to `*.pending-delete`. Renaming is
+/// permitted by Windows even while the file is locked. Returns the new path.
+#[cfg(windows)]
+fn rename_locked(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    let renamed = path.with_file_name(format!("{name}{PENDING_DELETE_SUFFIX}"));
+    let _ = fs::remove_file(&renamed); // rename refuses to overwrite
+    fs::rename(path, &renamed).ok().map(|_| renamed)
+}
+
+/// Remove a directory on Windows, tolerating the running binary being locked
+/// inside it. Falls back to the detached cleanup process; only errors when
+/// even that cannot be arranged.
+#[cfg(windows)]
+fn remove_dir_windows_best_effort(dir: &std::path::Path) -> Result<()> {
+    if fs::remove_dir_all(dir).is_ok() {
+        return Ok(());
+    }
+    // Isolate the running binary if it lives inside `dir`, then retry —
+    // everything except the renamed (still locked) file goes away now.
+    if let Some(exe) = current_exe_plain() {
+        if exe.starts_with(dir) {
+            let _ = rename_locked(&exe);
+        }
+    }
+    if fs::remove_dir_all(dir).is_ok() {
+        return Ok(());
+    }
+    if schedule_cleanup(dir, true) {
+        println!(
+            "  {} {}",
+            "ℹ".cyan().bold(),
+            T("uninstall_background_cleanup")
+        );
+        return Ok(());
+    }
+    anyhow::bail!(
+        "failed to remove {} and could not schedule background cleanup",
+        dir.display()
+    )
+}
+
+/// Remove a single file on Windows, tolerating it being the running binary.
+#[cfg(windows)]
+fn remove_file_windows_best_effort(path: &std::path::Path) {
+    if fs::remove_file(path).is_ok() || !path.exists() {
+        return;
+    }
+    if let Some(renamed) = rename_locked(path) {
+        if schedule_cleanup(&renamed, false) {
+            println!(
+                "  {} {}",
+                "ℹ".cyan().bold(),
+                T("uninstall_background_cleanup")
+            );
+            return;
+        }
+    }
+    eprintln!(
+        "  {} could not remove {} — delete it manually after closing this terminal",
+        "⚠".yellow().bold(),
+        path.display()
+    );
+}
+
 pub fn deactivate() -> Result<()> {
     let nvm_dir = get_nvm_dir();
     let current_file = nvm_dir.join("current");
@@ -143,6 +283,9 @@ pub fn uninstall_self() -> Result<()> {
     // Remove nvm binary
     let bin_name = if cfg!(windows) { "nvm.exe" } else { "nvm" };
     let nvm_bin = nvm_dir.join("bin").join(bin_name);
+    #[cfg(windows)]
+    remove_file_windows_best_effort(&nvm_bin);
+    #[cfg(not(windows))]
     let _ = fs::remove_file(&nvm_bin);
 
     #[cfg(windows)]
@@ -211,6 +354,9 @@ pub fn uninstall_all() -> Result<()> {
     // This removes: binary, nvm.sh, shims, all v* version dirs, config.json,
     // alias.json, cache/, completions/, current, .nvm.lock
     if nvm_dir.exists() {
+        #[cfg(windows)]
+        remove_dir_windows_best_effort(&nvm_dir).context("failed to remove nvm directory")?;
+        #[cfg(not(windows))]
         fs::remove_dir_all(&nvm_dir).context("failed to remove nvm directory")?;
     }
 
@@ -278,5 +424,94 @@ mod tests {
         std::os::unix::fs::symlink(other_target, &user_bin).expect("create symlink");
         let system_bin = std::path::Path::new("/usr/local/bin/nvm");
         assert!(!super::is_system_bin_ours(&user_bin, system_bin));
+    }
+
+    // --- Windows self-delete helpers ------------------------------------
+
+    // Hard guarantee: the background cleanup process must NEVER show a console
+    // window. CREATE_NO_WINDOW (0x08000000) is what suppresses it; lock it in
+    // so a future edit can't silently regress to a visible flash.
+    #[cfg(windows)]
+    #[test]
+    fn test_cleanup_spawn_flags_suppress_window() {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        assert_ne!(
+            super::CLEANUP_SPAWN_FLAGS & CREATE_NO_WINDOW,
+            0,
+            "cleanup process must be spawned with CREATE_NO_WINDOW (no console flash)"
+        );
+    }
+
+    // Dir cleanup script: waits for the PID, then `rd /s /q` the quoted
+    // directory, then deletes itself. CRLF line endings required by cmd.
+    #[cfg(windows)]
+    #[test]
+    fn test_cleanup_script_dir_waits_then_removes() {
+        let target = std::path::PathBuf::from(r"C:\Users\someone\.nvm.rust");
+        let script = super::build_cleanup_script(4242, &target, true);
+        assert!(script.starts_with("@echo off\r\n"));
+        assert!(script.contains(":wait"), "needs the wait loop label");
+        assert!(
+            script.contains("tasklist /FI \"PID eq 4242\""),
+            "must wait for our own PID"
+        );
+        assert!(
+            script.contains(r#"rd /s /q "C:\Users\someone\.nvm.rust""#),
+            "must remove the directory quoted"
+        );
+        assert!(script.contains("del /q \"%~f0\""), "must self-delete");
+        // `timeout` breaks under redirected stdin — must use ping to sleep.
+        assert!(script.contains("ping -n 2 127.0.0.1"));
+        assert!(!script.contains("timeout /t"));
+    }
+
+    // File cleanup script (uninstall --self path) uses `del /q`, not `rd`.
+    #[cfg(windows)]
+    #[test]
+    fn test_cleanup_script_file_uses_del() {
+        let target = std::path::PathBuf::from(r"C:\Users\x\.nvm.rust\bin\nvm.exe.pending-delete");
+        let script = super::build_cleanup_script(7, &target, false);
+        assert!(script.contains(r#"del /q "C:\Users\x\.nvm.rust\bin\nvm.exe.pending-delete""#));
+        assert!(!script.contains("rd /s /q"));
+    }
+
+    // Paths containing spaces must stay quoted end-to-end.
+    #[cfg(windows)]
+    #[test]
+    fn test_cleanup_script_quotes_paths_with_spaces() {
+        let target = std::path::PathBuf::from(r"C:\My Projects\nvm dir");
+        let script = super::build_cleanup_script(1, &target, true);
+        assert!(script.contains(r#"rd /s /q "C:\My Projects\nvm dir""#));
+    }
+
+    // rename_locked moves the file to `*.pending-delete`, replacing any
+    // stale leftover from a previous interrupted uninstall.
+    #[cfg(windows)]
+    #[test]
+    fn test_rename_locked_moves_and_replaces_stale() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let file = tmp.path().join("nvm.exe");
+        std::fs::write(&file, b"binary").expect("write");
+        // Stale leftover from a previous run.
+        std::fs::write(file.with_file_name("nvm.exe.pending-delete"), b"old").expect("write");
+
+        let renamed = super::rename_locked(&file).expect("rename");
+        assert!(renamed.ends_with("nvm.exe.pending-delete"));
+        assert!(!file.exists());
+        assert_eq!(std::fs::read(&renamed).expect("read"), b"binary");
+    }
+
+    // Happy path: nothing locked → directory gone immediately, no cleanup
+    // process needed.
+    #[cfg(windows)]
+    #[test]
+    fn test_remove_dir_best_effort_deletes_unlocked_dir() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let dir = tmp.path().join("nvm.rust");
+        std::fs::create_dir_all(dir.join("bin")).expect("mkdir");
+        std::fs::write(dir.join("bin").join("nvm.exe"), b"x").expect("write");
+
+        super::remove_dir_windows_best_effort(&dir).expect("remove");
+        assert!(!dir.exists());
     }
 }
