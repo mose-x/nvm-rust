@@ -428,6 +428,20 @@ mod tests {
 
     // --- Windows self-delete helpers ------------------------------------
 
+    // Hard guarantee: the background cleanup process must NEVER show a console
+    // window. CREATE_NO_WINDOW (0x08000000) is what suppresses it; lock it in
+    // so a future edit can't silently regress to a visible flash.
+    #[cfg(windows)]
+    #[test]
+    fn test_cleanup_spawn_flags_suppress_window() {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        assert_ne!(
+            super::CLEANUP_SPAWN_FLAGS & CREATE_NO_WINDOW,
+            0,
+            "cleanup process must be spawned with CREATE_NO_WINDOW (no console flash)"
+        );
+    }
+
     // Dir cleanup script: waits for the PID, then `rd /s /q` the quoted
     // directory, then deletes itself. CRLF line endings required by cmd.
     #[cfg(windows)]
