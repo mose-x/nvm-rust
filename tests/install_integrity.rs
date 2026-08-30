@@ -64,11 +64,16 @@ fn iojs_offline_install_prints_checksum_label() {
     std::fs::write(cache.join(&archive_name), b"not a real tarball")
         .expect("write fake cached io.js archive");
 
-    let out = Command::new(nvm_bin())
-        .args(["install", "iojs-3.3.1", "--offline"])
+    // HOME/USERPROFILE isolated defensively: `install` does not write the
+    // shell rc today, but if a future change adds rc/shell integration to
+    // the install path, this keeps the real profile out of reach.
+    let mut cmd = Command::new(nvm_bin());
+    cmd.args(["install", "iojs-3.3.1", "--offline"])
         .env("NVM_DIR", &nvm_dir)
-        .output()
-        .expect("run nvm install iojs-3.3.1 --offline");
+        .env("HOME", &nvm_dir);
+    #[cfg(windows)]
+    cmd.env("USERPROFILE", &nvm_dir);
+    let out = cmd.output().expect("run nvm install iojs-3.3.1 --offline");
 
     let s = stdout(&out);
     // The checksum label must now appear for io.js (previously skipped).

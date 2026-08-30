@@ -284,9 +284,35 @@ mod tests {
 
     #[test]
     fn repair_writes_module_and_cleans_profiles() {
+        // repair() derives profile candidates from the real home dir. Env
+        // vars are process-global, so serialize with a mutex and point
+        // HOME/USERPROFILE at a tempdir — otherwise this test would scan
+        // (and back up / rewrite) the real user's PowerShell profiles.
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _locked = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let fake_home = tempfile::tempdir().unwrap();
+        let old_home = std::env::var_os("HOME");
+        let old_userprofile = std::env::var_os("USERPROFILE");
+        std::env::set_var("HOME", fake_home.path());
+        #[cfg(windows)]
+        std::env::set_var("USERPROFILE", fake_home.path());
+        struct Restore(Option<std::ffi::OsString>, Option<std::ffi::OsString>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
+                #[cfg(windows)]
+                match &self.1 {
+                    Some(v) => std::env::set_var("USERPROFILE", v),
+                    None => std::env::remove_var("USERPROFILE"),
+                }
+            }
+        }
+        let _restore = Restore(old_home, old_userprofile);
+
         let dir = tempfile::tempdir().unwrap();
-        // repair() reads real home for profile candidates; here we only
-        // assert the module half, which is NVM_DIR-relative.
         let report = repair(dir.path()).unwrap();
         assert!(report.psm1_written);
         let psm1 = dir.path().join("shell").join("nvm.psm1");

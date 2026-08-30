@@ -280,14 +280,15 @@ fn use_on_cd_then_auto_silent_switches_silently() {
     create_fake_version(dir.path(), "v18.0.0", true);
 
     // Step 1: enable the cd hook and switch to v20.0.0.
-    let out = std::process::Command::new(common::nvm_bin())
-        .arg("use")
+    let mut cmd = std::process::Command::new(common::nvm_bin());
+    cmd.arg("use")
         .arg("v20.0.0")
         .arg("--use-on-cd")
         .env("NVM_DIR", &nvm_dir)
-        .env("HOME", home.path())
-        .output()
-        .expect("run nvm use --use-on-cd");
+        .env("HOME", home.path());
+    #[cfg(windows)]
+    cmd.env("USERPROFILE", home.path());
+    let out = cmd.output().expect("run nvm use --use-on-cd");
     assert!(
         out.status.success(),
         "use v20.0.0 --use-on-cd should succeed: {}",
@@ -300,14 +301,15 @@ fn use_on_cd_then_auto_silent_switches_silently() {
     std::fs::write(subdir.join(".nvmrc"), "v18.0.0\n").expect("write .nvmrc");
 
     // Step 3: simulate the cd hook firing silently.
-    let out = std::process::Command::new(common::nvm_bin())
-        .arg("auto")
+    let mut cmd = std::process::Command::new(common::nvm_bin());
+    cmd.arg("auto")
         .arg("--silent")
         .env("NVM_DIR", &nvm_dir)
         .env("HOME", home.path())
-        .current_dir(&subdir)
-        .output()
-        .expect("run nvm auto --silent");
+        .current_dir(&subdir);
+    #[cfg(windows)]
+    cmd.env("USERPROFILE", home.path());
+    let out = cmd.output().expect("run nvm auto --silent");
     assert!(
         out.status.success(),
         "nvm auto --silent should succeed: {}",
@@ -433,4 +435,61 @@ fn uninstall_self_preserves_node_versions() {
         !nvm_dir.path().join("shims").exists(),
         "shims should be removed after --self"
     );
+}
+
+// Windows regression: uninstall must clean BOTH PowerShell profiles (PS7 and
+// 5.1). Cleaning only the one `detect_shell_config` prefers leaves the other
+// with a stale `Import-Module ...nvm.psm1` that errors on every shell start.
+#[cfg(windows)]
+#[test]
+fn uninstall_self_cleans_both_powershell_profiles() {
+    let (mut cmd, _nvm_dir, home) = common::isolated_command(&["uninstall", "--self"]);
+
+    let nvm_body = "# NVM Rust\n\
+                    $env:NVM_HOME = \"C:\\Users\\x\\.nvm.rust\"\n\
+                    Import-Module \"$env:NVM_HOME\\shell\\nvm.psm1\"\n";
+    let user_line = "# my own profile setup\n";
+
+    let mut profiles = Vec::new();
+    for sub in ["PowerShell", "WindowsPowerShell"] {
+        let p = home
+            .path()
+            .join("Documents")
+            .join(sub)
+            .join("Microsoft.PowerShell_profile.ps1");
+        std::fs::create_dir_all(p.parent().unwrap()).expect("mkdir profile dir");
+        std::fs::write(&p, format!("{user_line}{nvm_body}")).expect("write profile");
+        profiles.push(p);
+    }
+
+    let mut child = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    use std::io::Write;
+    if let Some(stdin) = child.stdin.as_mut() {
+        let _ = stdin.write_all(b"y\n");
+    }
+    let out = child.wait_with_output().expect("wait");
+    assert!(
+        out.status.success(),
+        "uninstall --self should succeed: {}",
+        combined_output(&out)
+    );
+
+    for p in &profiles {
+        let cleaned = std::fs::read_to_string(p).expect("read cleaned profile");
+        assert!(
+            !cleaned.contains("nvm.psm1") && !cleaned.contains("NVM_HOME"),
+            "{} still has nvm lines after uninstall: {cleaned:?}",
+            p.display()
+        );
+        assert!(
+            cleaned.contains("my own profile setup"),
+            "{} lost unrelated user content: {cleaned:?}",
+            p.display()
+        );
+    }
 }
