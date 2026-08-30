@@ -292,25 +292,35 @@ mod tests {
         let _locked = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let fake_home = tempfile::tempdir().unwrap();
         let old_home = std::env::var_os("HOME");
-        let old_userprofile = std::env::var_os("USERPROFILE");
         std::env::set_var("HOME", fake_home.path());
         #[cfg(windows)]
+        let old_userprofile = std::env::var_os("USERPROFILE");
+        #[cfg(windows)]
         std::env::set_var("USERPROFILE", fake_home.path());
-        struct Restore(Option<std::ffi::OsString>, Option<std::ffi::OsString>);
+        struct Restore {
+            old_home: Option<std::ffi::OsString>,
+            // Windows-only field: keeps Unix builds free of dead code.
+            #[cfg(windows)]
+            old_userprofile: Option<std::ffi::OsString>,
+        }
         impl Drop for Restore {
             fn drop(&mut self) {
-                match &self.0 {
+                match &self.old_home {
                     Some(v) => std::env::set_var("HOME", v),
                     None => std::env::remove_var("HOME"),
                 }
                 #[cfg(windows)]
-                match &self.1 {
+                match &self.old_userprofile {
                     Some(v) => std::env::set_var("USERPROFILE", v),
                     None => std::env::remove_var("USERPROFILE"),
                 }
             }
         }
-        let _restore = Restore(old_home, old_userprofile);
+        let _restore = Restore {
+            old_home,
+            #[cfg(windows)]
+            old_userprofile,
+        };
 
         let dir = tempfile::tempdir().unwrap();
         let report = repair(dir.path()).unwrap();
