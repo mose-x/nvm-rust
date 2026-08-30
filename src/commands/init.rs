@@ -76,6 +76,11 @@ fn detect_shell() -> String {
 /// Ensure the shell rc file has nvm source lines with active/bin PATH format.
 /// If rc already has nvm lines, skip. If not, add them.
 fn ensure_shell_config(nvm_dir: &Path) -> Result<()> {
+    // Test-isolation guard (same rationale as update_shell_config): a temp
+    // nvm_dir means tests or a misconfigured env — never write the real rc.
+    if crate::config::nvm_dir_in_temp(nvm_dir) {
+        return Ok(());
+    }
     let shell_config = match crate::config::detect_shell_config() {
         Some(p) => p,
         None => {

@@ -126,6 +126,24 @@ PROMPT_COMMAND="__nvm_use_on_cd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
     }
 }
 
+/// True when `nvm_dir` lives under a system temp directory. Checks `TMPDIR`
+/// (Unix) and `TMP`/`TEMP` (Windows) — the previous guard only checked
+/// `TMPDIR`, which never exists on Windows, so tests with an un-isolated
+/// HOME were free to pollute real PowerShell profiles (hundreds of literal
+/// `.tmp*` PATH lines accumulated on a real user machine). In production
+/// nvm_dir is never in a temp dir, so refusing the rc write there is always
+/// the safe choice.
+pub fn nvm_dir_in_temp(nvm_dir: &Path) -> bool {
+    for var in ["TMPDIR", "TMP", "TEMP"] {
+        if let Ok(tmp) = std::env::var(var) {
+            if !tmp.is_empty() && nvm_dir.starts_with(&tmp) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Remove all nvm-rust-managed lines from a shell config body:
 /// the cd-hook blocks (for every shell type, so removal works even if the
 /// user switched shells) and the `# NVM Rust` marker / `NVM_HOME=` /
@@ -165,6 +183,12 @@ fn strip_nvm_lines(content: &str, nvm_dir_str: &str) -> String {
                 || l.contains("nvm.rust")
                 || l.contains(".nvm.rust")
                 || l.contains("# NVM Rust")
+                // Integration lines: covers current `$env:NVM_HOME`-based
+                // forms AND legacy literal-path ones (e.g. old versions
+                // wrote `Import-Module "<tmpdir>\shell\nvm.psm1"` with the
+                // temp dir baked in — those must go on cleanup too).
+                || l.contains("nvm.psm1")
+                || l.contains("nvm.sh")
                 || (l.starts_with("export PATH=") && l.contains(nvm_dir_str))
                 || (l.starts_with("$env:PATH") && l.contains(nvm_dir_str)))
         })
@@ -180,6 +204,9 @@ fn strip_nvm_lines(content: &str, nvm_dir_str: &str) -> String {
 
 pub fn update_shell_config(version: &str, use_on_cd: bool) -> Result<()> {
     let nvm_dir = get_nvm_dir();
+    if nvm_dir_in_temp(&nvm_dir) {
+        return Ok(());
+    }
     let version_dir = nvm_dir.join(version);
     let bin_dir = crate::system::version_bin_dir(&version_dir);
 
@@ -273,16 +300,9 @@ pub fn update_shell_config(version: &str, use_on_cd: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn remove_from_shell_config() -> Result<()> {
-    let shell_config = match detect_shell_config() {
-        Some(p) => p,
-        None => return Ok(()),
-    };
-
-    let config_path = Path::new(&shell_config);
-
-    let nvm_dir_str = get_nvm_dir().display().to_string();
-
+/// Clean nvm lines out of one config file. Returns true when the file
+/// existed and was processed (regardless of whether any lines matched).
+fn remove_from_config_file(config_path: &Path, nvm_dir_str: &str) -> Result<bool> {
     // Read directly and map NotFound → "nothing to clean" instead of
     // `exists()` + `read_to_string`: the two-step form is a TOCTOU race
     // (another process could remove the rc file between the stat and the
@@ -294,16 +314,51 @@ pub fn remove_from_shell_config() -> Result<()> {
     // NVM lines and they'd never know. Surface the read error instead.
     let content = match fs::read_to_string(config_path) {
         Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e).context(T("shell_config_read_failed")),
     };
     // Backup MUST succeed before we overwrite, same rationale as
     // update_shell_config. At this point the file is known to exist (read
     // succeeded), so backup_file will actually copy it.
     backup_file(config_path).context(T("shell_config_backup_failed"))?;
-    let stripped = strip_nvm_lines(&content, &nvm_dir_str);
+    let stripped = strip_nvm_lines(&content, nvm_dir_str);
     atomic_write(config_path, &stripped)?;
-    println!("{}", crate::i18n::T("shell_config_removed").green());
+    Ok(true)
+}
+
+pub fn remove_from_shell_config() -> Result<()> {
+    let nvm_dir_str = get_nvm_dir().display().to_string();
+
+    // On Windows, install/repair code has historically written to BOTH the
+    // PowerShell 7 (`Documents\PowerShell\`) and Windows PowerShell 5.1
+    // (`Documents\WindowsPowerShell\`) profiles. Cleaning only the one
+    // `detect_shell_config` prefers leaves the other polluted — e.g. a
+    // stale `Import-Module ...nvm.psm1` erroring on every shell start
+    // after uninstall. Clean both.
+    #[cfg(windows)]
+    let candidates: Vec<PathBuf> = {
+        let home = crate::system::get_home_dir();
+        let docs = PathBuf::from(&home).join("Documents");
+        vec![
+            docs.join("PowerShell")
+                .join("Microsoft.PowerShell_profile.ps1"),
+            docs.join("WindowsPowerShell")
+                .join("Microsoft.PowerShell_profile.ps1"),
+        ]
+    };
+    #[cfg(not(windows))]
+    let candidates: Vec<PathBuf> = match detect_shell_config() {
+        Some(p) => vec![PathBuf::from(p)],
+        None => return Ok(()),
+    };
+
+    let mut processed = false;
+    for config_path in &candidates {
+        processed |= remove_from_config_file(config_path, &nvm_dir_str)?;
+    }
+    if processed {
+        println!("{}", crate::i18n::T("shell_config_removed").green());
+    }
     Ok(())
 }
 
@@ -317,14 +372,12 @@ pub fn remove_from_shell_config() -> Result<()> {
 /// it from env (which broke test isolation — the env `NVM_DIR` could point
 /// at a temp dir while the caller held a specific `nvm_dir`).
 pub fn migrate_rc_to_shim_mode_with_dir(nvm_dir: &Path) -> Result<()> {
-    // Test-isolation guard: if nvm_dir lives under $TMPDIR, something is
+    // Test-isolation guard: if nvm_dir lives under a temp dir, something is
     // wrong (test isolation leak or misconfigured env). In production,
-    // nvm_dir should never be in TMPDIR. Refusing to write the rc file is
-    // the safe choice — it prevents polluting the real ~/.zshrc / ~/.bashrc.
-    if let Ok(tmpdir) = std::env::var("TMPDIR") {
-        if !tmpdir.is_empty() && nvm_dir.starts_with(&tmpdir) {
-            return Ok(());
-        }
+    // nvm_dir should never be in a temp dir. Refusing to write the rc file
+    // is the safe choice — it prevents polluting the real rc / profile.
+    if nvm_dir_in_temp(nvm_dir) {
+        return Ok(());
     }
 
     let shell_config = match detect_shell_config() {
@@ -411,6 +464,38 @@ pub fn rc_has_version_specific_path() -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Clears `TMPDIR`/`TMP`/`TEMP` for the test's duration so the
+    /// production temp-dir guard (`nvm_dir_in_temp`) does not skip the rc
+    /// write in tests that legitimately operate on a temp `NVM_DIR`.
+    /// Restores the originals on drop. Must be used under `ENV_TESTS_MUTEX`
+    /// (env mutation is process-global).
+    struct TempEnvGuard {
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+    impl TempEnvGuard {
+        fn clear() -> Self {
+            let saved = ["TMPDIR", "TMP", "TEMP"]
+                .into_iter()
+                .map(|var| {
+                    let old = std::env::var_os(var);
+                    std::env::remove_var(var);
+                    (var, old)
+                })
+                .collect();
+            Self { saved }
+        }
+    }
+    impl Drop for TempEnvGuard {
+        fn drop(&mut self) {
+            for (var, old) in self.saved.drain(..) {
+                match old {
+                    Some(v) => std::env::set_var(var, v),
+                    None => std::env::remove_var(var),
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_detect_shell_config() {
@@ -504,6 +589,57 @@ mod tests {
     }
 
     #[test]
+    fn test_strip_nvm_lines_removes_legacy_literal_integration_lines() {
+        // Old versions wrote integration lines with literal (temp) paths
+        // baked in instead of $NVM_HOME. Those polluted real profiles with
+        // hundreds of lines; cleanup must remove them even though the path
+        // does not match the current nvm_dir.
+        let nvm_dir = "/home/u/.nvm.rust"; // NOT the temp paths below
+        let input = "# user stuff\n\
+                     Import-Module \"D:\\Temp\\.tmpABC\\shell\\nvm.psm1\"\n\
+                     . \"D:\\Temp\\.tmpXYZ\\bin\\nvm.sh\"\n\
+                     keep me\n";
+        let out = strip_nvm_lines(input, nvm_dir);
+        assert!(!out.contains("nvm.psm1"), "legacy psm1 line kept: {out}");
+        assert!(!out.contains("nvm.sh"), "legacy nvm.sh line kept: {out}");
+        assert!(out.contains("# user stuff"));
+        assert!(out.contains("keep me"));
+    }
+
+    #[test]
+    fn test_nvm_dir_in_temp_detects_temp_rooted_dirs() {
+        // A dir under the OS temp location must be flagged (guard trips).
+        // Env mutation is process-global: serialize via the shared mutex
+        // and set TMPDIR explicitly so the test is deterministic on all
+        // CI OSes (Linux runners may have no TMP/TEMP at all).
+        let _guard = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp_root = tempfile::TempDir::new().expect("tempdir");
+        let old_tmpdir = std::env::var_os("TMPDIR");
+        std::env::set_var("TMPDIR", tmp_root.path());
+        let under_temp = tmp_root.path().join("nvm-guard-check");
+        let detected = nvm_dir_in_temp(&under_temp);
+        match old_tmpdir {
+            Some(v) => std::env::set_var("TMPDIR", v),
+            None => std::env::remove_var("TMPDIR"),
+        }
+        assert!(detected, "temp-rooted dir must be detected");
+    }
+
+    #[test]
+    fn test_nvm_dir_in_temp_accepts_normal_home_dir() {
+        // A normal install location is not under temp — guard must not trip.
+        let normal = std::path::PathBuf::from(if cfg!(windows) {
+            r"C:\Users\someone\.nvm.rust"
+        } else {
+            "/home/someone/.nvm.rust"
+        });
+        assert!(
+            !nvm_dir_in_temp(&normal),
+            "normal install dir wrongly flagged as temp"
+        );
+    }
+
+    #[test]
     fn test_strip_nvm_lines_idempotent() {
         // Stripping an already-clean body is a no-op (modulo trailing newline
         // joining), so re-running remove_from_shell_config is safe.
@@ -537,6 +673,10 @@ mod tests {
         let old_nvm_dir = std::env::var_os("NVM_DIR");
         std::env::set_var("HOME", &blocker);
         std::env::set_var("NVM_DIR", nvm_tmp.path());
+        // NVM_DIR is a tempdir here, but this test targets the create_dir_all
+        // error path, not the temp guard — clear the temp env vars so the
+        // guard doesn't short-circuit first.
+        let _temp_guard = TempEnvGuard::clear();
 
         // Restore env even if assertions fail — leaking HOME=<blocker> would
         // break every subsequent test that touches the shell config.
@@ -585,21 +725,20 @@ mod tests {
         let old_home = std::env::var_os("HOME");
         let old_nvm_dir = std::env::var_os("NVM_DIR");
         let old_userprofile = std::env::var_os("USERPROFILE");
-        let old_tmpdir = std::env::var_os("TMPDIR");
         std::env::set_var("HOME", home.path());
         if cfg!(windows) {
             std::env::set_var("USERPROFILE", home.path());
         }
         std::env::set_var("NVM_DIR", nvm_tmp.path());
-        // Clear TMPDIR so the production TMPDIR guard doesn't prevent the
-        // migration (on macOS, TempDir::new() creates under TMPDIR, which
-        // would trigger the guard and skip the write).
-        std::env::remove_var("TMPDIR");
+        // Clear all temp env vars (TMPDIR/TMP/TEMP) so the production
+        // temp-dir guard doesn't prevent the migration (TempDir::new()
+        // creates under a temp location on every OS, which would trigger
+        // the guard and skip the write).
+        let _temp_guard = TempEnvGuard::clear();
         struct Guard {
             old_home: Option<std::ffi::OsString>,
             old_nvm_dir: Option<std::ffi::OsString>,
             old_userprofile: Option<std::ffi::OsString>,
-            old_tmpdir: Option<std::ffi::OsString>,
         }
         impl Drop for Guard {
             fn drop(&mut self) {
@@ -616,17 +755,12 @@ mod tests {
                         std::env::set_var("USERPROFILE", v);
                     }
                 }
-                match &self.old_tmpdir {
-                    Some(v) => std::env::set_var("TMPDIR", v),
-                    None => std::env::remove_var("TMPDIR"),
-                }
             }
         }
         let _g = Guard {
             old_home,
             old_nvm_dir,
             old_userprofile,
-            old_tmpdir,
         };
         // Find what rc file detect_shell_config will look for
         let rc_path = detect_shell_config().expect("detect_shell_config should find a path");

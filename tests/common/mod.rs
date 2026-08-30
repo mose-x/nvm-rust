@@ -67,12 +67,19 @@ pub fn run_isolated(args: &[&str]) -> (Output, TempDir) {
 pub fn run_isolated_with_home(args: &[&str]) -> (Output, TempDir, TempDir) {
     let nvm = TempDir::new().expect("tempdir for NVM_DIR");
     let home = TempDir::new().expect("tempdir for HOME");
-    let output = Command::new(nvm_bin())
-        .args(args)
+    let mut cmd = Command::new(nvm_bin());
+    cmd.args(args)
         .env("NVM_DIR", nvm.path())
-        .env("HOME", home.path())
-        .output()
-        .expect("failed to run nvm binary");
+        .env("HOME", home.path());
+    // Windows: get_home_dir() checks HOME first, but USERPROFILE must be
+    // isolated too — a code path that reads USERPROFILE directly (or a
+    // future reordering of the fallback) would otherwise hit the real
+    // profile and pollute it.
+    #[cfg(windows)]
+    {
+        cmd.env("USERPROFILE", home.path());
+    }
+    let output = cmd.output().expect("failed to run nvm binary");
     (output, nvm, home)
 }
 
