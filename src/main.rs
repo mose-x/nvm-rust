@@ -48,7 +48,7 @@ fn main() -> Result<()> {
         }
     }
 
-    system::os_check();
+    system::os_check()?;
     system::ensure_nvm_dir()?;
 
     // Check config.json ownership — warn (not block) if root-owned.
