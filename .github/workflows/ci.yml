@@ -42,10 +42,13 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # Plain rustup, NOT dtolnay/rust-toolchain: that action also makes the
+      # installed toolchain the rustup *default*, which breaks `cargo fmt` and
+      # `cargo clippy` below because the MSRV toolchain ships no rustfmt.
+      # `--profile minimal` skips docs/clippy/rustfmt; `cargo +<msrv>` selects
+      # this toolchain explicitly at the check step.
       - name: Install Rust (MSRV ${{ steps.msrv.outputs.version }})
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ steps.msrv.outputs.version }}
+        run: rustup toolchain install "${{ steps.msrv.outputs.version }}" --profile minimal --no-self-update
 
       - name: Cache cargo registry + build artifacts
         uses: Swatinem/rust-cache@v2
@@ -139,10 +142,16 @@ jobs:
             exit 1
           fi
 
-          if ! "$bin" --help | grep -q "Usage: nvm"; then
-            echo "::error::--help printed no usage line"
-            exit 1
-          fi
+          # Capture rather than `--help | grep -q`: grep -q exits the moment it
+          # matches, closing the pipe while the binary is still writing, and
+          # nvm then panics with "failed printing to stdout: Broken pipe".
+          # That crash is a real bug (tracked separately) but it is not what
+          # this step is asserting, so don't reintroduce the pipe here.
+          help=$("$bin" --help)
+          case "$help" in
+            *"Usage: nvm"*) ;;
+            *) echo "::error::--help printed no usage line"; exit 1 ;;
+          esac
 
           for cmd in list current version; do
             if ! "$bin" "$cmd" > /dev/null; then
