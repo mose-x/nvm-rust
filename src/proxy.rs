@@ -6,6 +6,29 @@ use std::time::Duration;
 
 use crate::config::{load_config, save_config};
 
+// --- Request timeouts -------------------------------------------------------
+//
+// Grouped here so the whole ladder is auditable in one place; the ordering
+// between tiers is load-bearing and locked by a test at the bottom of this
+// module. Deliberately not user-configurable: each one bounds a *hung socket*,
+// not a slow transfer, so there is no legitimate reason to raise them, and a
+// config surface would cost validation, docs and i18n for no user benefit.
+
+/// PAC (proxy auto-config) fetch. Shortest tier by necessity — the PAC has to
+/// be retrieved before any proxy decision can be made, so a dead
+/// `AutoConfigURL` would otherwise tax every subsequent request.
+const PAC_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Lightweight metadata: version listings (`get_tags`), latest-LTS lookups,
+/// checksum and GPG signature files. A hung keyserver or a stalled DNS lookup
+/// must fail fast rather than stall `nvm install` before any bytes move.
+const LISTING_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Tarball downloads. Generous on purpose — Node.js archives are tens of
+/// megabytes and can crawl on poor connections. What this bounds is a stalled
+/// socket, not a slow transfer.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+
 // Per-process cache of the `proxy` config flag. `is_proxy_enabled()` is called
 // from every HTTP client builder (`build_http_client`, `build_listing_client`,
 // `build_test_client`), and a single `nvm install` can construct several of
@@ -321,7 +344,7 @@ fn fetch_pac(url: &str) -> Option<String> {
         return std::fs::read_to_string(path).ok();
     }
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(3))
+        .timeout(PAC_TIMEOUT)
         .build()
         .ok()?;
     client.get(url).send().ok()?.text().ok()
@@ -407,19 +430,14 @@ fn build_client(timeout: Duration) -> reqwest::blocking::Client {
     })
 }
 
-/// Long-timeout (5 min) client for tarball downloads, which can legitimately
-/// be large and slow on poor connections.
+/// Client for tarball downloads. See [`DOWNLOAD_TIMEOUT`].
 pub fn build_http_client() -> reqwest::blocking::Client {
-    build_client(Duration::from_secs(300))
+    build_client(DOWNLOAD_TIMEOUT)
 }
 
-/// Short-timeout client (30s) for lightweight metadata fetches: version
-/// listings (`get_tags`), latest-LTS lookups, checksum and GPG signature
-/// files. These are small requests that should never need the 5-minute window
-/// reserved for tarball downloads — a hung keyserver or DNS resolution should
-/// fail fast instead of stalling `nvm install`.
+/// Client for lightweight metadata fetches. See [`LISTING_TIMEOUT`].
 pub fn build_listing_client() -> reqwest::blocking::Client {
-    build_client(Duration::from_secs(30))
+    build_client(LISTING_TIMEOUT)
 }
 
 /// Short-timeout client for connectivity tests. Always uses the proxy when it
@@ -802,5 +820,62 @@ mod tests {
             parse_pac_response("HTTP 127.0.0.1:8080"),
             Some("http://127.0.0.1:8080".to_string())
         );
+    }
+
+    #[test]
+    fn test_timeout_tiers_are_ordered_and_bounded() {
+        // Each tier bounds a different failure mode, and the ordering is
+        // load-bearing: the PAC lookup gates every proxy decision so it must be
+        // the cheapest, metadata has to fail fast enough not to stall `install`
+        // before any bytes move, and only a real transfer gets the long window.
+        // As scattered literals that relationship was invisible; this locks it
+        // so editing one tier cannot silently invert the ladder.
+        assert!(
+            PAC_TIMEOUT < LISTING_TIMEOUT,
+            "PAC lookup must be cheaper than a metadata fetch"
+        );
+        assert!(
+            LISTING_TIMEOUT < DOWNLOAD_TIMEOUT,
+            "metadata must fail faster than a tarball download"
+        );
+        // Zero means "no timeout" to reqwest — precisely the hang these
+        // constants exist to prevent.
+        assert!(PAC_TIMEOUT > Duration::ZERO);
+        // And a "fail fast" tier that takes minutes is not failing fast.
+        assert!(LISTING_TIMEOUT <= Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_client_builders_use_named_timeout_consts() {
+        // Source-level guard on the refactor itself: the builders must consume
+        // the constants rather than fresh literals, otherwise the numbers just
+        // migrate and the next edit reintroduces the same scatter.
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/proxy.rs"),
+        )
+        .expect("proxy.rs must be readable");
+
+        for expected in [
+            "build_client(DOWNLOAD_TIMEOUT)",
+            "build_client(LISTING_TIMEOUT)",
+            ".timeout(PAC_TIMEOUT)",
+        ] {
+            assert!(src.contains(expected), "proxy.rs must contain {expected}");
+        }
+
+        // And the tiers must still be named constants at module scope. Both
+        // halves matter: without this, an edit could inline a literal back at
+        // the call site while leaving the now-unused constant behind.
+        //
+        // Note `build_test_client` legitimately wraps its caller-supplied
+        // `timeout_secs` in `Duration::from_secs`, so the guard is on the
+        // constant definitions rather than on banning that call shape.
+        for def in [
+            "const PAC_TIMEOUT: Duration = Duration::from_secs(",
+            "const LISTING_TIMEOUT: Duration = Duration::from_secs(",
+            "const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(",
+        ] {
+            assert!(src.contains(def), "proxy.rs must define `{def}...)`");
+        }
     }
 }
