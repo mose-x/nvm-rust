@@ -35,14 +35,18 @@ pub(crate) fn extract_binary(archive_path: &Path, dest_dir: &Path) -> Result<Pat
     }
     #[cfg(windows)]
     {
-        // zip extraction. `zip` crate is already a dependency (used by extract.rs
-        // for Windows node archives). Extract just the binary entry.
+        // zip extraction — this is the crate's only call site. Windows Node.js
+        // archives go through sevenz-rust2 in extract.rs, not zip; zip exists
+        // solely to unpack the `nvm-<target>.zip` release archive here.
         let f = fs::File::open(archive_path)
             .with_context(|| format!("{}: {}", T("write_failed"), archive_path.display()))?;
         let mut za = zip::ZipArchive::new(f).context(T("extract_failed"))?;
         for i in 0..za.len() {
             let mut entry = za.by_index(i).context(T("extract_failed"))?;
-            let name = entry.name().to_string();
+            // zip 9 returns `Result` because entry names need not be valid
+            // UTF-8. A name we cannot decode cannot match `bin_name`, so skip
+            // it; the `!bin.exists()` check below reports "nothing matched".
+            let Ok(name) = entry.name() else { continue };
             if name == bin_name || name.ends_with(&format!("/{}", bin_name)) {
                 let out = dest_dir.join(bin_name);
                 let mut out_file = fs::File::create(&out)
@@ -456,5 +460,103 @@ mod tests {
             !is_dir_writable(fake_dir),
             "is_dir_writable should return false for a non-existent dir"
         );
+    }
+
+    /// Build a zip holding a single entry with the given name and body.
+    #[cfg(windows)]
+    fn write_test_zip(path: &Path, entry_name: &str, body: &[u8]) {
+        use std::io::Write;
+        let file = fs::File::create(path).expect("create zip");
+        let mut zw = zip::ZipWriter::new(file);
+        zw.start_file(entry_name, zip::write::SimpleFileOptions::default())
+            .expect("start_file");
+        zw.write_all(body).expect("write entry");
+        zw.finish().expect("finish zip");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_extract_binary_from_zip_root_entry() {
+        // Regression guard for the zip 0.6 -> 9.x upgrade: `entry.name()` now
+        // yields `Result<Cow<str>, ZipError>`, so the match logic has to be
+        // exercised against a real archive rather than merely compiled.
+        let dir = TempDir::new().expect("tempdir");
+        let archive = dir.path().join("nvm-win.zip");
+        let body = b"fake-nvm-binary";
+        write_test_zip(&archive, "nvm.exe", body);
+
+        let out = dir.path().join("out");
+        let extracted = extract_binary(&archive, &out).expect("extract_binary");
+
+        assert_eq!(extracted, out.join("nvm.exe"));
+        assert_eq!(fs::read(&extracted).expect("read extracted"), body);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_extract_binary_from_zip_nested_entry() {
+        // release.yml archives from `target/<triple>/release`, so the entry
+        // name can carry a path prefix. Covers the `ends_with("/<bin>")` branch.
+        let dir = TempDir::new().expect("tempdir");
+        let archive = dir.path().join("nvm-win.zip");
+        let body = b"nested-nvm-binary";
+        write_test_zip(
+            &archive,
+            "target/x86_64-pc-windows-msvc/release/nvm.exe",
+            body,
+        );
+
+        let out = dir.path().join("out");
+        let extracted = extract_binary(&archive, &out).expect("extract_binary");
+
+        assert_eq!(extracted, out.join("nvm.exe"));
+        assert_eq!(fs::read(&extracted).expect("read extracted"), body);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_extract_binary_bails_when_zip_lacks_binary() {
+        let dir = TempDir::new().expect("tempdir");
+        let archive = dir.path().join("nvm-win.zip");
+        write_test_zip(&archive, "README.md", b"not the binary");
+
+        let out = dir.path().join("out");
+        let err = extract_binary(&archive, &out).expect_err("archive without nvm.exe must fail");
+        assert!(
+            err.to_string().contains("nvm.exe"),
+            "error should name the missing binary, got: {err}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn test_extract_binary_from_tar_gz() {
+        // The Unix branch of extract_binary had no coverage; this is the path
+        // `nvm upgrade` takes on Linux/macOS.
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        let dir = TempDir::new().expect("tempdir");
+        let archive = dir.path().join("nvm.tar.gz");
+        let body = b"fake-nvm-binary";
+
+        let file = fs::File::create(&archive).expect("create archive");
+        let mut tar = tar::Builder::new(GzEncoder::new(file, Compression::default()));
+        let mut header = tar::Header::new_gnu();
+        header.set_path("nvm").expect("set path");
+        header.set_size(body.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        tar.append(&header, &body[..]).expect("append entry");
+        tar.into_inner()
+            .expect("flush tar")
+            .finish()
+            .expect("finish gz");
+
+        let out = dir.path().join("out");
+        let extracted = extract_binary(&archive, &out).expect("extract_binary");
+
+        assert_eq!(extracted, out.join("nvm"));
+        assert_eq!(fs::read(&extracted).expect("read extracted"), body);
     }
 }
