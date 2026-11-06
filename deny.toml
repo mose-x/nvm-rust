@@ -1,0 +1,92 @@
+# cargo-deny configuration.
+# https://embarkstudios.github.io/cargo-deny/
+#
+# This replaces the previous `audit.toml` + `rustsec/audit-check` pairing. That
+# action never read `audit.toml` — CI reported `"ignore":[]` — so the ignores
+# declared there were dead config. cargo-deny honours this file and covers
+# advisories, licenses, bans and sources in a single pass.
+
+[graph]
+# Restrict resolution to the 8 targets release.yml actually ships, so
+# wasm/js-sys and other build-graph-only crates don't produce noise.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+]
+
+[advisories]
+# Real vulnerabilities must fail CI. `unmaintained` selects the *scope* of the
+# unmaintained check; "all" covers both workspace and transitive crates.
+unmaintained = "all"
+# cargo-deny reports unmaintained crates as errors, so the two live cases have
+# to be listed explicitly. Both are transitive deps we don't control, neither
+# is vulnerable, and replacing their parents would be a major refactor with
+# breaking API changes. Recording them here (rather than disabling the check)
+# keeps the reason on the record and leaves the check armed for new cases.
+#
+# The old audit.toml also ignored RUSTSEC-2026-0246 (sevenz-rust unmaintained);
+# that ignore is deliberately dropped because the migration to sevenz-rust2
+# removed the crate from Cargo.lock entirely.
+ignore = [
+    # fxhash, via selectors -> scraper (HTML parser for version listing)
+    { id = "RUSTSEC-2025-0057", reason = "transitive via scraper; unmaintained but not vulnerable" },
+    # number_prefix, via indicatif (progress bar)
+    { id = "RUSTSEC-2025-0119", reason = "transitive via indicatif; unmaintained but not vulnerable" },
+]
+
+[licenses]
+# Every license present in the shipped dependency graph, enumerated
+# deliberately rather than by wildcard. Anything new fails CI until it is
+# reviewed and added here.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "bzip2-1.0.6",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+# MPL-2.0 is file-level copyleft, so shipping it inside an MIT binary is fine
+# as long as we never patch those crates in-tree (we don't; they are all
+# unmodified crates.io releases). Recorded here so the allowance is a decision
+# rather than an accident:
+#   colored           (direct dependency)
+#   cssparser         via selectors -> scraper
+#   cssparser-macros  via cssparser
+#
+# LGPL-2.1-or-later appears only inside the OR expression
+# `MIT OR Apache-2.0 OR LGPL-2.1-or-later` (getrandom via ahash), where
+# allowing MIT already satisfies it. LGPL is deliberately NOT in the allow
+# list, so a crate offering *only* LGPL would fail.
+
+[bans]
+# Duplicate versions are common in a 280-crate graph (base64 0.22/0.23,
+# sha2 0.10/0.11, getrandom 0.2/0.3/0.4, syn 1/2). Warn so they stay visible
+# without blocking unrelated PRs; tighten to "deny" once the tree is deduped.
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+# Only crates.io. A git or path dependency sneaking into Cargo.toml — including
+# via a compromised transitive dep — fails CI.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

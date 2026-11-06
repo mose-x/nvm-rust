@@ -185,18 +185,85 @@ fn p1_11_nvm_fish_help_includes_new_commands() {
     }
 }
 
-/// P1-3: CI must include cargo audit step.
+/// P1-3: CI must include a dependency security scan.
 #[test]
-fn p1_3_ci_includes_cargo_audit() {
+fn p1_3_ci_includes_dependency_security_scan() {
     let ci_yml = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join(".github")
         .join("workflows")
         .join("ci.yml");
     let content = fs::read_to_string(&ci_yml).expect("ci.yml must exist");
 
+    // cargo-deny is the current scanner; cargo-audit is still accepted so this
+    // tracks the intent ("CI scans dependencies") rather than one vendor.
     assert!(
-        content.contains("audit") || content.contains("rustsec"),
-        "CI must include a cargo audit / security scan step"
+        content.contains("cargo-deny-action")
+            || content.contains("cargo deny")
+            || content.contains("audit-check")
+            || content.contains("cargo audit"),
+        "CI must include a cargo-deny / cargo-audit security scan step"
+    );
+}
+
+/// P2-14: the cargo-deny policy must be restrictive *and* actually wired into
+/// CI. `audit.toml` was silently ignored by `rustsec/audit-check`, so asserting
+/// the config file alone would repeat exactly that mistake.
+#[test]
+fn p2_14_deny_toml_enforces_dependency_policy() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let deny_path = root.join("deny.toml");
+    assert!(deny_path.exists(), "deny.toml must exist");
+    let deny = fs::read_to_string(&deny_path).expect("deny.toml must be readable");
+
+    // An explicit allow-list is the whole point. cargo-deny's built-in default
+    // is empty, so a missing list fails everything and a wildcard enforces
+    // nothing.
+    let start = deny.find("allow = [").expect("licenses.allow must exist");
+    let rest = &deny[start..];
+    let allow_block = &rest[..rest.find(']').expect("allow list must close")];
+    for expected in ["MIT", "Apache-2.0"] {
+        assert!(
+            allow_block.contains(&format!("\"{expected}\"")),
+            "{expected} must be allow-listed"
+        );
+    }
+    // Copyleft beyond MPL-2.0 must stay out. Checked against the extracted
+    // array so the explanatory prose mentioning LGPL cannot mask a real entry.
+    for copyleft in ["GPL", "AGPL", "LGPL", "SSPL", "EUPL"] {
+        assert!(
+            !allow_block.contains(copyleft),
+            "{copyleft} must not be allow-listed"
+        );
+    }
+
+    // Only crates.io: a git or path dependency — including one introduced by a
+    // compromised transitive dep — must fail CI.
+    assert!(
+        deny.contains("unknown-registry = \"deny\""),
+        "unknown registries must be denied"
+    );
+    assert!(
+        deny.contains("unknown-git = \"deny\""),
+        "unknown git sources must be denied"
+    );
+    assert!(
+        deny.contains("unmaintained ="),
+        "advisories must set an explicit unmaintained scope"
+    );
+
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("ci.yml must exist");
+    assert!(
+        ci.contains("EmbarkStudios/cargo-deny-action"),
+        "ci.yml must run cargo-deny"
+    );
+    for check in ["advisories", "licenses", "bans", "sources"] {
+        assert!(ci.contains(check), "ci.yml must run the {check} check");
+    }
+
+    // Dead config invites the same "file nobody reads" mistake.
+    assert!(
+        !root.join("audit.toml").exists(),
+        "audit.toml must be removed once cargo-deny owns the policy"
     );
 }
 
