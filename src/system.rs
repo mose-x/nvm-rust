@@ -145,23 +145,31 @@ pub fn get_home_dir() -> String {
     ".".to_string()
 }
 
-pub fn os_check() {
+/// Whether nvm-rust supports the given `std::env::consts::OS` value.
+///
+/// Split out of [`os_check`] because `std::env::consts::OS` is a compile-time
+/// constant, so the unsupported branch is otherwise unreachable from a test
+/// running on any supported platform.
+pub fn is_supported_os(os: &str) -> bool {
+    matches!(os, "linux" | "windows" | "macos")
+}
+
+/// Reject unsupported operating systems.
+///
+/// Returns `Result` instead of calling `process::exit(1)`: an early exit skips
+/// destructors, which would leak the nvm file lock and any `.swap-pending`
+/// recovery marker and leave the next invocation in a stale state.
+pub fn os_check() -> Result<()> {
+    if is_supported_os(std::env::consts::OS) {
+        return Ok(());
+    }
     // `std::env::consts::OS` is a compile-time constant ("linux", "windows",
     // "macos") and is stable across distros — unlike `System::name()` which
     // in sysinfo 0.32 returns the distro name ("Ubuntu", "Debian", …) read
     // from /etc/os-release, not the OS family. Use the constant for the
     // support check and `System::name()` only for the error message.
-    match std::env::consts::OS {
-        "linux" | "windows" | "macos" => {}
-        _ => {
-            let os_name = System::name().unwrap_or_default();
-            eprintln!(
-                "{}",
-                format_t("unsupported_os", std::slice::from_ref(&os_name))
-            );
-            std::process::exit(1);
-        }
-    }
+    let os_name = System::name().unwrap_or_default();
+    anyhow::bail!(format_t("unsupported_os", std::slice::from_ref(&os_name)))
 }
 
 /// Get NVM directory, NVM_DIR env var takes priority
@@ -723,6 +731,47 @@ mod tests {
         let suffix = os_suffix();
         assert!(!suffix.is_empty());
         assert!(suffix.contains("linux") || suffix.contains("darwin") || suffix.contains("win"));
+    }
+
+    #[test]
+    fn test_is_supported_os_accepts_three_targets() {
+        assert!(is_supported_os("linux"));
+        assert!(is_supported_os("windows"));
+        assert!(is_supported_os("macos"));
+    }
+
+    #[test]
+    fn test_is_supported_os_rejects_other_platforms() {
+        // Other values `std::env::consts::OS` can take on tier-3/unsupported
+        // targets, plus the empty and mis-cased forms. `os_check` used to
+        // `process::exit(1)` on these, skipping destructors entirely.
+        for os in [
+            "freebsd",
+            "netbsd",
+            "openbsd",
+            "dragonfly",
+            "android",
+            "ios",
+            "solaris",
+            "illumos",
+            "fuchsia",
+            "redox",
+            "",
+            "Windows",
+            "MacOS",
+            "LINUX",
+        ] {
+            assert!(!is_supported_os(os), "{os:?} must not be supported");
+        }
+    }
+
+    #[test]
+    fn test_os_check_succeeds_on_current_platform() {
+        // CI runs this on Ubuntu, Windows and macOS, all of which
+        // `is_supported_os` accepts, so the call must return Ok rather than
+        // aborting the process.
+        assert!(is_supported_os(std::env::consts::OS));
+        assert!(os_check().is_ok());
     }
 
     #[test]
