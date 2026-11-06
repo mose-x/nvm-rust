@@ -90,7 +90,7 @@ The archive contains: binary + README (en/cn) + LICENSE + install scripts
 |--------|--------------------------|---------------------|
 | Rust install | `dtolnay/rust-toolchain` | rustup or `.svc` |
 | Cache | `Swatinem/rust-cache` | None |
-| Security scan | `rustsec/audit-check` | None |
+| Security scan | `EmbarkStudios/cargo-deny-action` (`deny.toml`) | `cargo deny check` |
 | Cross-compile | 8 targets in release.yml | Current platform only |
 | **Packaging** | **`scripts/package.sh`** | **`scripts/package.sh`** |
 | Release upload | GitHub Release API | Manual |
@@ -200,7 +200,7 @@ bash scripts/package.sh target/release/nvm.exe 2.1.0 windows x64
 |------|---------------------------|-------------------|
 | Rust 安装 | `dtolnay/rust-toolchain` | rustup 或 `.svc` |
 | 缓存 | `Swatinem/rust-cache` | 无 |
-| 安全扫描 | `rustsec/audit-check` | 无 |
+| 安全扫描 | `EmbarkStudios/cargo-deny-action`（`deny.toml`） | `cargo deny check` |
 | 交叉编译 | release.yml 中 8 个目标 | 仅当前平台 |
 | **打包** | **`scripts/package.sh`** | **`scripts/package.sh`** |
 | 发布上传 | GitHub Release API | 手动 |

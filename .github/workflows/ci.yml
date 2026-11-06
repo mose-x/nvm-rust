@@ -39,10 +39,19 @@ jobs:
       - name: Clippy (warnings as errors)
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Security audit (RustSec advisories)
-        uses: rustsec/audit-check@v2.0.0
+      # cargo-deny replaces `rustsec/audit-check`, which never read
+      # `audit.toml` (its CI output reported `"ignore":[]`), leaving that
+      # file's ignores as dead config. cargo-deny honours `deny.toml` and
+      # covers advisories, licenses, bans and sources in one pass.
+      #
+      # Kept inside this job on purpose: branch protection requires the
+      # `fmt + clippy` check by name, so a separate job would not be
+      # enforced and renaming this one would break the required check.
+      - name: Dependency policy + advisories (cargo deny)
+        uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          command: check advisories licenses bans sources
+          arguments: --all-features
 
   # Tests run on all three OSes so Windows-specific code paths
   # (extract.rs 7z handling, #[cfg(unix)] symlinks, where.exe lookup)

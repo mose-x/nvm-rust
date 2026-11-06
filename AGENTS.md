@@ -106,7 +106,7 @@ git checkout -b dev   # only "dev" is allowed by pre-push hook
   content-verification tests in `tests/`.
 
 ### Step 3: Local Verification (MUST pass before commit)
-Run ALL three checks. If ANY fails, fix the issue before proceeding.
+Run ALL four checks. If ANY fails, fix the issue before proceeding.
 
 ```bash
 # Set up environment (Windows with .svc Rust + MSVC Build Tools)
@@ -116,7 +116,14 @@ cargo fmt          # auto-format
 cargo fmt --check  # verify clean (exit 0 = pass)
 cargo clippy --all-targets -- -D warnings   # zero warnings allowed
 cargo test --all   # ALL tests must pass (unit + integration)
+cargo deny check   # dependency policy: advisories/licenses/bans/sources
 ```
+
+`cargo deny` is only needed when `Cargo.toml`, `Cargo.lock` or `deny.toml`
+changes, but CI runs it on every PR. It is not part of the `.svc` toolchain:
+either `cargo install cargo-deny --locked`, or download the prebuilt binary
+from `EmbarkStudios/cargo-deny` releases and drop `cargo-deny.exe` into
+`C:\Users\mose\.svc\shims\`.
 
 **If `cargo test --all` fails, do NOT proceed. Fix the failing test first.**
 Do NOT use `--no-verify` to bypass hooks — fix the root cause.
@@ -153,13 +160,17 @@ curl -X POST -H "Authorization: token <TOKEN>" \
   -d '{"title":"...","head":"dev","base":"main","body":"..."}'
 ```
 
-CI runs 5 checks on the PR:
+CI runs 5 status checks on the PR (steps 1-3 all run inside the single
+`fmt + clippy` job, so they count as one required check):
 1. `cargo fmt --check` (Linux)
 2. `cargo clippy -- -D warnings` (Linux)
-3. `cargo test --all` (Ubuntu)
-4. `cargo test --all` (Windows)
-5. `cargo test --all` (macOS)
-6. commit-lint (PR only)
+3. `cargo deny check` — advisories + licenses + bans + sources, policy in
+   `deny.toml` (Linux). Replaced `rustsec/audit-check`, which never read
+   `audit.toml`, so that file's ignores were dead config.
+4. `cargo test --all` (Ubuntu)
+5. `cargo test --all` (Windows)
+6. `cargo test --all` (macOS)
+7. commit-lint (PR only)
 
 **ALL checks must pass (green). Do NOT merge if any check fails or is pending.**
 
