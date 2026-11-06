@@ -25,10 +25,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Read the floor from Cargo.toml instead of hardcoding it here, so the
+      # manifest and the workflow cannot drift apart.
+      - name: Read declared MSRV from Cargo.toml
+        id: msrv
+        run: |
+          v=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+          if [ -z "$v" ]; then
+            echo "::error::Cargo.toml declares no rust-version"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust (stable, with rustfmt + clippy)
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - name: Install Rust (MSRV ${{ steps.msrv.outputs.version }})
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
 
       - name: Cache cargo registry + build artifacts
         uses: Swatinem/rust-cache@v2
@@ -38,6 +55,14 @@ jobs:
 
       - name: Clippy (warnings as errors)
         run: cargo clippy --all-targets -- -D warnings
+
+      # Without this step `rust-version` is a claim nobody checks: the first
+      # dependency to raise its own floor would silently invalidate it.
+      # Lives in this job for the same reason as cargo-deny below — branch
+      # protection requires `fmt + clippy` by name, so a separate `msrv` job
+      # would run but never block a merge.
+      - name: MSRV build check (${{ steps.msrv.outputs.version }})
+        run: cargo +${{ steps.msrv.outputs.version }} check --all-targets --locked
 
       # cargo-deny replaces `rustsec/audit-check`, which never read
       # `audit.toml` (its CI output reported `"ignore":[]`), leaving that
@@ -74,6 +99,59 @@ jobs:
 
       - name: Tests
         run: cargo test --all
+
+      # Smoke test the RELEASE artifact. `cargo test` only ever builds the
+      # debug profile, so `[profile.release]` (lto = true, codegen-units = 1,
+      # strip = true) was never validated on any platform — an LTO or
+      # strip-induced breakage would ship. This runs the binary that actually
+      # gets distributed.
+      #
+      # Only read-only subcommands: `nvm refresh` is deliberately excluded
+      # because it rewrites the runner's PowerShell profile, and profile
+      # pollution is exactly what #126 fixed.
+      - name: Smoke test release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked
+
+          bin=./target/release/nvm
+          [ -x "$bin" ] || bin=./target/release/nvm.exe
+          if [ ! -x "$bin" ]; then
+            echo "::error::release binary was not produced"
+            exit 1
+          fi
+
+          expected=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          if [ -z "$expected" ]; then
+            echo "::error::could not read version from Cargo.toml"
+            exit 1
+          fi
+
+          # Throwaway NVM_DIR so the smoke run can neither read nor write a
+          # real install; ensure_nvm_dir() creates it on first use.
+          export NVM_DIR="${RUNNER_TEMP:-/tmp}/nvm-smoke"
+
+          out=$("$bin" --version)
+          echo "nvm --version -> $out"
+          if [ "$out" != "nvm $expected" ]; then
+            echo "::error::expected 'nvm $expected', got '$out'"
+            exit 1
+          fi
+
+          if ! "$bin" --help | grep -q "Usage: nvm"; then
+            echo "::error::--help printed no usage line"
+            exit 1
+          fi
+
+          for cmd in list current version; do
+            if ! "$bin" "$cmd" > /dev/null; then
+              echo "::error::'nvm $cmd' failed against a clean install"
+              exit 1
+            fi
+          done
+
+          echo "smoke ok: release binary runs and reports nvm $expected"
 
   # commit-lint: enforce commit message + identity rules on every PR commit.
   # Delegates to the code-hooks repo's reusable workflow so rule fixes

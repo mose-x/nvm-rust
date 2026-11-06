@@ -160,17 +160,30 @@ curl -X POST -H "Authorization: token <TOKEN>" \
   -d '{"title":"...","head":"dev","base":"main","body":"..."}'
 ```
 
-CI runs 5 status checks on the PR (steps 1-3 all run inside the single
-`fmt + clippy` job, so they count as one required check):
-1. `cargo fmt --check` (Linux)
-2. `cargo clippy -- -D warnings` (Linux)
-3. `cargo deny check` — advisories + licenses + bans + sources, policy in
-   `deny.toml` (Linux). Replaced `rustsec/audit-check`, which never read
-   `audit.toml`, so that file's ignores were dead config.
-4. `cargo test --all` (Ubuntu)
-5. `cargo test --all` (Windows)
-6. `cargo test --all` (macOS)
-7. commit-lint (PR only)
+CI runs 5 status checks on the PR. Branch protection requires these five names
+exactly — `fmt + clippy`, `test (ubuntu-latest)`, `test (windows-latest)`,
+`test (macos-latest)`, `commit-lint / commit-lint` — so **new steps must be
+folded into those jobs**. A separate job would run but never block a merge, and
+renaming a job orphans the required check.
+
+1. `cargo fmt --check` (Linux, `lint` job)
+2. `cargo clippy -- -D warnings` (Linux, `lint` job)
+3. MSRV build check (Linux, `lint` job) — installs the toolchain named by
+   `rust-version` in `Cargo.toml` and runs `cargo check --all-targets --locked`
+   on it. The workflow reads the value out of the manifest at runtime, so
+   bumping `Cargo.toml` alone is enough; do not hardcode a version in `ci.yml`.
+4. `cargo deny check` — advisories + licenses + bans + sources, policy in
+   `deny.toml` (Linux, `lint` job). Replaced `rustsec/audit-check`, which never
+   read `audit.toml`, so that file's ignores were dead config.
+5. `cargo test --all` (Ubuntu)
+6. Release smoke test (Ubuntu, `test` job) — `cargo build --release` then runs
+   the produced binary. `cargo test` only builds debug, so `[profile.release]`
+   (lto / codegen-units / strip) was otherwise never validated. Read-only
+   subcommands only; `nvm refresh` is excluded on purpose because it rewrites
+   the runner's PowerShell profile (the pollution class #126 fixed).
+7. `cargo test --all` (Windows) + release smoke test
+8. `cargo test --all` (macOS) + release smoke test
+9. commit-lint (PR only)
 
 **ALL checks must pass (green). Do NOT merge if any check fails or is pending.**
 

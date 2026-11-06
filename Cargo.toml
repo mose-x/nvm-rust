@@ -2,6 +2,11 @@
 name = "nvm"
 version = "2.3.6"
 edition = "2021"
+# Minimum supported Rust version. Bound by `sevenz-rust2` 0.21.6 (needs 1.93);
+# the next highest in the locked graph are `aes` 0.9.4 (1.89) and `zip` 9.4.1
+# (1.88). Verified by the `msrv` step in .github/workflows/ci.yml — bump this
+# and CI fails until the crate actually compiles on the new floor.
+rust-version = "1.93"
 description = "A fast, feature-rich Node.js version manager written in Rust"
 license = "MIT"
 repository = "https://github.com/mose-x/nvm-rust"
