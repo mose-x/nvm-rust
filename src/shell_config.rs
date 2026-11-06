@@ -203,6 +203,15 @@ fn strip_nvm_lines(content: &str, nvm_dir_str: &str) -> String {
 }
 
 pub fn update_shell_config(version: &str, use_on_cd: bool) -> Result<()> {
+    // Defense in depth, and deliberately *before* the temp-dir guard below so
+    // no environment can skip it. `version` is joined into `nvm_dir` and the
+    // result is written into the user's shell rc — a file every future shell
+    // sources — so a traversal payload here would plant a bogus PATH entry
+    // somewhere far outside the nvm dir. The only caller (info.rs) already
+    // resolved and validated via `resolve_alias`; this keeps a future caller
+    // from silently reopening the hole.
+    crate::utils::validate_version_name(version)?;
+
     let nvm_dir = get_nvm_dir();
     if nvm_dir_in_temp(&nvm_dir) {
         return Ok(());
@@ -713,6 +722,71 @@ mod tests {
             msg.to_lowercase().contains("directory") || msg.to_lowercase().contains("create"),
             "expected create_dir_all error context, got: {msg}"
         );
+    }
+
+    #[test]
+    fn update_shell_config_rejects_unsafe_version_names() {
+        let _guard = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let nvm_tmp = tempfile::TempDir::new().expect("tempdir for NVM_DIR");
+        let old_nvm_dir = std::env::var_os("NVM_DIR");
+        std::env::set_var("NVM_DIR", nvm_tmp.path());
+        struct NvmDirGuard(Option<std::ffi::OsString>);
+        impl Drop for NvmDirGuard {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(v) => std::env::set_var("NVM_DIR", v),
+                    None => std::env::remove_var("NVM_DIR"),
+                }
+            }
+        }
+        let _env = NvmDirGuard(old_nvm_dir);
+
+        // Validation runs *before* the temp-dir guard, so these are rejected
+        // even with a throwaway NVM_DIR — which is also what keeps this test
+        // from ever reaching a real shell rc.
+        for bad in [
+            "v1.0.0/../../etc/passwd",
+            "..",
+            "v20.0.0\\..\\evil",
+            "",
+            "v20.0.0 with space",
+            // An unresolved alias must never get here: info.rs resolves it to a
+            // concrete version first. Rejecting it is the point — `nvm_dir`
+            // joined with `lts/*` is not a version directory.
+            "lts/*",
+        ] {
+            assert!(
+                update_shell_config(bad, false).is_err(),
+                "{bad:?} must be rejected by update_shell_config"
+            );
+        }
+    }
+
+    #[test]
+    fn update_shell_config_accepts_concrete_version_names() {
+        let _guard = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let nvm_tmp = tempfile::TempDir::new().expect("tempdir for NVM_DIR");
+        let old_nvm_dir = std::env::var_os("NVM_DIR");
+        std::env::set_var("NVM_DIR", nvm_tmp.path());
+        struct NvmDirGuard(Option<std::ffi::OsString>);
+        impl Drop for NvmDirGuard {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(v) => std::env::set_var("NVM_DIR", v),
+                    None => std::env::remove_var("NVM_DIR"),
+                }
+            }
+        }
+        let _env = NvmDirGuard(old_nvm_dir);
+
+        // The new check must not over-reject. NVM_DIR is a temp dir, so these
+        // return early via the temp guard without writing any rc file.
+        for good in ["v20.0.0", "20.0.0", "iojs-v3.3.1", "v22", "v0.12.18"] {
+            assert!(
+                update_shell_config(good, false).is_ok(),
+                "{good:?} must be accepted by update_shell_config"
+            );
+        }
     }
 
     #[test]
