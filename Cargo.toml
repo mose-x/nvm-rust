@@ -32,7 +32,10 @@ flate2 = "1.0"
 # zip read support for Windows release archives (nvm-<target>.zip). Used
 # only by `nvm upgrade` to extract the new binary on Windows; Linux/macOS
 # release archives are tar.gz and go through flate2 + tar above.
-zip = { version = "0.6", default-features = false, features = ["deflate"] }
+# `deflate-flate2` rather than `deflate` because we only ever read: in zip 9.x
+# `deflate` expands to zopfli (compression-only) plus a second flate2 backend,
+# while `deflate-flate2` reuses the flate2 already declared above.
+zip = { version = "9.4", default-features = false, features = ["deflate-flate2"] }
 # Pure-Rust 7z decompression for Windows Node.js packages (.7z),
 # so users don't need to install 7-Zip separately.
 sevenz-rust2 = "0.21"
