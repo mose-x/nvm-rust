@@ -267,6 +267,80 @@ fn p2_14_deny_toml_enforces_dependency_policy() {
     );
 }
 
+/// P2-13: Cargo.toml must declare an MSRV, and CI must verify it by reading
+/// the manifest rather than keeping a second copy that can drift.
+#[test]
+fn p2_13_ci_verifies_declared_msrv() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = fs::read_to_string(root.join("Cargo.toml")).expect("Cargo.toml must exist");
+
+    let msrv = manifest
+        .lines()
+        .find_map(|l| l.strip_prefix("rust-version = \"")?.strip_suffix('"'))
+        .expect("Cargo.toml must declare rust-version");
+    assert!(
+        msrv.split('.').count() >= 2 && msrv.starts_with(|c: char| c.is_ascii_digit()),
+        "rust-version must look like a toolchain version, got {msrv:?}"
+    );
+
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("ci.yml must exist");
+    assert!(
+        ci.contains("id: msrv") && ci.contains("steps.msrv.outputs.version"),
+        "ci.yml must derive the MSRV from Cargo.toml at runtime"
+    );
+    assert!(
+        ci.contains("cargo +${{ steps.msrv.outputs.version }} check"),
+        "ci.yml must compile with the declared MSRV toolchain"
+    );
+    assert!(
+        !ci.contains(&format!("rust-toolchain@{msrv}")),
+        "ci.yml must not hardcode the MSRV; read it from Cargo.toml instead"
+    );
+}
+
+/// P2-13: CI must smoke test the release artifact. `cargo test` only builds
+/// the debug profile, so `[profile.release]` (lto / codegen-units / strip)
+/// would otherwise be unvalidated on every platform.
+#[test]
+fn p2_13_ci_smoke_tests_release_binary() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("ci.yml must exist");
+
+    assert!(
+        ci.contains("cargo build --release"),
+        "ci.yml must build the release profile for smoke testing"
+    );
+
+    let smoke = ci
+        .split("Smoke test release binary")
+        .nth(1)
+        .expect("ci.yml must have a named smoke test step");
+
+    // The expected version must come from Cargo.toml, not a literal that goes
+    // stale on the next version bump.
+    assert!(
+        smoke.contains("expected=$(sed -n") && smoke.contains("nvm $expected"),
+        "smoke test must compare --version against Cargo.toml"
+    );
+    assert!(
+        smoke.contains("Usage: nvm"),
+        "smoke test must assert --help renders a usage line"
+    );
+
+    // Test isolation: AGENTS.md forbids touching a real ~/.nvm.rust.
+    assert!(
+        smoke.contains("export NVM_DIR=\"${RUNNER_TEMP:-/tmp}/nvm-smoke\""),
+        "smoke test must redirect NVM_DIR to a throwaway directory"
+    );
+
+    // `nvm refresh` rewrites the runner's PowerShell profile — the pollution
+    // class that #126 fixed. Lock the exclusion so it cannot creep back in.
+    assert!(
+        !smoke.contains("refresh"),
+        "smoke test must not run `nvm refresh`; it rewrites the shell profile"
+    );
+}
+
 /// P1-5: listing.rs uninstall must have auto-switch logic.
 #[test]
 fn p1_5_uninstall_has_auto_switch_logic() {
