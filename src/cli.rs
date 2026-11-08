@@ -81,7 +81,11 @@ pub enum HelpAction {
 }
 
 /// Commands we recognize for help interception (incl. aliases).
-const KNOWN_COMMANDS: &[&str] = &[
+///
+/// `pub(crate)` because this is the authoritative list of what the CLI accepts,
+/// and `completions.rs` maintains four separate per-shell copies of it that
+/// have drifted before — the tests there compare against this.
+pub(crate) const KNOWN_COMMANDS: &[&str] = &[
     "install",
     "use",
     "list",
