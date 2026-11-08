@@ -27,12 +27,26 @@ jobs:
 
       # Read the floor from Cargo.toml instead of hardcoding it here, so the
       # manifest and the workflow cannot drift apart.
+      #
+      # The value is validated here because Cargo.toml is attacker-controlled
+      # on a `pull_request` from a fork, and later steps consume this output.
+      # Without the shape check, `rust-version = "1.93$(curl …)"` reaches the
+      # shell verbatim — and inside double quotes command substitution still
+      # runs, so quoting alone at the use sites is not a defence.
       - name: Read declared MSRV from Cargo.toml
         id: msrv
         run: |
+          set -euo pipefail
           v=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
           if [ -z "$v" ]; then
             echo "::error::Cargo.toml declares no rust-version"
+            exit 1
+          fi
+          # Allow a plain version (`1.93`, `1.93.0`, `1.93-beta`) or a rustup
+          # channel keyword — both are legal `rust-version` values. Everything
+          # else, in particular `$`, backticks, quotes and spaces, is rejected.
+          if ! printf '%s' "$v" | grep -Eq '^([0-9]+(\.[0-9]+)*([.-][0-9A-Za-z.-]+)?|stable|beta|nightly)$'; then
+            echo "::error::rust-version is not a plain version string: $v"
             exit 1
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
@@ -47,8 +61,13 @@ jobs:
       # `cargo clippy` below because the MSRV toolchain ships no rustfmt.
       # `--profile minimal` skips docs/clippy/rustfmt; `cargo +<msrv>` selects
       # this toolchain explicitly at the check step.
+      #
+      # `$MSRV` is passed via `env:` rather than interpolated into the script,
+      # so no manifest content can reach the shell as code.
       - name: Install Rust (MSRV ${{ steps.msrv.outputs.version }})
-        run: rustup toolchain install "${{ steps.msrv.outputs.version }}" --profile minimal --no-self-update
+        env:
+          MSRV: ${{ steps.msrv.outputs.version }}
+        run: rustup toolchain install "$MSRV" --profile minimal --no-self-update
 
       - name: Cache cargo registry + build artifacts
         uses: Swatinem/rust-cache@v2
@@ -65,21 +84,57 @@ jobs:
       # protection requires `fmt + clippy` by name, so a separate `msrv` job
       # would run but never block a merge.
       - name: MSRV build check (${{ steps.msrv.outputs.version }})
-        run: cargo +${{ steps.msrv.outputs.version }} check --all-targets --locked
+        env:
+          MSRV: ${{ steps.msrv.outputs.version }}
+        run: cargo "+$MSRV" check --all-targets --locked
 
       # cargo-deny replaces `rustsec/audit-check`, which never read
       # `audit.toml` (its CI output reported `"ignore":[]`), leaving that
       # file's ignores as dead config. cargo-deny honours `deny.toml` and
       # covers advisories, licenses, bans and sources in one pass.
       #
+      # Installed from a pinned tarball instead of
+      # EmbarkStudios/cargo-deny-action: that action's Dockerfile pipes
+      # `curl --silent -L` — no `-f` — into `tar -xz`, so an HTTP error page
+      # still exits 0 and the job later dies with `gzip: stdin: not in gzip
+      # format`. That turned this required check red on #139 for a reason
+      # unrelated to the change. Here `-f` makes HTTP errors fatal at the
+      # download, `--retry` absorbs transient failures, and the pinned sha256
+      # means a truncated or substituted artifact fails with a clear message
+      # instead of as a mystery downstream.
+      #
+      # The checksum line is built locally rather than fed from upstream's
+      # `.sha256` asset on purpose: that file is a bare 64-byte hash with no
+      # filename and no trailing newline, which `sha256sum -c` rejects with
+      # "no properly formatted SHA256 checksum lines found".
+      #
       # Kept inside this job on purpose: branch protection requires the
       # `fmt + clippy` check by name, so a separate job would not be
       # enforced and renaming this one would break the required check.
       - name: Dependency policy + advisories (cargo deny)
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check advisories licenses bans sources
-          arguments: --all-features
+        env:
+          CARGO_DENY_VERSION: 0.20.2
+          CARGO_DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+        run: |
+          set -euo pipefail
+          target=x86_64-unknown-linux-musl
+          tarball="cargo-deny-${CARGO_DENY_VERSION}-${target}.tar.gz"
+          # Download outside the checkout so the tarball and its extracted
+          # directory never land in the working tree.
+          work="${RUNNER_TEMP}/cargo-deny"
+          mkdir -p "$work"
+          curl -fsSL --retry 3 --retry-delay 2 -o "${work}/${tarball}" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${tarball}"
+          echo "${CARGO_DENY_SHA256}  ${work}/${tarball}" | sha256sum -c -
+          tar -xzf "${work}/${tarball}" -C "$work"
+          deny="${work}/cargo-deny-${CARGO_DENY_VERSION}-${target}/cargo-deny"
+          # Run the binary directly; invoking the downloaded file is identical
+          # to `cargo deny` and needs no write access to a PATH directory.
+          # CWD stays the checkout so cargo-deny resolves this workspace.
+          "$deny" --version
+          # `--all-features` is a top-level cargo-deny flag and must precede
+          # `check`; after it, cargo-deny rejects it as an unexpected argument.
+          "$deny" --all-features check advisories licenses bans sources
 
   # Tests run on all three OSes so Windows-specific code paths
   # (extract.rs 7z handling, #[cfg(unix)] symlinks, where.exe lookup)
