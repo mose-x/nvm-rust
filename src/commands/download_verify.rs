@@ -74,10 +74,12 @@ pub(crate) fn verify_sha256(
     archive_path: &Path,
 ) -> Result<()> {
     use colored::Colorize;
-    let resp = client
-        .get(checksums_url)
-        .send()
-        .map_err(|e| anyhow::anyhow!("{}: {}", T("upgrade_checksum_fetch_failed"), e))?;
+    let resp = client.get(checksums_url).send().map_err(|e| {
+        anyhow::anyhow!(
+            "{}",
+            format_t("upgrade_checksum_fetch_failed", &[e.to_string()])
+        )
+    })?;
     if !resp.status().is_success() {
         anyhow::bail!(
             "{}",
@@ -87,7 +89,12 @@ pub(crate) fn verify_sha256(
             )
         );
     }
-    let text = resp.text().context(T("upgrade_checksum_fetch_failed"))?;
+    let text = resp.text().map_err(|e| {
+        anyhow::anyhow!(
+            "{}",
+            format_t("upgrade_checksum_fetch_failed", &[e.to_string()])
+        )
+    })?;
     // sha256sum writes `<hash>  <name>` per line; `find_checksum_for_asset`
     // tolerates any whitespace run between them.
     let expected: String = find_checksum_for_asset(&text, asset_name).ok_or_else(|| {

@@ -333,10 +333,12 @@ pub fn cmd_migrate(source: &str) -> Result<()> {
                 // so rejecting traversal here cannot break the happy path.
                 if crate::utils::validate_version_name(&default_ver).is_err() {
                     eprintln!(
-                        "{} {}: {}",
+                        "{} {}",
                         "⚠".yellow().bold(),
-                        crate::i18n::T("invalid_version_name"),
-                        default_ver
+                        crate::i18n::format_t(
+                            "invalid_version_name",
+                            std::slice::from_ref(&default_ver)
+                        )
                     );
                 } else {
                     let dest = nvm_dir.join(&default_ver);

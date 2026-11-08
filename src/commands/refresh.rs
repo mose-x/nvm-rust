@@ -24,11 +24,14 @@ pub fn refresh() -> Result<()> {
 
     // 1. Re-create shim scripts (overwrite with latest content)
     crate::shim::create_shims()?;
+    // The count belongs in the locale string via `format_t`, not appended here:
+    // both locales' `refresh_shims` carry a `{0}` placeholder, so `T()` left it
+    // unsubstituted *and* duplicated it with a hardcoded English suffix —
+    // which in cn grafted "(8 commands)" onto a Chinese sentence.
     println!(
-        "  {} {} ({} commands)",
+        "  {} {}",
         "✓".green().bold(),
-        T("refresh_shims"),
-        SHIM_COMMANDS.len()
+        format_t("refresh_shims", &[SHIM_COMMANDS.len().to_string()])
     );
 
     // 2. Regenerate completion scripts (only if already installed)
