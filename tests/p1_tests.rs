@@ -252,12 +252,21 @@ fn p2_14_deny_toml_enforces_dependency_policy() {
     );
 
     let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("ci.yml must exist");
+    // Track the intent, not one delivery mechanism: the step installs a pinned
+    // cargo-deny tarball directly instead of using a third-party action.
     assert!(
-        ci.contains("EmbarkStudios/cargo-deny-action"),
+        ci.contains("cargo-deny") && ci.contains("CARGO_DENY_VERSION"),
         "ci.yml must run cargo-deny"
     );
+    // The four dimensions must be on the invocation itself. Matching them
+    // anywhere in the file would let the explanatory comments — which name all
+    // four — satisfy the check while the real command runs fewer.
+    let invocation = ci
+        .lines()
+        .find(|l| l.contains("--all-features check"))
+        .expect("ci.yml must invoke `cargo-deny --all-features check`");
     for check in ["advisories", "licenses", "bans", "sources"] {
-        assert!(ci.contains(check), "ci.yml must run the {check} check");
+        assert!(invocation.contains(check), "cargo-deny must check {check}");
     }
 
     // Dead config invites the same "file nobody reads" mistake.
@@ -288,13 +297,25 @@ fn p2_13_ci_verifies_declared_msrv() {
         ci.contains("id: msrv") && ci.contains("steps.msrv.outputs.version"),
         "ci.yml must derive the MSRV from Cargo.toml at runtime"
     );
+    // The value reaches cargo through `env:` rather than string interpolation,
+    // so manifest content can never be parsed as shell. Asserting the literal
+    // `cargo +${{ … }}` form would re-require the injectable version.
     assert!(
-        ci.contains("cargo +${{ steps.msrv.outputs.version }} check"),
-        "ci.yml must compile with the declared MSRV toolchain"
+        ci.contains("MSRV: ${{ steps.msrv.outputs.version }}")
+            && ci.contains("cargo \"+$MSRV\" check --all-targets --locked"),
+        "ci.yml must compile with the declared MSRV toolchain, passed via env"
     );
     assert!(
         !ci.contains(&format!("rust-toolchain@{msrv}")),
         "ci.yml must not hardcode the MSRV; read it from Cargo.toml instead"
+    );
+    // The reader step must reject values that are not a plain version. Proven
+    // executably by `ci_msrv_step_rejects_shell_metacharacters`, but that test
+    // is `#[cfg(unix)]` — without this assertion the Windows leg would not
+    // notice the validation being deleted.
+    assert!(
+        ci.contains("grep -Eq") && ci.contains("is not a plain version string"),
+        "the MSRV reader must shape-validate the value it extracts"
     );
 }
 
@@ -870,4 +891,288 @@ fn p2_3_psm1_init_adds_shims() {
         init_body.contains("$NvmShims"),
         "nvm.psm1 Initialize-NvmPath must add $NvmShims to PATH (not just $NvmBin)"
     );
+}
+
+// ---------------------------------------------------------------------------
+// CI hardening. The `lint` job both installs cargo-deny itself and derives the
+// MSRV from Cargo.toml; each feeds a value into a shell, so each is guarded.
+// ---------------------------------------------------------------------------
+
+fn ci_yml() -> String {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("ci.yml must exist")
+}
+
+/// The lines GitHub Actions hands to a shell: the inline `run: <cmd>` form plus
+/// every more-deeply-indented line of a `run: |` block, as `(line number, text)`.
+///
+/// Scanned by indentation rather than parsed as YAML on purpose — the suite has
+/// no YAML dependency and `deny.toml` allow-lists licenses explicitly, so adding
+/// one just to answer "which lines are shell?" would cost more than this.
+fn shell_lines(yaml: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut block_indent: Option<usize> = None;
+    for (idx, line) in yaml.lines().enumerate() {
+        let indent = line.len() - line.trim_start().len();
+        let trimmed = line.trim();
+        if let Some(key_indent) = block_indent {
+            if trimmed.is_empty() {
+                continue;
+            }
+            if indent > key_indent {
+                out.push((idx + 1, line.to_string()));
+                continue;
+            }
+            block_indent = None;
+        }
+        if let Some(rest) = trimmed.strip_prefix("run:") {
+            let rest = rest.trim();
+            if rest.starts_with('|') || rest.starts_with('>') {
+                block_indent = Some(indent);
+            } else {
+                out.push((idx + 1, rest.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// Everything from a step's `- name:` line up to the next step or job, so a test
+/// can assert on that step's `env:` and `run:` together.
+fn step_body(yaml: &str, name: &str) -> String {
+    let lines: Vec<&str> = yaml.lines().collect();
+    let needle = format!("- name: {name}");
+    let start = lines
+        .iter()
+        .position(|l| l.trim() == needle)
+        .unwrap_or_else(|| panic!("ci.yml must have a step named {name:?}"));
+    let step_indent = lines[start].len() - lines[start].trim_start().len();
+    let mut out = vec![lines[start]];
+    for line in &lines[start + 1..] {
+        if line.trim().is_empty() {
+            out.push(line);
+            continue;
+        }
+        if line.len() - line.trim_start().len() <= step_indent {
+            break;
+        }
+        out.push(line);
+    }
+    out.join("\n")
+}
+
+/// Nothing a pull request controls may be interpolated into a shell.
+///
+/// `${{ … }}` is substituted by the runner *before* the shell parses the line,
+/// so a `rust-version` of `1.93$(curl …)` becomes code. Quoting the use site
+/// does not help — command substitution still runs inside double quotes — which
+/// is why such values are passed through `env:` instead. Step `name:` lines are
+/// exempt: they are rendered as text and never reach a shell.
+#[test]
+fn ci_never_interpolates_expressions_into_shell() {
+    let yaml = ci_yml();
+    let lines = shell_lines(&yaml);
+
+    // Guard the guard: were the scanner to stop finding run blocks, the
+    // assertion below would pass on an empty iterator. The probes deliberately
+    // span both scanner paths — an inline `run:` and a `run: |` block — and two
+    // different jobs, without duplicating another test's assertions.
+    for expected in [
+        "cargo fmt --all -- --check",
+        "cargo clippy --all-targets -- -D warnings",
+        "cargo build --release --locked",
+    ] {
+        assert!(
+            lines.iter().any(|(_, l)| l.contains(expected)),
+            "scanner must see {expected:?}, but only found {} shell lines",
+            lines.len()
+        );
+    }
+
+    let offenders: Vec<(usize, String)> = lines
+        .into_iter()
+        .filter(|(_, l)| l.contains("${{"))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "expression interpolation reaches the shell; pass it via env: instead: {offenders:?}"
+    );
+}
+
+/// The cargo-deny download must fail at the download.
+///
+/// The third-party action this replaced piped `curl --silent -L` — no `-f` —
+/// into `tar -xz`. curl exits 0 after writing a 404 body, so the job died later
+/// with `gzip: stdin: not in gzip format`, which is what turned the required
+/// `fmt + clippy` check red on PR #139 for a reason unrelated to the change.
+#[test]
+fn ci_cargo_deny_download_is_fatal_and_pinned() {
+    let yaml = ci_yml();
+    // Assert the `uses:` invocation, not mere mention: the step's own comment
+    // names the action to explain why it was removed, and that comment should
+    // stay. A bare "string absent" check would fail on correct code — the same
+    // trap as matching `ls` and hitting `ls-remote`.
+    assert!(
+        !yaml.contains("uses: EmbarkStudios/cargo-deny-action"),
+        "the Docker action must stay removed: its download cannot fail loudly"
+    );
+
+    let step = step_body(&yaml, "Dependency policy + advisories (cargo deny)");
+
+    // `-f` is the actual fix; `--retry` absorbs transient release-CDN failures.
+    assert!(
+        step.contains("curl -fsSL"),
+        "curl must fail on HTTP errors (-f)"
+    );
+    assert!(
+        step.contains("--retry"),
+        "curl must retry transient failures"
+    );
+    assert!(
+        step.contains("set -euo pipefail"),
+        "the step must abort on the first failing command"
+    );
+
+    // A pinned digest, checked before the archive is unpacked.
+    let sha = step
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("CARGO_DENY_SHA256:"))
+        .expect("the step must pin a sha256")
+        .trim()
+        .to_string();
+    assert_eq!(sha.len(), 64, "sha256 must be 64 hex chars, got {sha:?}");
+    assert!(
+        sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "sha256 must be hexadecimal, got {sha:?}"
+    );
+    let verify_at = step
+        .find("sha256sum -c")
+        .expect("the digest must be verified");
+    let unpack_at = step.find("tar -xzf").expect("the archive must be unpacked");
+    assert!(
+        verify_at < unpack_at,
+        "digest must be verified before the archive is unpacked"
+    );
+    // The digest compared must be the pinned one. Fetching a `.sha256` from the
+    // same release as the artifact would prove nothing — an attacker who
+    // replaces one replaces both.
+    assert!(
+        step.contains("\"${CARGO_DENY_SHA256}  "),
+        "the pinned digest must be the one fed to sha256sum"
+    );
+
+    // `--all-features` is a top-level cargo-deny flag; placed after `check` it
+    // is rejected as an unexpected argument.
+    assert!(
+        step.contains("--all-features check"),
+        "--all-features must precede the `check` subcommand"
+    );
+}
+
+/// Branch protection requires these check names verbatim. Renaming a job leaves
+/// its required check permanently pending and blocks every merge, while a newly
+/// added job runs but is never enforced. Both fail silently, so both are locked.
+#[test]
+fn ci_required_check_names_match_branch_protection() {
+    let yaml = ci_yml();
+    for required in [
+        "name: fmt + clippy",
+        "name: test (${{ matrix.os }})",
+        "commit-lint:",
+    ] {
+        assert!(
+            yaml.contains(required),
+            "ci.yml must keep the required check {required:?}"
+        );
+    }
+    for os in ["ubuntu-latest", "windows-latest", "macos-latest"] {
+        assert!(yaml.contains(os), "the test matrix must still cover {os}");
+    }
+}
+
+/// Execute the real MSRV reader step against hostile manifests.
+///
+/// A content assertion can only prove the `grep -Eq` line exists; this proves it
+/// rejects what it claims to. To be clear about what is being defended: removing
+/// the shell interpolation is what closed the injection, so this validation is
+/// defence in depth — its job is to make a malformed `rust-version` fail loudly
+/// at the boundary instead of surfacing as a nonsense rustup error three steps
+/// later.
+///
+/// `#[cfg(unix)]` because the step is a POSIX script and the `lint` job only
+/// ever runs on ubuntu-latest.
+#[cfg(unix)]
+#[test]
+fn ci_msrv_step_rejects_shell_metacharacters() {
+    use std::process::Command;
+
+    let yaml = ci_yml();
+    let step = step_body(&yaml, "Read declared MSRV from Cargo.toml");
+    let body = step
+        .lines()
+        .skip_while(|l| !l.trim().starts_with("run:"))
+        .skip(1)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        body.contains("grep -Eq"),
+        "the step must validate the extracted value"
+    );
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let script = tmp.path().join("msrv.sh");
+    fs::write(&script, body).expect("write extracted step");
+
+    // (Cargo.toml line, whether the step must accept it)
+    let cases = [
+        ("rust-version = \"1.93\"", true),
+        ("rust-version = \"1.93.0\"", true),
+        ("rust-version = \"stable\"", true),
+        ("rust-version = \"1.93$(touch INJECTED)\"", false),
+        ("rust-version = \"1.93`; touch INJECTED`\"", false),
+        ("rust-version = \"1.93\"; touch INJECTED #\"", false),
+    ];
+
+    for (idx, (line, must_accept)) in cases.iter().enumerate() {
+        // A fresh directory per case, so a marker created by one case can never
+        // be mistaken for evidence in the next.
+        let dir = tmp.path().join(format!("case-{idx}"));
+        fs::create_dir_all(&dir).expect("case dir");
+        fs::write(dir.join("Cargo.toml"), format!("{line}\n")).expect("write manifest");
+        let out = dir.join("gh_output");
+        fs::write(&out, "").expect("write GITHUB_OUTPUT");
+
+        // `bash`, not `sh`: GitHub Actions executes Linux `run:` steps with
+        // bash, and the test has to reproduce that environment rather than
+        // depend on whatever `/bin/sh` happens to be on the runner.
+        let status = Command::new("bash")
+            .arg(&script)
+            .current_dir(&dir)
+            .env("GITHUB_OUTPUT", &out)
+            .status()
+            .expect("run the extracted step");
+
+        assert_eq!(
+            status.success(),
+            *must_accept,
+            "manifest line {line:?} must {}",
+            if *must_accept {
+                "be accepted"
+            } else {
+                "be rejected"
+            }
+        );
+        assert!(
+            !dir.join("INJECTED").exists(),
+            "manifest line {line:?} executed shell code"
+        );
+
+        if *must_accept {
+            let written = fs::read_to_string(&out).expect("read GITHUB_OUTPUT");
+            assert!(
+                written.starts_with("version="),
+                "an accepted value must be published to GITHUB_OUTPUT, got {written:?}"
+            );
+        }
+    }
 }
