@@ -8,6 +8,7 @@ use colored::Colorize;
 #[cfg(windows)]
 use std::process::Command;
 
+use crate::i18n::{format_t, T};
 use crate::system::get_nvm_dir;
 
 /// Commands that get a shim. The first four ship with every Node.js
@@ -111,7 +112,7 @@ goto :eof
 pub fn create_shims() -> Result<()> {
     let nvm_dir = get_nvm_dir();
     let shims_dir = nvm_dir.join("shims");
-    fs::create_dir_all(&shims_dir).context("failed to create shims directory")?;
+    fs::create_dir_all(&shims_dir).context(T("shim_dir_create_failed"))?;
 
     let (script, ext): (&str, &str) = if cfg!(target_os = "windows") {
         (windows_shim_script(), "cmd")
@@ -127,13 +128,13 @@ pub fn create_shims() -> Result<()> {
         };
         let shim_path = shims_dir.join(&shim_name);
         fs::write(&shim_path, script)
-            .with_context(|| format!("failed to write shim: {}", shim_name))?;
+            .with_context(|| format_t("shim_write_failed", std::slice::from_ref(&shim_name)))?;
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&shim_path, fs::Permissions::from_mode(0o755))
-                .with_context(|| format!("failed to chmod shim: {}", shim_name))?;
+                .with_context(|| format_t("shim_chmod_failed", std::slice::from_ref(&shim_name)))?;
         }
     }
 
@@ -144,7 +145,7 @@ pub fn create_shims() -> Result<()> {
 pub fn remove_shims() -> Result<()> {
     let shims_dir = get_nvm_dir().join("shims");
     if shims_dir.exists() {
-        fs::remove_dir_all(&shims_dir).context("failed to remove shims directory")?;
+        fs::remove_dir_all(&shims_dir).context(T("shim_remove_failed"))?;
     }
     Ok(())
 }
@@ -240,10 +241,18 @@ pub fn create_active_symlink(nvm_dir: &Path, version: &str) -> Result<()> {
         // Atomic: create temp symlink, rename over existing.
         let tmp = nvm_dir.join("active.tmp");
         let _ = fs::remove_file(&tmp);
-        std::os::unix::fs::symlink(&target, &tmp)
-            .with_context(|| format!("failed to create active symlink: {}", tmp.display()))?;
-        fs::rename(&tmp, &link)
-            .with_context(|| format!("failed to rename active symlink: {}", link.display()))?;
+        std::os::unix::fs::symlink(&target, &tmp).with_context(|| {
+            format_t(
+                "active_symlink_create_failed",
+                std::slice::from_ref(&tmp.display().to_string()),
+            )
+        })?;
+        fs::rename(&tmp, &link).with_context(|| {
+            format_t(
+                "active_symlink_rename_failed",
+                std::slice::from_ref(&link.display().to_string()),
+            )
+        })?;
     }
 
     #[cfg(windows)]
@@ -264,9 +273,14 @@ pub fn create_active_symlink(nvm_dir: &Path, version: &str) -> Result<()> {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .with_context(|| format!("failed to create junction: {}", link.display()))?;
+            .with_context(|| {
+                format_t(
+                    "junction_create_failed",
+                    std::slice::from_ref(&link.display().to_string()),
+                )
+            })?;
         if !status.success() {
-            anyhow::bail!("mklink /J failed for active junction");
+            anyhow::bail!("{}", T("junction_mklink_failed"));
         }
     }
 
@@ -317,7 +331,7 @@ pub fn remove_active_symlink(nvm_dir: &Path) -> Result<()> {
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).context("failed to stat active symlink"),
+        Err(e) => return Err(e).context(T("active_symlink_stat_failed")),
     }
     Ok(())
 }

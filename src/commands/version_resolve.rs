@@ -118,19 +118,26 @@ pub(crate) fn get_latest_lts_version(base_url: &str) -> Result<String> {
 fn latest_lts_from_index(base_url: &str) -> Result<Option<String>> {
     let index_url = format!("{}index.json", base_url);
     let client = crate::proxy::build_http_client();
-    let resp = client
-        .get(&index_url)
-        .send()
-        .with_context(|| format!("fetch index.json failed: {}", index_url))?;
+    let resp = client.get(&index_url).send().with_context(|| {
+        format_t(
+            "index_fetch_failed",
+            std::slice::from_ref(&index_url.to_string()),
+        )
+    })?;
     if !resp.status().is_success() {
-        anyhow::bail!("index.json returned HTTP {}", resp.status());
+        anyhow::bail!(
+            "{}",
+            format_t(
+                "index_http_error",
+                std::slice::from_ref(&resp.status().to_string())
+            )
+        );
     }
-    let text = resp.text().context("read index.json body failed")?;
-    let json: serde_json::Value =
-        serde_json::from_str(&text).context("parse index.json as JSON failed")?;
+    let text = resp.text().context(T("index_read_failed"))?;
+    let json: serde_json::Value = serde_json::from_str(&text).context(T("index_parse_failed"))?;
     let arr = json
         .as_array()
-        .ok_or_else(|| anyhow::anyhow!("index.json root is not an array"))?;
+        .ok_or_else(|| anyhow::anyhow!("{}", T("index_not_array")))?;
     for entry in arr {
         // Each entry: { "version": "v24.18.0", "lts": "Krypton", ... }
         // Non-LTS releases have `"lts": false`.

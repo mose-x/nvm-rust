@@ -651,6 +651,26 @@ upgrade_admin_hint = "Open a terminal as Administrator and run again: nvm update
 upgrade_admin_command = "One-liner (PowerShell): Start-Process -Verb RunAs nvm -ArgumentList 'update'"
 upgrade_needs_admin = "admin privileges required to update a system-path install"
 
+# Error context that used to be hardcoded English at the call site (P2-4).
+shim_write_failed = "Failed to write shim script {0}"
+shim_dir_create_failed = "Failed to create shims directory"
+shim_chmod_failed = "Failed to mark shim script {0} executable"
+shim_remove_failed = "Failed to remove shims directory"
+active_symlink_create_failed = "Failed to create active symlink at {0}"
+active_symlink_rename_failed = "Failed to rename active symlink at {0}"
+active_symlink_stat_failed = "Failed to inspect active symlink"
+junction_create_failed = "Failed to create junction at {0}"
+junction_mklink_failed = "mklink /J failed while creating the active junction"
+nvm_dir_remove_failed = "Failed to remove the nvm directory"
+index_fetch_failed = "Failed to fetch the version index from {0}"
+index_http_error = "The version index returned HTTP {0}"
+index_read_failed = "Failed to read the version index response"
+index_parse_failed = "Failed to parse the version index as JSON"
+index_not_array = "The version index root is not an array"
+npm_symlink_failed = "Failed to symlink the npm binary at {0}"
+npm_copy_failed = "Failed to copy the npm binary at {0}"
+init_restart_terminal = "Restart your terminal"
+
 [_meta]
 display_name = "English"
 aliases = ["en-us", "english"]

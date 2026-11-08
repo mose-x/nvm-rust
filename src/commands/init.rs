@@ -46,7 +46,7 @@ pub fn init(shell: Option<&str>) -> Result<()> {
         "zsh" => println!("  exec zsh"),
         "bash" => println!("  exec bash"),
         "fish" => println!("  exec fish"),
-        _ => println!("  Restart your terminal"),
+        _ => println!("  {}", T("init_restart_terminal")),
     }
     Ok(())
 }
