@@ -170,7 +170,7 @@ _nvm_completion() {
         cword=$COMP_CWORD
     fi
 
-    local commands="install uninstall remove use list ls ls-remote remote current dir which run exec alias unalias mirror auto deactivate unload install-npm install-yarn install-pnpm reinstall-packages version version-remote cache language lang proxy completion corepack migrate upgrade help"
+    local commands="install uninstall remove use list ls ls-remote remote current dir which run exec alias unalias mirror auto deactivate unload install-npm install-yarn install-pnpm reinstall-packages version version-remote cache language lang proxy completion corepack migrate upgrade update refresh init doctor help"
     local options="--lts --latest --lts-newer --lts-old --offline --source --no-gpg-verify --reinstall-packages-from --latest-npm --latest-yarn --latest-pnpm --install-if-missing --save --use-on-cd --filter --sort --page --check --force --from-gitee --from-mirror --rollback --silent"
 
     case "$cur" in
@@ -265,6 +265,12 @@ fn build_zsh_script() -> String {
         ("corepack", "help_corepack_about"),
         ("migrate", "help_migrate_about"),
         ("upgrade", "help_upgrade_about"),
+        // `update` is a clap alias of `upgrade` (cli.rs), so it is accepted and
+        // should be completable too.
+        ("update", "help_upgrade_about"),
+        ("refresh", "help_refresh_about"),
+        ("init", "help_init_about"),
+        ("doctor", "help_doctor_about"),
         ("help", "help_root_print_help"),
     ];
 
@@ -491,6 +497,12 @@ fn build_fish_script() -> String {
         ("corepack", "help_corepack_about"),
         ("migrate", "help_migrate_about"),
         ("upgrade", "help_upgrade_about"),
+        // `update` is a clap alias of `upgrade` (cli.rs), so it is accepted and
+        // should be completable too.
+        ("update", "help_upgrade_about"),
+        ("refresh", "help_refresh_about"),
+        ("init", "help_init_about"),
+        ("doctor", "help_doctor_about"),
         ("help", "help_root_print_help"),
     ];
 
@@ -724,6 +736,10 @@ $commands = @(
     'corepack',
     'migrate',
     'upgrade',
+    'update',
+    'refresh',
+    'init',
+    'doctor',
     'help'
 )
 
@@ -787,4 +803,244 @@ fn powershell_completions() -> anyhow::Result<()> {
         None,
         |f| vec![format!(". {}", f.display())],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::KNOWN_COMMANDS;
+
+    /// Point `NVM_DIR` at an empty temp dir for the duration of a test.
+    ///
+    /// `build_zsh_script` and `build_fish_script` interpolate `T(key)`, which
+    /// resolves the language from `NVM_DIR/config.json`; without this the tests
+    /// would read the developer's real `~/.nvm.rust/`. Note `get_language`
+    /// caches process-wide, so the resolved language is not deterministic here
+    /// — which is fine, because every assertion below is on command names and
+    /// shell keywords, never on translated description text.
+    struct NvmDirGuard {
+        old: Option<std::ffi::OsString>,
+        _dir: tempfile::TempDir,
+        _mutex: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for NvmDirGuard {
+        fn drop(&mut self) {
+            match &self.old {
+                Some(v) => std::env::set_var("NVM_DIR", v),
+                None => std::env::remove_var("NVM_DIR"),
+            }
+        }
+    }
+
+    fn isolate_nvm_dir() -> NvmDirGuard {
+        let mutex = crate::system::ENV_TESTS_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let old = std::env::var_os("NVM_DIR");
+        let dir = tempfile::TempDir::new().expect("tempdir for NVM_DIR");
+        std::env::set_var("NVM_DIR", dir.path());
+        NvmDirGuard {
+            old,
+            _dir: dir,
+            _mutex: mutex,
+        }
+    }
+
+    /// The bash `local commands="a b c"` word list.
+    fn bash_commands(script: &str) -> Vec<String> {
+        const MARKER: &str = "local commands=\"";
+        let start = script
+            .find(MARKER)
+            .expect("bash completion must declare a commands list")
+            + MARKER.len();
+        let rest = &script[start..];
+        let end = rest.find('"').expect("bash commands list must be closed");
+        rest[..end].split_whitespace().map(str::to_string).collect()
+    }
+
+    /// Names from the zsh `commands=( 'name:description' ... )` array.
+    fn zsh_commands(script: &str) -> Vec<String> {
+        const MARKER: &str = "commands=(";
+        let start = script
+            .find(MARKER)
+            .expect("zsh completion must build a commands array")
+            + MARKER.len();
+        let rest = &script[start..];
+        let end = rest.find("\n    )").expect("zsh commands array must close");
+        rest[..end]
+            .lines()
+            .filter_map(|l| {
+                let inner = l.trim().strip_prefix('\'')?.strip_suffix('\'')?;
+                Some(inner.split(':').next()?.to_string())
+            })
+            .collect()
+    }
+
+    /// Names from the fish `complete -c nvm -n '__fish_use_subcommand' -a 'name'` lines.
+    fn fish_commands(script: &str) -> Vec<String> {
+        const MARKER: &str = "-n '__fish_use_subcommand' -a '";
+        script
+            .lines()
+            .filter_map(|l| {
+                let start = l.find(MARKER)? + MARKER.len();
+                let rest = &l[start..];
+                Some(rest[..rest.find('\'')?].to_string())
+            })
+            .collect()
+    }
+
+    /// Names from the PowerShell `$commands = @( 'a', 'b' )` array.
+    fn powershell_commands(script: &str) -> Vec<String> {
+        const MARKER: &str = "$commands = @(";
+        let start = script
+            .find(MARKER)
+            .expect("powershell completion must declare $commands")
+            + MARKER.len();
+        let rest = &script[start..];
+        let end = rest.find(')').expect("powershell $commands must close");
+        rest[..end]
+            .lines()
+            .map(|l| {
+                l.trim()
+                    .trim_end_matches(',')
+                    .trim_matches('\'')
+                    .to_string()
+            })
+            .filter(|l| !l.is_empty())
+            .collect()
+    }
+
+    /// Both directions: nothing the CLI accepts may be uncompletable, and
+    /// nothing uncompletable-but-offered may be a command the CLI rejects.
+    ///
+    /// `help` is exempt from the second check — it is not a clap subcommand but
+    /// is intercepted by `cli::intercept_help`, so offering it is correct.
+    fn assert_command_set_matches(shell: &str, offered: Vec<String>) {
+        assert!(
+            offered.len() >= KNOWN_COMMANDS.len(),
+            "{shell} completion offered only {} commands, fewer than the {} the CLI accepts — \
+             the extractor probably broke",
+            offered.len(),
+            KNOWN_COMMANDS.len()
+        );
+
+        let mut missing: Vec<&str> = KNOWN_COMMANDS
+            .iter()
+            .filter(|c| !offered.iter().any(|o| o == **c))
+            .copied()
+            .collect();
+        missing.sort_unstable();
+        assert!(
+            missing.is_empty(),
+            "{shell} completion cannot tab-complete these accepted commands: {missing:?}"
+        );
+
+        let mut extra: Vec<&str> = offered
+            .iter()
+            .filter(|o| *o != "help" && !KNOWN_COMMANDS.contains(&o.as_str()))
+            .map(String::as_str)
+            .collect();
+        extra.sort_unstable();
+        assert!(
+            extra.is_empty(),
+            "{shell} completion offers commands the CLI does not accept: {extra:?}"
+        );
+    }
+
+    /// The four per-shell command lists are maintained separately (zsh and fish
+    /// carry a description per command), so they drift. They did: `refresh`,
+    /// `init`, `doctor` and the `update` alias were all missing, so users could
+    /// not tab-complete them. `cli::KNOWN_COMMANDS` is the authoritative set.
+    #[test]
+    fn every_shell_completion_matches_the_cli_command_set() {
+        let _guard = isolate_nvm_dir();
+        assert_command_set_matches("bash", bash_commands(&build_bash_script()));
+        assert_command_set_matches("zsh", zsh_commands(&build_zsh_script()));
+        assert_command_set_matches("fish", fish_commands(&build_fish_script()));
+        assert_command_set_matches(
+            "powershell",
+            powershell_commands(&build_powershell_script()),
+        );
+    }
+
+    #[test]
+    fn bash_completion_is_structurally_valid() {
+        let s = build_bash_script();
+        for marker in [
+            "_nvm_completion()",
+            // bash-completion integration plus the manual COMP_WORDS fallback,
+            // so the script works either way.
+            "_init_completion",
+            "COMP_WORDS",
+            "compgen -W \"$commands\"",
+            "complete -F _nvm_completion nvm",
+        ] {
+            assert!(s.contains(marker), "bash completion missing {marker:?}");
+        }
+        // Flags with no other discoverable surface.
+        for flag in [
+            "--save",
+            "--silent",
+            "--lts",
+            "--install-if-missing",
+            "--reinstall-packages-from",
+        ] {
+            assert!(s.contains(flag), "bash completion missing flag {flag}");
+        }
+    }
+
+    #[test]
+    fn zsh_completion_is_structurally_valid() {
+        let _guard = isolate_nvm_dir();
+        let s = build_zsh_script();
+        assert!(
+            s.starts_with("#compdef nvm"),
+            "zsh completion must begin with the #compdef tag or zsh will not load it; \
+             starts with {:?}",
+            &s[..s.len().min(48)]
+        );
+        for marker in [
+            "_nvm_commands()",
+            "_describe 'command' commands",
+            "_arguments",
+        ] {
+            assert!(s.contains(marker), "zsh completion missing {marker:?}");
+        }
+    }
+
+    #[test]
+    fn fish_completion_is_structurally_valid() {
+        let _guard = isolate_nvm_dir();
+        let s = build_fish_script();
+        assert!(
+            s.contains("__fish_use_subcommand"),
+            "fish completion missing the subcommand guard"
+        );
+        // Every line must be a `complete` invocation or a comment; anything
+        // else is a syntax error the moment the file is sourced.
+        for line in s.lines() {
+            let t = line.trim();
+            assert!(
+                t.is_empty() || t.starts_with('#') || t.starts_with("complete -c nvm"),
+                "unexpected line in fish completion: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_completion_is_structurally_valid() {
+        let s = build_powershell_script();
+        for marker in [
+            "Register-ArgumentCompleter",
+            "-CommandName nvm",
+            "-Native",
+            "[System.Management.Automation.CompletionResult]",
+        ] {
+            assert!(
+                s.contains(marker),
+                "powershell completion missing {marker:?}"
+            );
+        }
+    }
 }
