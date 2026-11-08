@@ -355,9 +355,9 @@ pub fn uninstall_all() -> Result<()> {
     // alias.json, cache/, completions/, current, .nvm.lock
     if nvm_dir.exists() {
         #[cfg(windows)]
-        remove_dir_windows_best_effort(&nvm_dir).context("failed to remove nvm directory")?;
+        remove_dir_windows_best_effort(&nvm_dir).context(T("nvm_dir_remove_failed"))?;
         #[cfg(not(windows))]
-        fs::remove_dir_all(&nvm_dir).context("failed to remove nvm directory")?;
+        fs::remove_dir_all(&nvm_dir).context(T("nvm_dir_remove_failed"))?;
     }
 
     #[cfg(windows)]

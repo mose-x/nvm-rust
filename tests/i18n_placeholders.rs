@@ -197,3 +197,83 @@ fn placeholder_parser_handles_edge_cases() {
     assert!(placeholders("{0").is_empty());
     assert!(placeholders("{ }").is_empty());
 }
+
+/// Error-context strings deliberately left in English (P2-4).
+///
+/// Each is either an internal invariant a user cannot act on, or detail that
+/// never reaches a terminal:
+///
+/// - `no versions collected` (`alias.rs`) — unreachable unless a code path
+///   forgets to push into the result vector.
+/// - `io.js install requested but no version provided` (`install.rs`) — a
+///   `Config` field invariant, not user input.
+/// - `invalid selector for ...` (`system.rs`) — the selector is a hardcoded
+///   literal in the same expression, so failure means a programming error.
+/// - the four `verify_npm_integrity` messages (`package_upgrade.rs`) — its only
+///   caller tests `.is_err()` and re-raises the already-translated
+///   `npm_integrity_failed`, so these are developer-facing detail. Its unit
+///   tests also assert on the text.
+const ENGLISH_ERROR_ALLOWLIST: &[&str] = &[
+    "no versions collected",
+    "io.js install requested but no version provided",
+    "invalid selector for",
+    "malformed integrity field",
+    "unsupported integrity algorithm",
+    "invalid base64 in integrity field",
+    "sha512 mismatch",
+];
+
+/// Whether `haystack` contains `needle` followed immediately by an ASCII letter,
+/// i.e. a prose literal rather than a `{}`-led format string.
+fn has_prose_literal(haystack: &str, needle: &str) -> bool {
+    match haystack.find(needle) {
+        Some(i) => {
+            let rest = &haystack[i + needle.len()..];
+            rest.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        }
+        None => false,
+    }
+}
+
+/// No new hardcoded-English error context (P2-4 regression guard).
+///
+/// Line-based, so a message split across lines would slip through; every
+/// current call site keeps the literal on one line.
+#[test]
+fn error_context_is_not_hardcoded_english() {
+    const NEEDLES: [&str; 4] = [
+        ".context(\"",
+        "bail!(\"",
+        "anyhow!(\"",
+        "with_context(|| format!(\"",
+    ];
+
+    let offenders: Vec<String> = src_lines()
+        .iter()
+        .filter(|(_, _, text)| {
+            let t = text.trim_start();
+            // Comments legitimately quote these patterns.
+            if t.starts_with("//") {
+                return false;
+            }
+            // Already routed through i18n.
+            if t.contains("T(") || t.contains("format_t(") {
+                return false;
+            }
+            if ENGLISH_ERROR_ALLOWLIST.iter().any(|a| t.contains(a)) {
+                return false;
+            }
+            NEEDLES.iter().any(|n| has_prose_literal(t, n))
+        })
+        .map(|(f, l, t)| format!("{f}:{l}: {}", t.trim()))
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "{} error-context string(s) are hardcoded English. Route them through \
+         T()/format_t with a key in BOTH locales, or add them to \
+         ENGLISH_ERROR_ALLOWLIST above with a reason:\n  {}",
+        offenders.len(),
+        offenders.join("\n  ")
+    );
+}

@@ -651,6 +651,26 @@ upgrade_admin_hint = "请以管理员身份打开终端后重新运行：nvm upd
 upgrade_admin_command = "一键提权（PowerShell）：Start-Process -Verb RunAs nvm -ArgumentList 'update'"
 upgrade_needs_admin = "系统路径安装需要管理员权限才能更新"
 
+# 原先在调用点硬编码英文的错误上下文（P2-4）。
+shim_write_failed = "写入 shim 脚本 {0} 失败"
+shim_dir_create_failed = "创建 shims 目录失败"
+shim_chmod_failed = "为 shim 脚本 {0} 添加可执行权限失败"
+shim_remove_failed = "删除 shims 目录失败"
+active_symlink_create_failed = "在 {0} 创建 active 符号链接失败"
+active_symlink_rename_failed = "重命名 {0} 处的 active 符号链接失败"
+active_symlink_stat_failed = "读取 active 符号链接状态失败"
+junction_create_failed = "在 {0} 创建 junction 失败"
+junction_mklink_failed = "创建 active junction 时 mklink /J 执行失败"
+nvm_dir_remove_failed = "删除 nvm 目录失败"
+index_fetch_failed = "从 {0} 获取版本索引失败"
+index_http_error = "版本索引返回 HTTP {0}"
+index_read_failed = "读取版本索引响应失败"
+index_parse_failed = "将版本索引解析为 JSON 失败"
+index_not_array = "版本索引的根节点不是数组"
+npm_symlink_failed = "在 {0} 为 npm 二进制创建符号链接失败"
+npm_copy_failed = "复制 npm 二进制到 {0} 失败"
+init_restart_terminal = "重启终端"
+
 [_meta]
 display_name = "中文"
 aliases = ["zh", "zh-cn", "zh-hans", "chinese", "中文"]

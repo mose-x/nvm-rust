@@ -298,12 +298,21 @@ pub(crate) fn download_prebuilt_npm(version_dir: &Path, version: &str) -> Result
     let npm_bin_dst_parent = version_dir.join("bin");
     std::fs::create_dir_all(&npm_bin_dst_parent)?;
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&npm_bin_src, &npm_bin_dst)
-        .with_context(|| format!("failed to symlink npm bin at {}", npm_bin_dst.display()))?;
+    std::os::unix::fs::symlink(&npm_bin_src, &npm_bin_dst).with_context(|| {
+        format_t(
+            "npm_symlink_failed",
+            std::slice::from_ref(&npm_bin_dst.display().to_string()),
+        )
+    })?;
     #[cfg(windows)]
     std::fs::copy(&npm_bin_src, &npm_bin_dst)
         .map(|_| ())
-        .with_context(|| format!("failed to copy npm bin at {}", npm_bin_dst.display()))?;
+        .with_context(|| {
+            format_t(
+                "npm_copy_failed",
+                std::slice::from_ref(&npm_bin_dst.display().to_string()),
+            )
+        })?;
 
     // Best-effort cleanup of the downloaded tarball; a failure here doesn't
     // invalidate the install, so don't surface it as an error.
