@@ -23,6 +23,11 @@ mod shell_config;
 mod shim;
 mod system;
 mod term;
+// Test-only: the loopback HTTP server that `download.rs` and `system.rs` tests
+// use to exercise the real resume and signature-fetch paths. Kept out of the
+// release binary.
+#[cfg(test)]
+mod test_http;
 mod utils;
 
 use clap::Parser;
