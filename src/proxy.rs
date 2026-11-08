@@ -39,33 +39,46 @@ lazy_static::lazy_static! {
     static ref PROXY_ENABLED_CACHE: Mutex<Option<bool>> = Mutex::new(None);
 }
 
+/// Proxy environment variables, in descending priority.
+const PROXY_ENV_VARS: [&str; 6] = [
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+];
+
+/// Return the first non-empty proxy among `PROXY_ENV_VARS`.
+///
+/// The lookup is a parameter so precedence is testable as pure logic. Reading
+/// process env from the test instead would be racy against parallel tests and
+/// could not express "unset" on a machine that exports a proxy for its own
+/// network access.
+fn select_proxy_env<F>(lookup: F) -> Option<String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    PROXY_ENV_VARS
+        .iter()
+        .filter_map(|var| lookup(var))
+        .find(|val| !val.is_empty())
+}
+
+fn env_proxy() -> Option<String> {
+    select_proxy_env(|var| env::var(var).ok())
+}
+
 /// Get the currently configured proxy from environment or system settings.
 ///
 /// Lookup order:
-/// 1. Environment variables (HTTPS_PROXY / https_proxy / HTTP_PROXY / ...)
+/// 1. Environment variables (see `PROXY_ENV_VARS`)
 /// 2. Platform-native system proxy:
 ///    - Windows: registry Internet Settings (incl. AutoConfigURL PAC)
 ///    - macOS:   scutil --proxy (incl. ProxyAutoConfigEnable / SOCKSEnable)
 ///    - Linux:   GNOME gsettings (mode = 'auto' PAC or 'manual' per-protocol)
 pub fn get_system_proxy() -> Option<String> {
-    // 1. Environment variables take priority
-    for var in &[
-        "HTTPS_PROXY",
-        "https_proxy",
-        "HTTP_PROXY",
-        "http_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-    ] {
-        if let Ok(val) = env::var(var) {
-            if !val.is_empty() {
-                return Some(val);
-            }
-        }
-    }
-
-    // 2. Platform-native system proxy
-    platform_system_proxy()
+    env_proxy().or_else(platform_system_proxy)
 }
 
 /// Read the platform-native system proxy configuration.
@@ -686,13 +699,165 @@ mod tests {
         assert!(status2.system_proxy.is_none());
     }
 
+    /// Build a `select_proxy_env` lookup from `(var, value)` pairs. Variables
+    /// absent from `pairs` read as unset.
+    fn lookup<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |var: &str| {
+            pairs
+                .iter()
+                .find(|(name, _)| *name == var)
+                .map(|(_, value)| (*value).to_string())
+        }
+    }
+
+    /// RAII guard that saves every `PROXY_ENV_VARS` entry and clears them all.
+    ///
+    /// `get_system_proxy` reads process env, so a test that sets a proxy var
+    /// would otherwise leak it into every later test in this binary — and into
+    /// `build_http_client`, which would then try to route real requests
+    /// through the sentinel.
+    ///
+    /// Acquire `ENV_TESTS_MUTEX` *before* constructing this, i.e. declare the
+    /// lock first: construction already mutates env, and locals drop in
+    /// reverse declaration order, so the lock-first form restores env while
+    /// the lock is still held.
+    struct ProxyEnvGuard {
+        saved: Vec<(String, Option<std::ffi::OsString>)>,
+    }
+
+    impl ProxyEnvGuard {
+        fn cleared() -> Self {
+            let saved = PROXY_ENV_VARS
+                .iter()
+                .map(|var| ((*var).to_string(), std::env::var_os(var)))
+                .collect();
+            for var in PROXY_ENV_VARS {
+                std::env::remove_var(var);
+            }
+            Self { saved }
+        }
+    }
+
+    impl Drop for ProxyEnvGuard {
+        fn drop(&mut self) {
+            for (var, value) in &self.saved {
+                match value {
+                    Some(v) => std::env::set_var(var, v),
+                    None => std::env::remove_var(var),
+                }
+            }
+        }
+    }
+
     #[test]
-    fn test_get_system_proxy_no_env() {
-        // When no proxy env vars are set, should return None
-        // Note: This test may behave differently depending on system env
-        let result = get_system_proxy();
-        // Just verify it doesn't panic and returns the expected type
-        assert!(result.is_none() || result.is_some());
+    fn select_proxy_env_walks_the_precedence_ladder() {
+        // Spelled out independently of `PROXY_ENV_VARS`. Deriving the
+        // expectation from the const would let any reordering pass, which is
+        // the regression actually worth catching: demoting HTTPS_PROXY below
+        // all_proxy would silently route HTTPS traffic through a SOCKS proxy.
+        const EXPECTED_ORDER: [&str; 6] = [
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ];
+        assert_eq!(PROXY_ENV_VARS, EXPECTED_ORDER);
+
+        // Each value is its own variable name, so the winner identifies itself.
+        let mut present: Vec<(&str, &str)> = EXPECTED_ORDER.iter().map(|v| (*v, *v)).collect();
+        for expected in EXPECTED_ORDER {
+            let got = select_proxy_env(lookup(&present));
+            assert_eq!(
+                got.as_deref(),
+                Some(expected),
+                "with {:?} set, {expected} must win",
+                present.iter().map(|(name, _)| *name).collect::<Vec<_>>()
+            );
+            present.retain(|(name, _)| *name != expected);
+        }
+        assert_eq!(select_proxy_env(lookup(&present)), None);
+    }
+
+    #[test]
+    fn select_proxy_env_skips_empty_and_unknown_vars() {
+        // An empty value means "no proxy" and must not shadow a later
+        // variable — the scan continues instead of returning the empty hit.
+        let l = lookup(&[
+            ("HTTPS_PROXY", ""),
+            ("https_proxy", ""),
+            ("HTTP_PROXY", "http://third"),
+        ]);
+        assert_eq!(select_proxy_env(l).as_deref(), Some("http://third"));
+
+        let all_empty = lookup(&[("HTTPS_PROXY", ""), ("all_proxy", "")]);
+        assert_eq!(select_proxy_env(all_empty), None);
+
+        // Variables outside PROXY_ENV_VARS are never consulted.
+        let unrelated = lookup(&[("NO_PROXY", "http://no"), ("socks_proxy", "socks5://x")]);
+        assert_eq!(select_proxy_env(unrelated), None);
+    }
+
+    #[test]
+    fn env_proxy_reads_process_env() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ProxyEnvGuard::cleared();
+
+        assert_eq!(env_proxy(), None, "cleared env must yield no proxy");
+
+        std::env::set_var("http_proxy", "http://127.0.0.1:1/lower");
+        std::env::set_var("HTTP_PROXY", "http://127.0.0.1:1/upper");
+        assert_eq!(
+            env_proxy().as_deref(),
+            Some("http://127.0.0.1:1/upper"),
+            "HTTP_PROXY outranks http_proxy"
+        );
+    }
+
+    #[test]
+    fn get_system_proxy_prefers_env_over_platform() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ProxyEnvGuard::cleared();
+
+        // Deterministic on all three OSes: the env branch short-circuits before
+        // the platform read, so the machine's real proxy settings are irrelevant.
+        std::env::set_var("all_proxy", "http://127.0.0.1:1/nvm-lowest-priority");
+        assert_eq!(
+            get_system_proxy().as_deref(),
+            Some("http://127.0.0.1:1/nvm-lowest-priority"),
+            "even the lowest-priority var must beat the platform proxy"
+        );
+    }
+
+    #[test]
+    fn get_system_proxy_without_env_is_platform_derived() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ProxyEnvGuard::cleared();
+
+        const SENTINEL: &str = "http://127.0.0.1:1/nvm-sentinel";
+
+        // Cannot assert `is_none()`: a runner (or this dev machine) may have a
+        // real system proxy configured, and that is a legitimate `Some`. What
+        // is assertable is that with no proxy env vars the value comes solely
+        // from the platform path, is not a leftover from an earlier test, and
+        // is reproducible across calls (nothing caches the env branch).
+        let baseline = get_system_proxy();
+        assert_ne!(
+            baseline.as_deref(),
+            Some(SENTINEL),
+            "baseline must not be a sentinel leaked from another test"
+        );
+
+        std::env::set_var("HTTPS_PROXY", SENTINEL);
+        assert_eq!(get_system_proxy().as_deref(), Some(SENTINEL));
+
+        std::env::remove_var("HTTPS_PROXY");
+        assert_eq!(
+            get_system_proxy(),
+            baseline,
+            "clearing the env var must fall back to the platform value"
+        );
     }
 
     #[test]
