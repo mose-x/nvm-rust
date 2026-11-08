@@ -170,19 +170,19 @@ pub(crate) fn swap_binary(bin_path: &Path, new_bin: &Path) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         let tmp = bin_path.with_extension("tmp");
         fs::copy(new_bin, &tmp)
-            .with_context(|| format!("{}: {}", T("upgrade_swap_failed"), tmp.display()))?;
+            .with_context(|| format_t("upgrade_swap_failed", &[tmp.display().to_string()]))?;
         // fs::copy applies the source file's mode on Unix, but be explicit so
         // a 0o644 source never yields a non-executable nvm.
         fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755))
-            .with_context(|| format!("{}: {}", T("upgrade_swap_failed"), tmp.display()))?;
+            .with_context(|| format_t("upgrade_swap_failed", &[tmp.display().to_string()]))?;
         // Write marker BEFORE step 3 so a crash between 3 and 4 is detectable.
         let _ = fs::write(&pending, b"pending");
         if bin_path.exists() {
             fs::rename(bin_path, &bak)
-                .with_context(|| format!("{}: {}", T("upgrade_backup_failed"), bak.display()))?;
+                .with_context(|| format_t("upgrade_backup_failed", &[bak.display().to_string()]))?;
         }
         fs::rename(&tmp, bin_path)
-            .with_context(|| format!("{}: {}", T("upgrade_swap_failed"), bin_path.display()))?;
+            .with_context(|| format_t("upgrade_swap_failed", &[bin_path.display().to_string()]))?;
         // Swap completed — remove marker.
         let _ = fs::remove_file(&pending);
     }
@@ -194,13 +194,14 @@ pub(crate) fn swap_binary(bin_path: &Path, new_bin: &Path) -> Result<()> {
             // If a previous .bak exists, remove it first (rename won't overwrite).
             let _ = fs::remove_file(&bak);
             fs::rename(bin_path, &bak)
-                .with_context(|| format!("{}: {}", T("upgrade_backup_failed"), bak.display()))?;
+                .with_context(|| format_t("upgrade_backup_failed", &[bak.display().to_string()]))?;
         }
         // On Windows, `fs::rename` across the same volume works for files.
         // If the new binary is on a different volume, fall back to copy+delete.
         if fs::rename(new_bin, bin_path).is_err() {
-            fs::copy(new_bin, bin_path)
-                .with_context(|| format!("{}: {}", T("upgrade_swap_failed"), bin_path.display()))?;
+            fs::copy(new_bin, bin_path).with_context(|| {
+                format_t("upgrade_swap_failed", &[bin_path.display().to_string()])
+            })?;
             let _ = fs::remove_file(new_bin);
         }
         // Swap completed — remove marker.
@@ -318,7 +319,7 @@ pub(crate) fn rollback_binary(bin_path: &Path) -> Result<()> {
     {
         // Overwrite the live binary with the backup. Atomic on Unix.
         fs::rename(&bak, bin_path)
-            .with_context(|| format!("{}: {}", T("upgrade_swap_failed"), bin_path.display()))?;
+            .with_context(|| format_t("upgrade_swap_failed", &[bin_path.display().to_string()]))?;
     }
     #[cfg(windows)]
     {
@@ -333,7 +334,7 @@ pub(crate) fn rollback_binary(bin_path: &Path) -> Result<()> {
             }
         }
         fs::rename(&bak, bin_path)
-            .with_context(|| format!("{}: {}", T("upgrade_swap_failed"), bin_path.display()))?;
+            .with_context(|| format_t("upgrade_swap_failed", &[bin_path.display().to_string()]))?;
     }
 
     println!(

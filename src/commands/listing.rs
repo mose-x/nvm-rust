@@ -205,7 +205,12 @@ pub fn list_versions() -> Result<()> {
     );
     print!("    ");
     if let Some(curr) = &current {
-        print!("{}", T("active").replace("{0}", curr).green().bold());
+        print!(
+            "{}",
+            format_t("active", std::slice::from_ref(curr))
+                .green()
+                .bold()
+        );
     } else {
         print!("{}", T("no_active").dimmed());
     }
@@ -442,9 +447,7 @@ pub fn cache_list() -> Result<()> {
     print!("    ");
     print!(
         "{}",
-        T("cache_total")
-            .replace("{0}", &format_size(total_bytes))
-            .cyan()
+        format_t("cache_total", &[format_size(total_bytes)]).cyan()
     );
     println!();
     println!();
