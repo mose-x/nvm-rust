@@ -1283,8 +1283,9 @@ exit 0
         );
         assert_eq!(
             stub.verify_calls(),
-            2,
-            "verify runs again after the import attempt"
+            1,
+            "a failed import must not trigger a retry: without new keys the \
+             second verify can only fail the same way"
         );
     }
 
