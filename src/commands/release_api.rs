@@ -10,13 +10,25 @@ use anyhow::{Context, Result};
 
 use crate::i18n::{format_t, T};
 
-/// GitHub repo coordinates. Hardcoded — this is nvm-rust's own self-update,
-/// not a generic installer.
+/// GitHub repo coordinates for self-update.
+///
+/// Not derived from `env!("CARGO_PKG_REPOSITORY")` despite the duplication:
+/// splitting a URL at compile time needs `str` slicing, and `Index` for `str` is
+/// not yet a const trait on stable (rust#143874), so a `const fn` cannot return
+/// the substrings. The alternatives are both worse here — parsing at runtime
+/// adds a failure mode to the one command that replaces the running binary, and
+/// a `build.rs` is disproportionate for two string literals.
+///
+/// `repo_coordinates_match_cargo_toml` below enforces the agreement instead, so
+/// drift fails CI rather than shipping.
 const REPO_OWNER: &str = "mose-x";
 const REPO_NAME: &str = "nvm-rust";
 
 /// Gitee mirror repo (must be kept in sync manually by the owner on each
 /// release). `--from-gitee` switches both the API and the download URL.
+///
+/// Separate host, so its path may legitimately differ from the GitHub one even
+/// once that is derived from metadata.
 const GITEE_OWNER: &str = "mose-x";
 const GITEE_REPO: &str = "nvm-rust";
 
@@ -284,6 +296,24 @@ fn fetch_latest_release_via_html(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P2-1: the self-update coordinates must agree with Cargo.toml.
+    ///
+    /// They cannot be derived at compile time (see the constants' docs), so
+    /// this is what stops them drifting. A fork that repoints `repository`
+    /// without updating the constants would otherwise silently keep
+    /// self-updating from upstream — a confusing failure, since the rest of the
+    /// fork would behave as forked.
+    #[test]
+    fn repo_coordinates_match_cargo_toml() {
+        let repository = env!("CARGO_PKG_REPOSITORY");
+        assert_eq!(
+            repository.trim_end_matches('/'),
+            format!("https://github.com/{REPO_OWNER}/{REPO_NAME}"),
+            "Cargo.toml `repository` and REPO_OWNER/REPO_NAME disagree, so \
+             self-update would target the wrong repo"
+        );
+    }
 
     #[test]
     fn test_parse_tag_from_url_normal() {

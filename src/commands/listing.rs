@@ -8,6 +8,29 @@ use crate::i18n::{format_t, T};
 use crate::system::{get_cache_dir, get_nvm_dir, get_tags};
 use crate::utils::{get_installed_versions, is_lts_version, parse_major};
 
+/// Versions shown per page by `nvm ls-remote`.
+///
+/// Long enough that a typical `--lts` query fits on one page; short enough that
+/// a full remote listing (several hundred versions) doesn't scroll the first
+/// screenful off the terminal.
+const LIST_PAGE_SIZE: usize = 20;
+
+/// Clamp a requested page number and compute the slice bounds for `total` items.
+///
+/// Returns `(page_num, total_pages, start, end)`. Out-of-range requests clamp
+/// instead of erroring — `nvm ls-remote --page 999` should show the last page,
+/// not fail. `total == 0` yields page 1 of 1 with an empty range.
+fn page_bounds(total: usize, requested: Option<usize>) -> (usize, usize, usize, usize) {
+    // `.max(1)` first: `clamp` panics when min > max, and an empty listing has
+    // zero pages. It also matches the display sites, which already showed
+    // `max(1)`.
+    let total_pages = total.div_ceil(LIST_PAGE_SIZE).max(1);
+    let page_num = requested.unwrap_or(1).clamp(1, total_pages);
+    let start = (page_num - 1) * LIST_PAGE_SIZE;
+    let end = (start + LIST_PAGE_SIZE).min(total);
+    (page_num, total_pages, start, end)
+}
+
 fn version_codename_colored(version: &str) -> String {
     let code = get_codename(version);
     if code == "-" {
@@ -294,12 +317,8 @@ pub fn remote_versions(
         return Ok(());
     }
 
-    let page_size = 20;
     let total_count = filtered.len();
-    let total_pages = total_count.div_ceil(page_size);
-    let page_num = page.unwrap_or(1).max(1).min(total_pages.max(1));
-    let start = (page_num - 1) * page_size;
-    let end = (start + page_size).min(total_count);
+    let (page_num, total_pages, start, end) = page_bounds(total_count, page);
 
     let page_items = &filtered[start..end];
 
@@ -353,7 +372,7 @@ pub fn remote_versions(
             "page_info",
             &[
                 page_num.to_string(),
-                total_pages.max(1).to_string(),
+                total_pages.to_string(),
                 (start + 1).to_string(),
                 end.to_string(),
                 total_count.to_string(),
@@ -520,5 +539,59 @@ fn format_size(bytes: u64) -> String {
         format!("{:.1} KB", bytes as f64 / KB as f64)
     } else {
         format!("{} B", bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{page_bounds, LIST_PAGE_SIZE};
+
+    #[test]
+    fn page_bounds_defaults_to_first_page() {
+        // 45 versions -> 3 pages; no explicit request means page 1.
+        assert_eq!(page_bounds(45, None), (1, 3, 0, 20));
+    }
+
+    #[test]
+    fn page_bounds_clamps_zero_and_overflow() {
+        // `--page 0` is meaningless and `--page 999` is past the end. Both must
+        // clamp: returning an out-of-range `start` would panic the caller's
+        // `&filtered[start..end]`.
+        assert_eq!(page_bounds(45, Some(0)), (1, 3, 0, 20));
+        assert_eq!(page_bounds(45, Some(999)), (3, 3, 40, 45));
+    }
+
+    #[test]
+    fn page_bounds_last_page_is_partial() {
+        // 45 % 20 == 5, so the final page is short and `end` clamps to the item
+        // count rather than to start + LIST_PAGE_SIZE.
+        assert_eq!(page_bounds(45, Some(3)), (3, 3, 40, 45));
+    }
+
+    #[test]
+    fn page_bounds_exact_multiple_has_no_empty_trailing_page() {
+        assert_eq!(page_bounds(40, None), (1, 2, 0, 20));
+        assert_eq!(page_bounds(40, Some(2)), (2, 2, 20, 40));
+        assert_eq!(page_bounds(40, Some(3)), (2, 2, 20, 40));
+    }
+
+    #[test]
+    fn page_bounds_empty_listing_is_page_one_of_one() {
+        // Unreachable from `remote_versions` (it returns early on an empty
+        // result), but `clamp` panics when min > max, so `total_pages` must
+        // never be allowed to reach 0.
+        assert_eq!(page_bounds(0, None), (1, 1, 0, 0));
+        assert_eq!(page_bounds(0, Some(7)), (1, 1, 0, 0));
+    }
+
+    #[test]
+    fn page_bounds_page_size_boundaries() {
+        assert_eq!(page_bounds(7, None), (1, 1, 0, 7));
+        assert_eq!(page_bounds(LIST_PAGE_SIZE, None), (1, 1, 0, LIST_PAGE_SIZE));
+        // One more than a full page spills onto a second.
+        assert_eq!(
+            page_bounds(LIST_PAGE_SIZE + 1, None),
+            (1, 2, 0, LIST_PAGE_SIZE)
+        );
     }
 }
