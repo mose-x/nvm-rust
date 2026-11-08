@@ -999,4 +999,343 @@ mod tests {
         assert!(copy_if_different(&src, &dst).unwrap());
         assert_eq!(std::fs::read(&dst).unwrap(), b"old-content?");
     }
+
+    // --- U-13: the GPG signature path over a real HTTP round-trip ------------
+    //
+    // The short-circuits above (`--no-gpg-verify`, `--offline`, no gpg binary)
+    // all return before any I/O, so they say nothing about the part that
+    // matters: fetching `SHASUMS256.txt.sig` and interpreting what
+    // `gpg --verify` reports about it. These run against `crate::test_http` on
+    // loopback with a stub `gpg` on PATH — no network, no keyring, no real
+    // signatures.
+
+    use crate::test_http::{Mode, RangeMode, TestServer};
+
+    /// Isolates `NVM_DIR` so `build_listing_client()` cannot read the real
+    /// `~/.nvm.rust/config.json`. Were the user running `nvm proxy on`, the
+    /// client would otherwise try to route a loopback request through their
+    /// proxy.
+    ///
+    /// Declare after the `ENV_TESTS_MUTEX` lock: construction mutates env, and
+    /// locals drop in reverse declaration order, so lock-first is what restores
+    /// `NVM_DIR` while the lock is still held.
+    struct NvmDirGuard {
+        saved: Option<std::ffi::OsString>,
+        // Never read: held so its `Drop` does not delete the dir mid-test.
+        _dir: tempfile::TempDir,
+    }
+
+    impl NvmDirGuard {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let saved = std::env::var_os("NVM_DIR");
+            std::env::set_var("NVM_DIR", dir.path());
+            Self { saved, _dir: dir }
+        }
+    }
+
+    impl Drop for NvmDirGuard {
+        fn drop(&mut self) {
+            match self.saved.take() {
+                Some(v) => std::env::set_var("NVM_DIR", v),
+                None => std::env::remove_var("NVM_DIR"),
+            }
+        }
+    }
+
+    /// A stub `gpg` prepended to `PATH`.
+    ///
+    /// One script body serves every scenario: exit codes and the stderr text are
+    /// read from files in the stub's own directory, so a test selects a
+    /// behaviour by writing a file instead of generating a new script. stderr
+    /// matters because the production code distinguishes "no public key" from
+    /// "bad signature" by matching on it.
+    ///
+    /// `PATH` is *prepended to*, never cleared or filtered: blanking it would
+    /// break every concurrently running test that spawns a process, and those
+    /// tests have no reason to hold `ENV_TESTS_MUTEX` — the same process-global
+    /// hazard that made `copy_if_different_…` flaky.
+    struct GpgStub {
+        dir: tempfile::TempDir,
+        saved_path: Option<std::ffi::OsString>,
+        saved_stub_dir: Option<std::ffi::OsString>,
+    }
+
+    impl GpgStub {
+        #[cfg(unix)]
+        const UNIX_BODY: &str = r#"D="$NVM_GPG_STUB_DIR"
+printf '%s\n' "$*" >> "$D/calls.log"
+case "$1" in
+  --version) exit 0 ;;
+esac
+case "$2" in
+  --verify)
+    n=0
+    [ -f "$D/verify.count" ] && n=$(cat "$D/verify.count")
+    n=$((n+1))
+    printf '%s' "$n" > "$D/verify.count"
+    rc=$(cat "$D/verify.rc")
+    if [ -f "$D/succeed_after_import" ] && [ "$n" -gt 1 ]; then rc=0; fi
+    cat "$3" >> "$D/sig.txt" 2>/dev/null
+    cat "$D/verify.err" >&2 2>/dev/null
+    exit "$rc"
+    ;;
+  --keyserver)
+    exit "$(cat "$D/recv.rc")"
+    ;;
+esac
+exit 0
+"#;
+
+        /// Install the stub, or `None` where a stub cannot work.
+        ///
+        /// Returns `None` on Windows. Rust resolves a bare program name by
+        /// walking `PATHEXT` on the **outside** and `PATH` on the inside, so
+        /// `.EXE` is tried in every directory before `.CMD` is tried in any: a
+        /// real `gpg.exe` further down `PATH` beats a `gpg.cmd` in the directory
+        /// we prepended. Verified directly — with `probe.cmd` in the first
+        /// `PATH` entry and `probe.exe` in the second, `Command::new("probe")`
+        /// ran the `.exe`. Windows runners ship `gpg.exe` with Git for Windows,
+        /// so the stub would never be reached and these tests would quietly run
+        /// the real gpg against fabricated signatures.
+        ///
+        /// `verify_gpg_signature` has no `#[cfg(windows)]` branch, so the logic
+        /// under test is identical on both; the Ubuntu and macOS legs cover it.
+        fn install(verify_rc: u8, verify_stderr: &str, recv_rc: u8) -> Option<Self> {
+            if cfg!(windows) {
+                return None;
+            }
+            let dir = tempfile::tempdir().expect("tempdir");
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let path = dir.path().join("gpg");
+                std::fs::write(&path, format!("#!/bin/sh\n{}", Self::UNIX_BODY))
+                    .expect("write stub");
+                // Without 0755 the spawn fails, `gpg_available()` reports "no
+                // gpg", and every test below would silently exercise the
+                // SkippedNoGpg short-circuit instead of the real path.
+                let mut perms = std::fs::metadata(&path)
+                    .expect("stub metadata")
+                    .permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&path, perms).expect("chmod stub");
+            }
+
+            for (name, contents) in [
+                ("verify.rc", verify_rc.to_string()),
+                ("recv.rc", recv_rc.to_string()),
+                ("verify.err", verify_stderr.to_string()),
+            ] {
+                std::fs::write(dir.path().join(name), contents).expect("write control file");
+            }
+
+            let saved_path = std::env::var_os("PATH");
+            let saved_stub_dir = std::env::var_os("NVM_GPG_STUB_DIR");
+            let joined = std::env::join_paths(
+                std::iter::once(std::ffi::OsString::from(dir.path())).chain(
+                    std::env::split_paths(&saved_path.clone().unwrap_or_default())
+                        .map(std::ffi::OsString::from),
+                ),
+            )
+            .expect("join PATH");
+            std::env::set_var("PATH", joined);
+            std::env::set_var("NVM_GPG_STUB_DIR", dir.path());
+
+            Some(Self {
+                dir,
+                saved_path,
+                saved_stub_dir,
+            })
+        }
+
+        /// Make the second `--verify` succeed, modelling "the keys are in the
+        /// keyring now".
+        fn succeed_after_import(&self) {
+            std::fs::write(self.dir.path().join("succeed_after_import"), b"").expect("marker");
+        }
+
+        /// Every gpg invocation, one line of arguments each.
+        fn calls(&self) -> Vec<String> {
+            std::fs::read_to_string(self.dir.path().join("calls.log"))
+                .unwrap_or_default()
+                .lines()
+                .map(String::from)
+                .collect()
+        }
+
+        fn verify_calls(&self) -> usize {
+            self.calls()
+                .iter()
+                .filter(|c| c.contains("--verify"))
+                .count()
+        }
+
+        fn keyserver_calls(&self) -> usize {
+            self.calls()
+                .iter()
+                .filter(|c| c.contains("--keyserver"))
+                .count()
+        }
+
+        /// The bytes gpg was handed as the detached signature.
+        fn captured_sig(&self) -> Vec<u8> {
+            std::fs::read(self.dir.path().join("sig.txt")).unwrap_or_default()
+        }
+    }
+
+    impl Drop for GpgStub {
+        fn drop(&mut self) {
+            match self.saved_path.take() {
+                Some(v) => std::env::set_var("PATH", v),
+                None => std::env::remove_var("PATH"),
+            }
+            match self.saved_stub_dir.take() {
+                Some(v) => std::env::set_var("NVM_GPG_STUB_DIR", v),
+                None => std::env::remove_var("NVM_GPG_STUB_DIR"),
+            }
+        }
+    }
+
+    #[test]
+    fn verify_gpg_signature_fetches_the_detached_sig_and_verifies() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _nvm = NvmDirGuard::new();
+        let Some(stub) = GpgStub::install(0, "", 0) else {
+            return;
+        };
+        let server = TestServer::start(
+            b"SIG-BYTES-FROM-SERVER",
+            "\"sig\"",
+            Mode::Range(RangeMode::Honor),
+        );
+
+        let status =
+            verify_gpg_signature(&server.url("/"), "v20.0.0", b"shasums-body", false, false)
+                .expect("a successful verify is not an error");
+        assert_eq!(status, GpgStatus::Verified);
+
+        // The `.sig` URL is assembled by hand in production code; pin the path.
+        let seen = server.requests();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0].path, "/v20.0.0/SHASUMS256.txt.sig");
+
+        // And prove the bytes gpg saw are the ones the server sent — without
+        // this the test would still pass if the fetch were stubbed away.
+        assert_eq!(stub.captured_sig(), b"SIG-BYTES-FROM-SERVER");
+        assert_eq!(stub.verify_calls(), 1);
+        assert_eq!(
+            stub.keyserver_calls(),
+            0,
+            "a signature that verifies must not touch a keyserver"
+        );
+    }
+
+    #[test]
+    fn verify_gpg_signature_reports_a_rejected_signature_as_failed() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _nvm = NvmDirGuard::new();
+        // gpg exits non-zero for a bad signature. The wording deliberately
+        // contains neither missing-key phrase, so this must classify as a
+        // genuine verification failure rather than a keyserver problem.
+        let Some(stub) = GpgStub::install(
+            2,
+            "gpg: BAD signature from \"Node.js Release Signing <release@nodejs.org>\"",
+            0,
+        ) else {
+            return;
+        };
+        let server = TestServer::start(b"SIG", "\"sig\"", Mode::Range(RangeMode::Honor));
+
+        let status = verify_gpg_signature(&server.url("/"), "v20.0.0", b"shasums", false, false)
+            .expect("a rejected signature is a status, not an Err");
+        assert_eq!(status, GpgStatus::Failed);
+        assert_eq!(
+            stub.keyserver_calls(),
+            0,
+            "a bad signature must not trigger a keyserver round-trip"
+        );
+    }
+
+    #[test]
+    fn verify_gpg_signature_reports_failed_key_import_as_not_verified() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _nvm = NvmDirGuard::new();
+        // gpg cannot check the signature, and every keyserver import fails.
+        let Some(stub) = GpgStub::install(2, "gpg: Can't check signature: No public key", 1) else {
+            return;
+        };
+        let server = TestServer::start(b"SIG", "\"sig\"", Mode::Range(RangeMode::Honor));
+
+        let status = verify_gpg_signature(&server.url("/"), "v20.0.0", b"shasums", false, false)
+            .expect("an unavailable key is a status, not an Err");
+
+        // The signature was NOT verified, and callers must abort on this.
+        // Treating it like SkippedNoGpg would let an attacker who can block the
+        // keyserver ship a tampered SHASUMS256.txt with no signature check.
+        assert_eq!(status, GpgStatus::SkippedKeyImport);
+        assert_ne!(status, GpgStatus::Verified);
+        assert_eq!(
+            stub.keyserver_calls(),
+            NODEJS_KEYSERVERS.len(),
+            "every keyserver must be tried before giving up"
+        );
+        assert_eq!(
+            stub.verify_calls(),
+            2,
+            "verify runs again after the import attempt"
+        );
+    }
+
+    #[test]
+    fn verify_gpg_signature_retries_once_after_a_successful_key_import() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _nvm = NvmDirGuard::new();
+        let Some(stub) = GpgStub::install(2, "gpg: No public key", 0) else {
+            return;
+        };
+        stub.succeed_after_import();
+        let server = TestServer::start(b"SIG", "\"sig\"", Mode::Range(RangeMode::Honor));
+
+        let status = verify_gpg_signature(&server.url("/"), "v20.0.0", b"shasums", false, false)
+            .expect("the retry succeeds");
+        assert_eq!(status, GpgStatus::Verified);
+        assert_eq!(
+            stub.keyserver_calls(),
+            1,
+            "the first keyserver that succeeds must stop the loop"
+        );
+        assert_eq!(stub.verify_calls(), 2, "one failed attempt plus one retry");
+    }
+
+    /// The one test here that needs no stub: `verify_gpg_signature` bails on the
+    /// HTTP error *before* it ever spawns gpg, so the real `gpg` on `PATH` is
+    /// enough to get past the `SkippedNoGpg` short-circuit. That makes this the
+    /// security-critical assertion, and it runs on all three platforms.
+    #[test]
+    fn verify_gpg_signature_errors_when_the_detached_sig_is_unreachable() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _nvm = NvmDirGuard::new();
+        if !gpg_available() {
+            return; // no gpg at all: the short-circuit returns before any fetch
+        }
+        let server = TestServer::start(b"never-served", "\"sig\"", Mode::NotFound);
+
+        let err = verify_gpg_signature(&server.url("/"), "v20.0.0", b"shasums", false, false)
+            .expect_err("a missing .sig must be a hard error, never a skip");
+
+        // Asserted on the status code, not on message wording: the surrounding
+        // text is translated, "404" is not.
+        assert!(
+            format!("{err}").contains("404"),
+            "the error should name the HTTP status, got: {err}"
+        );
+        // The fetch was genuinely attempted. A previous version returned a
+        // Skipped* status for an unreachable `.sig`, which let a MITM drop that
+        // request and ship a tampered SHASUMS256.txt unchallenged.
+        let seen = server.requests();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0].path, "/v20.0.0/SHASUMS256.txt.sig");
+    }
 }

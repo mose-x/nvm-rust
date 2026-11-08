@@ -658,4 +658,237 @@ mod tests {
             None => std::env::remove_var("NVM_DIR"),
         }
     }
+
+    // --- U-14: real HTTP Range round-trips ------------------------------------
+    //
+    // The `.part` symlink guard and the If-Range sidecar are testable in
+    // isolation, but the resume *decision* only exists in the exchange with a
+    // server: what the client sends, and what it does with each status it gets
+    // back. These run against `crate::test_http` on loopback.
+
+    use crate::test_http::{Mode, RangeMode, TestServer};
+
+    /// Points `NVM_DIR` at a fresh tempdir so `get_cache_dir()` is isolated,
+    /// creating the cache dir and restoring the variable on drop.
+    ///
+    /// Declare it *after* the `ENV_TESTS_MUTEX` lock: construction already
+    /// mutates env, and locals drop in reverse declaration order, so lock-first
+    /// is what restores `NVM_DIR` while the lock is still held.
+    struct CacheDirGuard {
+        saved: Option<std::ffi::OsString>,
+        // Never read: held so its `Drop` does not delete the cache dir mid-test.
+        _dir: tempfile::TempDir,
+    }
+
+    impl CacheDirGuard {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let saved = std::env::var_os("NVM_DIR");
+            std::env::set_var("NVM_DIR", dir.path());
+            fs::create_dir_all(get_cache_dir()).expect("create cache dir");
+            Self { saved, _dir: dir }
+        }
+
+        fn cache(&self) -> PathBuf {
+            get_cache_dir()
+        }
+
+        fn part(&self, name: &str) -> PathBuf {
+            self.cache().join(format!("{name}{PART_SUFFIX}"))
+        }
+
+        fn sidecar(&self, name: &str) -> PathBuf {
+            ifrange_sidecar_path(&self.cache(), name)
+        }
+    }
+
+    impl Drop for CacheDirGuard {
+        fn drop(&mut self) {
+            match self.saved.take() {
+                Some(v) => std::env::set_var("NVM_DIR", v),
+                None => std::env::remove_var("NVM_DIR"),
+            }
+        }
+    }
+
+    #[test]
+    fn download_to_cache_fetches_a_fresh_body() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = CacheDirGuard::new();
+        let server = TestServer::start(b"0123456789", "\"v1\"", Mode::Range(RangeMode::Honor));
+
+        let path = download_to_cache(&server.url("/node.tar.xz"), "node.tar.xz").expect("download");
+
+        assert_eq!(path, guard.cache().join("node.tar.xz"));
+        assert_eq!(fs::read(&path).unwrap(), b"0123456789");
+        // A completed download leaves no in-flight markers: a lingering `.part`
+        // would make `cache list` hide the file and `cache clear` skip it.
+        assert!(!guard.part("node.tar.xz").exists());
+        assert!(!guard.sidecar("node.tar.xz").exists());
+
+        let seen = server.requests();
+        assert_eq!(seen.len(), 1, "exactly one request: {seen:?}");
+        assert_eq!(seen[0].range, None, "a fresh download must not send Range");
+    }
+
+    #[test]
+    fn download_to_cache_resumes_from_a_partial_file() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = CacheDirGuard::new();
+        let server = TestServer::start(b"0123456789", "\"v1\"", Mode::Range(RangeMode::Honor));
+
+        // An interrupted download: the first 4 bytes, plus the validator
+        // captured when it started.
+        fs::write(guard.part("node.tar.xz"), b"0123").expect("seed part");
+        fs::write(guard.sidecar("node.tar.xz"), "\"v1\"").expect("seed sidecar");
+
+        let path = download_to_cache(&server.url("/node.tar.xz"), "node.tar.xz").expect("resume");
+
+        assert_eq!(fs::read(&path).unwrap(), b"0123456789");
+        let seen = server.requests();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(
+            seen[0].range.as_deref(),
+            Some("bytes=4-"),
+            "must resume from the .part length"
+        );
+        assert_eq!(
+            seen[0].if_range.as_deref(),
+            Some("\"v1\""),
+            "must send the validator stored in the sidecar"
+        );
+    }
+
+    #[test]
+    fn download_to_cache_discards_part_when_server_ignores_range() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = CacheDirGuard::new();
+        let server = TestServer::start(b"0123456789", "\"v1\"", Mode::Range(RangeMode::Ignore));
+
+        fs::write(guard.part("node.tar.xz"), b"0123").expect("seed part");
+
+        let path = download_to_cache(&server.url("/node.tar.xz"), "node.tar.xz").expect("download");
+
+        // A server that answers 200 to a Range request is sending the WHOLE
+        // body. Appending it to the .part would yield "01230123456789".
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            b"0123456789",
+            "a 200 in reply to Range must replace the .part, not append to it"
+        );
+        assert_eq!(server.requests()[0].range.as_deref(), Some("bytes=4-"));
+    }
+
+    #[test]
+    fn download_to_cache_redownloads_when_if_range_validator_is_stale() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = CacheDirGuard::new();
+        // Upstream replaced the file with a DIFFERENT one of the SAME length, so
+        // a size check alone cannot detect it. The stored validator no longer
+        // matches, so an RFC-conformant server answers 200 with the whole new
+        // body rather than 206 with the new tail.
+        let server = TestServer::start(b"abcdefghij", "\"v2\"", Mode::Range(RangeMode::Honor));
+
+        fs::write(guard.part("node.tar.xz"), b"0123").expect("seed old head");
+        fs::write(guard.sidecar("node.tar.xz"), "\"v1\"").expect("seed old validator");
+
+        let path = download_to_cache(&server.url("/node.tar.xz"), "node.tar.xz").expect("download");
+
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            b"abcdefghij",
+            "a validator mismatch must discard the stale head; appending the new \
+             tail would have produced \"0123efghij\""
+        );
+        assert_eq!(
+            server.requests()[0].if_range.as_deref(),
+            Some("\"v1\""),
+            "the stale validator must still be sent, so the server can reject it"
+        );
+    }
+
+    #[test]
+    fn download_to_cache_recovers_from_416() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = CacheDirGuard::new();
+        let server = TestServer::start(b"short", "\"v1\"", Mode::Range(RangeMode::Unsatisfiable));
+
+        // A .part longer than the server's current copy: the resume offset is
+        // past the end. Without 416 handling this bails and leaves the user with
+        // a .part they can never resume past.
+        let stale = b"this-part-is-longer-than-the-file";
+        fs::write(guard.part("node.tar.xz"), stale).expect("seed oversized part");
+        fs::write(guard.sidecar("node.tar.xz"), "\"v1\"").expect("seed sidecar");
+
+        let path =
+            download_to_cache(&server.url("/node.tar.xz"), "node.tar.xz").expect("must recover");
+
+        assert_eq!(fs::read(&path).unwrap(), b"short");
+        let seen = server.requests();
+        assert_eq!(seen.len(), 2, "one ranged attempt plus one retry: {seen:?}");
+        let expected_range = format!("bytes={}-", stale.len());
+        assert_eq!(seen[0].range.as_deref(), Some(expected_range.as_str()));
+        assert_eq!(seen[1].range, None, "the retry must drop the Range header");
+    }
+
+    #[test]
+    fn download_to_cache_serves_a_cached_file_without_requesting() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = CacheDirGuard::new();
+        let server = TestServer::start(b"server-bytes", "\"v1\"", Mode::Range(RangeMode::Honor));
+
+        fs::write(guard.cache().join("node.tar.xz"), b"already-here").expect("seed cache");
+
+        let path =
+            download_to_cache(&server.url("/node.tar.xz"), "node.tar.xz").expect("cache hit");
+
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            b"already-here",
+            "a cache hit must not be overwritten"
+        );
+        assert!(
+            server.requests().is_empty(),
+            "a cache hit must not touch the network at all"
+        );
+    }
+
+    #[test]
+    fn download_to_cache_treats_an_empty_part_as_fresh() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = CacheDirGuard::new();
+        let server = TestServer::start(b"0123456789", "\"v1\"", Mode::Range(RangeMode::Honor));
+
+        fs::write(guard.part("node.tar.xz"), b"").expect("seed empty part");
+
+        let path = download_to_cache(&server.url("/node.tar.xz"), "node.tar.xz").expect("download");
+
+        assert_eq!(fs::read(&path).unwrap(), b"0123456789");
+        assert_eq!(
+            server.requests()[0].range,
+            None,
+            "a zero-byte .part offers nothing to resume, so no Range is sent"
+        );
+    }
+
+    #[test]
+    fn download_to_cache_propagates_http_errors() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = CacheDirGuard::new();
+        let server = TestServer::start(b"ignored", "\"v1\"", Mode::NotFound);
+
+        let err = download_to_cache(&server.url("/gone.tar.xz"), "gone.tar.xz")
+            .expect_err("a 404 must not be reported as success");
+
+        assert!(
+            !guard.cache().join("gone.tar.xz").exists(),
+            "a failed download must not leave a cache file behind"
+        );
+        // Asserting on the status code, not on message wording: the surrounding
+        // text is translated, but "404" is not.
+        assert!(
+            format!("{err}").contains("404"),
+            "the error should name the status, got: {err}"
+        );
+    }
 }
