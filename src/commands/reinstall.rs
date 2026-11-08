@@ -14,6 +14,34 @@ use std::process::Command;
 use crate::i18n::{format_t, T};
 use crate::system::{exe_path, get_nvm_dir, prepend_to_path, version_bin_dir};
 
+/// Global packages to migrate out of `npm list -g --depth=0 --json` output:
+/// the top-level `dependencies` keys minus `npm` and `corepack`, which ship
+/// with Node and are not user-installed.
+///
+/// Returns `None` when npm reported no `dependencies` object at all, which the
+/// caller treats as "nothing to do" and stays silent about. That is distinct
+/// from `Some(vec![])` — an empty list still prints a zero count — so the
+/// `Option` preserves the existing behaviour rather than collapsing two cases.
+///
+/// Extracted from `reinstall_packages_inner`, where the same filter ran twice
+/// (once for the count, once for the install loop) and the two could disagree.
+/// This is also the only part of the flow testable without spawning npm.
+pub(crate) fn packages_to_migrate(json: &serde_json::Value) -> Option<Vec<String>> {
+    const BUNDLED_WITH_NODE: [&str; 2] = ["npm", "corepack"];
+    let deps = json.get("dependencies")?.as_object()?;
+    let mut packages: Vec<String> = deps
+        .keys()
+        .filter(|name| !BUNDLED_WITH_NODE.contains(&name.as_str()))
+        .cloned()
+        .collect();
+    // serde_json's Map is a BTreeMap unless the `preserve_order` feature is on
+    // (it is not, and no dependency enables it), so keys are already sorted.
+    // Sorting explicitly keeps migration order — and the tests — independent
+    // of that feature set.
+    packages.sort();
+    Some(packages)
+}
+
 pub(crate) fn reinstall_packages_inner(from: &str, to: &str) -> Result<()> {
     let nvm_dir = get_nvm_dir();
     let from_dir = nvm_dir.join(from);
@@ -67,24 +95,16 @@ pub(crate) fn reinstall_packages_inner(from: &str, to: &str) -> Result<()> {
             T("npm_list_parse_failed_hint")
         )
     })?;
-    if let Some(deps) = json.get("dependencies").and_then(|d| d.as_object()) {
+    if let Some(packages) = packages_to_migrate(&json) {
         let new_path = prepend_to_path(&version_bin_dir(&to_dir));
-        // Exclude npm/corepack from the count: they are bundled, not migrated.
-        let pkg_count = deps
-            .keys()
-            .filter(|k| *k != "npm" && *k != "corepack")
-            .count();
         println!(
             "  {} {}",
             "ℹ".cyan().bold(),
-            format_t("reinstall_count", &[pkg_count.to_string()])
+            format_t("reinstall_count", &[packages.len().to_string()])
         );
         let mut migrated = 0usize;
         let mut failed: Vec<String> = Vec::new();
-        for pkg in deps.keys() {
-            if pkg == "npm" || pkg == "corepack" {
-                continue;
-            }
+        for pkg in &packages {
             print!("    {} {}... ", "•".cyan(), pkg);
             io::stdout().flush().ok();
             let status = match Command::new(&to_npm)
@@ -162,4 +182,100 @@ pub fn reinstall_packages(from_version: &str) -> Result<()> {
     let current = super::get_current_version()?
         .ok_or_else(|| anyhow::anyhow!("{}", T("no_current_version_set")))?;
     reinstall_packages_inner(&resolved_from, &current)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::packages_to_migrate;
+    use serde_json::json;
+
+    #[test]
+    fn excludes_packages_bundled_with_node() {
+        let json = json!({
+            "dependencies": {
+                "npm": {"version": "10.8.0"},
+                "corepack": {"version": "0.29.0"},
+                "typescript": {"version": "5.6.0"},
+                "eslint": {"version": "9.0.0"}
+            }
+        });
+        assert_eq!(
+            packages_to_migrate(&json).expect("dependencies object is present"),
+            vec!["eslint".to_string(), "typescript".to_string()]
+        );
+    }
+
+    #[test]
+    fn exact_name_match_only() {
+        // A user package whose name merely contains "npm" or "corepack" must
+        // still be migrated; a `starts_with`/`contains` filter would drop it.
+        let json = json!({
+            "dependencies": {
+                "npm": {},
+                "npm-check-updates": {},
+                "corepack": {},
+                "corepack-foo": {}
+            }
+        });
+        assert_eq!(
+            packages_to_migrate(&json).unwrap(),
+            vec!["corepack-foo".to_string(), "npm-check-updates".to_string()]
+        );
+    }
+
+    #[test]
+    fn only_bundled_packages_is_empty_list_not_none() {
+        // Distinct from a missing `dependencies` object: this still prints a
+        // zero count, the missing case stays silent.
+        let json = json!({"dependencies": {"npm": {}, "corepack": {}}});
+        assert_eq!(packages_to_migrate(&json), Some(vec![]));
+    }
+
+    #[test]
+    fn missing_or_malformed_dependencies_is_none() {
+        // Every shape npm could produce that isn't a dependencies object must
+        // collapse to None so the caller keeps its "nothing to do" silence
+        // instead of printing a bogus count.
+        for json in [
+            json!({}),
+            json!({"dependencies": null}),
+            json!({"dependencies": "nope"}),
+            json!({"dependencies": []}),
+            json!({"dependencies": 42}),
+        ] {
+            assert_eq!(packages_to_migrate(&json), None, "input was {json}");
+        }
+    }
+
+    #[test]
+    fn ignores_nested_and_sibling_sections() {
+        // `npm list -g --depth=0` only emits top-level deps, but a deeper
+        // listing must not cause transitive packages to be reinstalled as
+        // globals, and `devDependencies` is not a global-install concept.
+        let json = json!({
+            "name": "probe",
+            "dependencies": {
+                "eslint": {"version": "9.0.0", "dependencies": {"chalk": {"version": "5.0.0"}}}
+            },
+            "devDependencies": {"vitest": {"version": "2.0.0"}}
+        });
+        assert_eq!(
+            packages_to_migrate(&json).unwrap(),
+            vec!["eslint".to_string()]
+        );
+    }
+
+    #[test]
+    fn output_order_is_deterministic() {
+        // Migration runs `npm install -g` in this order, so a nondeterministic
+        // ordering would make failures irreproducible.
+        let json = json!({
+            "dependencies": {"zod": {}, "axios": {}, "mid": {}}
+        });
+        let packages = packages_to_migrate(&json).unwrap();
+        assert_eq!(
+            packages,
+            vec!["axios".to_string(), "mid".to_string(), "zod".to_string()]
+        );
+    }
 }
