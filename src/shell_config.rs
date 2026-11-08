@@ -474,21 +474,54 @@ pub fn rc_has_version_specific_path() -> Result<bool> {
 mod tests {
     use super::*;
 
-    /// Clears `TMPDIR`/`TMP`/`TEMP` for the test's duration so the
-    /// production temp-dir guard (`nvm_dir_in_temp`) does not skip the rc
-    /// write in tests that legitimately operate on a temp `NVM_DIR`.
-    /// Restores the originals on drop. Must be used under `ENV_TESTS_MUTEX`
-    /// (env mutation is process-global).
+    /// A temp root that outlives every test in this binary.
+    ///
+    /// Tests that exercise the rc-writing path need `nvm_dir_in_temp()` to
+    /// return `false` for their `NVM_DIR`, which means the temp-root env vars
+    /// must point somewhere else. They must **not** simply be removed: with
+    /// `TMP`/`TEMP` gone, `std::env::temp_dir()` falls back (on Windows, to
+    /// `USERPROFILE`), so every concurrently running test that calls
+    /// `tempfile::tempdir()` lands inside a directory some *other* test deletes
+    /// on drop. That made
+    /// `system::tests::copy_if_different_skips_identical_and_copies_changed`
+    /// flaky — it would find its own tempdir gone mid-test and fail with
+    /// `ERROR_PATH_NOT_FOUND` (os error 3), which reads like a filesystem race
+    /// but was really cross-test interference. `ENV_TESTS_MUTEX` cannot prevent
+    /// this: the affected tests never touch env themselves, so they have no
+    /// reason to take it.
+    ///
+    /// This directory is therefore deliberately never removed — removing it is
+    /// exactly the bug. The cost is one empty directory per test-binary run.
+    ///
+    /// Callers must hold `ENV_TESTS_MUTEX`: the first call reads
+    /// `std::env::temp_dir()`, which is only guaranteed pristine while no other
+    /// guard has redirected it.
+    fn stable_temp_root() -> &'static std::path::Path {
+        static ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        ROOT.get_or_init(|| {
+            let path = std::env::temp_dir()
+                .join(format!("nvm-rust-test-temp-root-{}", std::process::id()));
+            std::fs::create_dir_all(&path).expect("create stable temp root");
+            path
+        })
+    }
+
+    /// Points `TMPDIR`/`TMP`/`TEMP` at [`stable_temp_root`] for the test's
+    /// duration so the production temp-dir guard (`nvm_dir_in_temp`) does not
+    /// skip the rc write in tests that legitimately operate on a temp
+    /// `NVM_DIR`. Restores the originals on drop. Must be used under
+    /// `ENV_TESTS_MUTEX` (env mutation is process-global).
     struct TempEnvGuard {
         saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
     }
     impl TempEnvGuard {
-        fn clear() -> Self {
+        fn redirect() -> Self {
+            let root = stable_temp_root();
             let saved = ["TMPDIR", "TMP", "TEMP"]
                 .into_iter()
                 .map(|var| {
                     let old = std::env::var_os(var);
-                    std::env::remove_var(var);
+                    std::env::set_var(var, root);
                     (var, old)
                 })
                 .collect();
@@ -504,6 +537,69 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A tempdir created while the temp-root vars are redirected must survive
+    /// the test that redirected them.
+    ///
+    /// Regression test for the flaky
+    /// `system::tests::copy_if_different_skips_identical_and_copies_changed`,
+    /// which would fail with `ERROR_PATH_NOT_FOUND` (os error 3) because its
+    /// own tempdir had been deleted mid-test. The old guard *removed*
+    /// `TMP`/`TEMP`, so `std::env::temp_dir()` fell back to `USERPROFILE` —
+    /// which sibling tests point at a `TempDir` they delete on drop. Any test
+    /// creating a tempdir during that window nested inside it and was deleted
+    /// along with it. `ENV_TESTS_MUTEX` could not help: the victims never touch
+    /// env, so they have no reason to take the lock.
+    #[test]
+    fn redirected_temp_root_outlives_the_test_that_redirected_it() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Stand in for the sibling test: HOME/USERPROFILE point at a TempDir
+        // that is about to be dropped.
+        let home = tempfile::TempDir::new().expect("tempdir for HOME");
+        let old_home = std::env::var_os("HOME");
+        let old_userprofile = std::env::var_os("USERPROFILE");
+        std::env::set_var("HOME", home.path());
+        if cfg!(windows) {
+            std::env::set_var("USERPROFILE", home.path());
+        }
+        let restore = || {
+            match &old_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            if cfg!(windows) {
+                match &old_userprofile {
+                    Some(v) => std::env::set_var("USERPROFILE", v),
+                    None => std::env::remove_var("USERPROFILE"),
+                }
+            }
+        };
+
+        // A "concurrent" test creates its tempdir while the guard is active.
+        let victim = {
+            let _guard = TempEnvGuard::redirect();
+            let v = tempfile::TempDir::new().expect("tempdir while redirected");
+            assert!(
+                !v.path().starts_with(home.path()),
+                "temp_dir() resolved inside the HOME tempdir, which is about to \
+                 be deleted: {}",
+                v.path().display()
+            );
+            v
+        };
+
+        // The sibling test finishes: env is restored and its TempDir removed.
+        restore();
+        drop(home);
+
+        assert!(
+            victim.path().exists(),
+            "tempdir created while redirected was deleted along with the \
+             redirect target: {}",
+            victim.path().display()
+        );
     }
 
     #[test]
@@ -683,9 +779,9 @@ mod tests {
         std::env::set_var("HOME", &blocker);
         std::env::set_var("NVM_DIR", nvm_tmp.path());
         // NVM_DIR is a tempdir here, but this test targets the create_dir_all
-        // error path, not the temp guard — clear the temp env vars so the
-        // guard doesn't short-circuit first.
-        let _temp_guard = TempEnvGuard::clear();
+        // error path, not the temp guard — redirect the temp-root env vars so
+        // the guard doesn't short-circuit first.
+        let _temp_guard = TempEnvGuard::redirect();
 
         // Restore env even if assertions fail — leaking HOME=<blocker> would
         // break every subsequent test that touches the shell config.
@@ -804,11 +900,12 @@ mod tests {
             std::env::set_var("USERPROFILE", home.path());
         }
         std::env::set_var("NVM_DIR", nvm_tmp.path());
-        // Clear all temp env vars (TMPDIR/TMP/TEMP) so the production
+        // Redirect TMPDIR/TMP/TEMP to the stable root so the production
         // temp-dir guard doesn't prevent the migration (TempDir::new()
         // creates under a temp location on every OS, which would trigger
-        // the guard and skip the write).
-        let _temp_guard = TempEnvGuard::clear();
+        // the guard and skip the write). Removing the vars instead would
+        // change where every concurrent test creates its own tempdirs.
+        let _temp_guard = TempEnvGuard::redirect();
         struct Guard {
             old_home: Option<std::ffi::OsString>,
             old_nvm_dir: Option<std::ffi::OsString>,
@@ -895,15 +992,19 @@ export PATH="{nvm}/shims:{nvm}/v22.0.0/bin:$PATH"
         // but if it does (test isolation leak, misconfigured env), refusing
         // to write is the safe choice.
         let _guard = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let tmpdir_base = tempfile::TempDir::new().expect("tempdir for TMPDIR");
-        let nvm_tmp = tempfile::TempDir::new_in(tmpdir_base.path()).expect("nvm dir under TMPDIR");
+        // TMPDIR must contain `nvm_dir` for the guard to fire, and it must not
+        // be a directory this test deletes: on Unix `TMPDIR` *is* honoured by
+        // `std::env::temp_dir()`, so pointing it at a TempDir would swallow any
+        // tempdir a concurrently running test creates during this window.
+        let tmp_root = stable_temp_root();
+        let nvm_tmp = tempfile::TempDir::new_in(tmp_root).expect("nvm dir under TMPDIR");
         let home = tempfile::TempDir::new().expect("tempdir for HOME");
 
         let old_tmpdir = std::env::var_os("TMPDIR");
         let old_home = std::env::var_os("HOME");
         let old_nvm_dir = std::env::var_os("NVM_DIR");
         let old_userprofile = std::env::var_os("USERPROFILE");
-        std::env::set_var("TMPDIR", tmpdir_base.path());
+        std::env::set_var("TMPDIR", tmp_root);
         std::env::set_var("HOME", home.path());
         if cfg!(windows) {
             std::env::set_var("USERPROFILE", home.path());
