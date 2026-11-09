@@ -402,4 +402,139 @@ mod tests {
             "malformed child json should fall through to parent"
         );
     }
+
+    // --- resolve_engines_node ------------------------------------------------
+    //
+    // Reachable in production only through `find_package_json_node_version`, so
+    // every branch below was previously untested: the alias forms, the
+    // newest-installed wildcards, range resolution against the installed set,
+    // bare-version passthrough, and the unsatisfiable fallback.
+    //
+    // LTS majors used here are real registered codenames (hydrogen 18, iron 20,
+    // jod 22); 21 and 23 are odd-numbered Current lines and are never LTS.
+
+    use crate::system::ENV_TESTS_MUTEX;
+
+    /// Isolates `NVM_DIR` and fills it with empty `vX.Y.Z` directories, which is
+    /// all `get_installed_versions()` looks for.
+    ///
+    /// Declare after the `ENV_TESTS_MUTEX` lock: construction mutates env, and
+    /// locals drop in reverse declaration order.
+    struct InstalledVersions {
+        saved: Option<std::ffi::OsString>,
+        dir: tempfile::TempDir,
+    }
+
+    impl InstalledVersions {
+        fn with(versions: &[&str]) -> Self {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let saved = std::env::var_os("NVM_DIR");
+            std::env::set_var("NVM_DIR", dir.path());
+            for v in versions {
+                fs::create_dir_all(dir.path().join(v)).expect("create version dir");
+            }
+            Self { saved, dir }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            self.dir.path()
+        }
+    }
+
+    impl Drop for InstalledVersions {
+        fn drop(&mut self) {
+            match self.saved.take() {
+                Some(v) => std::env::set_var("NVM_DIR", v),
+                None => std::env::remove_var("NVM_DIR"),
+            }
+        }
+    }
+
+    fn resolve(raw: &str, installed: &InstalledVersions) -> Option<String> {
+        resolve_engines_node(raw, true, installed.path()).expect("resolve_engines_node")
+    }
+
+    #[test]
+    fn engines_lts_alias_picks_the_newest_installed_lts() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        // v23.0.0 is newer than every LTS here but is a Current line, so it must
+        // be filtered out — otherwise this assertion cannot distinguish
+        // "newest LTS" from "newest".
+        let iv = InstalledVersions::with(&["v18.20.0", "v20.11.0", "v22.1.0", "v23.0.0"]);
+        for alias in ["lts/*", "lts", "lts/-1", "LTS/*"] {
+            assert_eq!(
+                resolve(alias, &iv).as_deref(),
+                Some("v22.1.0"),
+                "{alias:?} must resolve to the newest installed LTS, not the newest overall"
+            );
+        }
+    }
+
+    #[test]
+    fn engines_lts_alias_without_an_lts_installed_surfaces_the_raw_alias() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let iv = InstalledVersions::with(&["v21.7.0", "v23.0.0"]);
+        assert_eq!(
+            resolve("lts/*", &iv).as_deref(),
+            Some("lts/*"),
+            "no LTS installed: the alias is surfaced so the caller can report it"
+        );
+    }
+
+    #[test]
+    fn engines_wildcard_and_latest_aliases_pick_the_newest_installed() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        // Newest overall, LTS or not — these aliases mean "no preference".
+        let iv = InstalledVersions::with(&["v18.20.0", "v22.1.0", "v23.0.0"]);
+        for alias in ["*", "x", "node", "stable", "latest", "LATEST"] {
+            assert_eq!(
+                resolve(alias, &iv).as_deref(),
+                Some("v23.0.0"),
+                "{alias:?} must resolve to the newest installed version"
+            );
+        }
+    }
+
+    #[test]
+    fn engines_wildcard_with_nothing_installed_is_none() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let iv = InstalledVersions::with(&[]);
+        // Deliberately asymmetric with the `lts/*` case above, which returns the
+        // raw alias. `None` here means "no preference expressed", so the caller
+        // keeps walking (default alias, then the "specify a version" error)
+        // instead of reporting a bogus uninstalled version.
+        assert_eq!(resolve("*", &iv), None);
+        assert_eq!(resolve("node", &iv), None);
+    }
+
+    #[test]
+    fn engines_range_picks_the_newest_installed_that_satisfies_it() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let iv = InstalledVersions::with(&["v18.20.0", "v20.11.0", "v22.1.0"]);
+        // `^20.0.0` is >=20.0.0 <21.0.0, so the newest installed (v22.1.0) must
+        // NOT win — that is what distinguishes range matching from "newest".
+        assert_eq!(resolve("^20.0.0", &iv).as_deref(), Some("v20.11.0"));
+        assert_eq!(resolve(">=18.0.0", &iv).as_deref(), Some("v22.1.0"));
+    }
+
+    #[test]
+    fn engines_bare_version_passes_through_when_not_installed() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let iv = InstalledVersions::with(&["v20.11.0"]);
+        // Passed through verbatim so `use_version` can print the standard
+        // "not installed, run nvm install <ver>" hint.
+        assert_eq!(resolve("22.0.0", &iv).as_deref(), Some("22.0.0"));
+        assert_eq!(resolve("v22.0.0", &iv).as_deref(), Some("v22.0.0"));
+    }
+
+    #[test]
+    fn engines_unsatisfiable_range_surfaces_the_constraint() {
+        let _lock = ENV_TESTS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let iv = InstalledVersions::with(&["v18.20.0"]);
+        assert_eq!(
+            resolve(">=99.0.0", &iv).as_deref(),
+            Some(">=99.0.0"),
+            "an unsatisfiable range is surfaced so the user sees what was asked for"
+        );
+    }
 }
