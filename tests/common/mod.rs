@@ -12,6 +12,7 @@
 
 use std::env;
 use std::ffi::OsString;
+use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 use tempfile::TempDir;
@@ -153,4 +154,58 @@ pub fn combined_output(out: &Output) -> String {
     s.push('\n');
     s.push_str(&String::from_utf8_lossy(&out.stderr));
     s
+}
+
+/// Pin the UI language in `nvm_dir`'s `config.json`, preserving other fields.
+///
+/// `i18n::get_language()` reads the language from `config.json` and from
+/// nowhere else: there is no `LANG`, `LC_*` or `NVM_LANG` fallback anywhere in
+/// the crate (some tests set `NVM_LANG`, which the binary has never read). The
+/// default is English, so assertions on message text already pass today — but
+/// pinning makes them independent of that default, so a future change to
+/// `Lang::default()` cannot silently invalidate every exact-message assertion
+/// in the suite.
+pub fn pin_language(nvm_dir: &Path, lang: &str) {
+    let path = nvm_dir.join("config.json");
+    let mut json: serde_json::Value = fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    json["language"] = serde_json::Value::String(lang.to_string());
+    let body = serde_json::to_string_pretty(&json).expect("serialize config.json");
+    fs::write(&path, body).expect("write config.json");
+}
+
+/// Like [`run_isolated`], but pins the UI language to English first so the
+/// caller can assert on exact message text.
+pub fn run_isolated_en(args: &[&str]) -> (Output, TempDir) {
+    let (dir, nvm_dir) = isolated_nvm_dir();
+    pin_language(dir.path(), "en");
+    let mut cmd = Command::new(nvm_bin());
+    cmd.args(args)
+        .env("NVM_DIR", &nvm_dir)
+        .env("HOME", &nvm_dir);
+    #[cfg(windows)]
+    {
+        cmd.env("USERPROFILE", &nvm_dir);
+    }
+    let output = cmd.output().expect("failed to run nvm binary");
+    (output, dir)
+}
+
+/// Like [`run_isolated_with_home`], but pins the UI language to English first.
+pub fn run_isolated_with_home_en(args: &[&str]) -> (Output, TempDir, TempDir) {
+    let nvm = TempDir::new().expect("tempdir for NVM_DIR");
+    let home = TempDir::new().expect("tempdir for HOME");
+    pin_language(nvm.path(), "en");
+    let mut cmd = Command::new(nvm_bin());
+    cmd.args(args)
+        .env("NVM_DIR", nvm.path())
+        .env("HOME", home.path());
+    #[cfg(windows)]
+    {
+        cmd.env("USERPROFILE", home.path());
+    }
+    let output = cmd.output().expect("failed to run nvm binary");
+    (output, nvm, home)
 }

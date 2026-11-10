@@ -7,7 +7,7 @@
 //!   requires a working node+corepack and is not tested here.
 
 mod common;
-use common::{combined_output, run_isolated, stderr, stdout};
+use common::{combined_output, run_isolated, run_isolated_en, stderr, stdout};
 use std::fs;
 
 // --- `nvm completion` -----------------------------------------------------
@@ -76,15 +76,22 @@ fn completion_powershell_writes_file() {
 fn completion_unknown_shell_prints_hint_exits_zero() {
     // Unknown shell prints an "unsupported shell" hint to stderr and
     // returns Ok(()) (exit 0) — it's a usage hint, not a hard error.
-    let (out, _dir) = run_isolated(&["completion", "tcsh"]);
+    let (out, _dir) = run_isolated_en(&["completion", "tcsh"]);
     assert!(out.status.success(), "completion <unknown> should exit 0");
     let err = stderr(&out);
+    // The old form accepted a bare "shell", which nearly any completion output
+    // contains. The exact message names the offending shell and lists what is
+    // supported — the list is the actionable part of the hint.
     assert!(
-        err.to_lowercase().contains("unsupported")
-            || err.to_lowercase().contains("tcsh")
-            || err.to_lowercase().contains("shell"),
-        "expected 'unsupported shell' hint on stderr, got: {err}"
+        err.contains("Unsupported shell: tcsh"),
+        "the hint should name the rejected shell, got: {err}"
     );
+    for supported in ["bash", "zsh", "fish", "powershell"] {
+        assert!(
+            err.contains(supported),
+            "the hint should list {supported} as supported, got: {err}"
+        );
+    }
 }
 
 // --- `nvm corepack` error paths -------------------------------------------

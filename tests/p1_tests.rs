@@ -194,14 +194,21 @@ fn p1_3_ci_includes_dependency_security_scan() {
         .join("ci.yml");
     let content = fs::read_to_string(&ci_yml).expect("ci.yml must exist");
 
+    // Match only lines the runner hands to a shell, not the whole file. ci.yml
+    // names `EmbarkStudios/cargo-deny-action` in a comment explaining why it was
+    // removed, so a whole-file `contains` passed even with no scan running —
+    // the same trap as matching `ls` and hitting `ls-remote`.
+    //
     // cargo-deny is the current scanner; cargo-audit is still accepted so this
     // tracks the intent ("CI scans dependencies") rather than one vendor.
+    let scanners = shell_lines(&content);
     assert!(
-        content.contains("cargo-deny-action")
-            || content.contains("cargo deny")
-            || content.contains("audit-check")
-            || content.contains("cargo audit"),
-        "CI must include a cargo-deny / cargo-audit security scan step"
+        scanners.iter().any(|(_, line)| {
+            line.contains("cargo deny")
+                || line.contains("cargo-deny")
+                || line.contains("cargo audit")
+        }),
+        "CI must *execute* a cargo-deny / cargo-audit scan, not merely mention one"
     );
 }
 
