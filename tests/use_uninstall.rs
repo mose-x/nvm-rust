@@ -5,7 +5,7 @@
 //! conflicting flags, empty install state) rather than real installs.
 
 mod common;
-use common::{combined_output, create_fake_version, run_isolated, stdout};
+use common::{combined_output, create_fake_version, run_isolated, run_isolated_en, stdout};
 
 // --- `nvm use` error paths -------------------------------------------------
 
@@ -337,15 +337,22 @@ fn use_on_cd_then_auto_silent_switches_silently() {
 
 #[test]
 fn uninstall_no_args_shows_hint() {
-    let (out, _dir) = run_isolated(&["uninstall"]);
+    let (out, _dir) = run_isolated_en(&["uninstall"]);
     assert!(
         !out.status.success(),
         "bare uninstall should fail with hint"
     );
     let s = combined_output(&out);
+    // Both flags, not either: the hint exists to make the user choose between
+    // two destructive modes, so one missing flag is a real regression. The old
+    // disjunction passed on a hint naming only `--all`.
     assert!(
-        s.contains("--all") || s.contains("--self") || s.contains("版本"),
-        "should mention --all/--self in hint: {s}"
+        s.contains("--all") && s.contains("--self"),
+        "the hint must name both --all and --self, got: {s}"
+    );
+    assert!(
+        s.contains("Specify a version"),
+        "the hint should also offer the plain form, got: {s}"
     );
 }
 

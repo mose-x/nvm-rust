@@ -7,7 +7,7 @@
 //!   dependent and intentionally not tested here.
 
 mod common;
-use common::{combined_output, create_fake_version, run_isolated, stdout};
+use common::{combined_output, create_fake_version, run_isolated, run_isolated_en, stdout};
 
 // --- `nvm alias` ----------------------------------------------------------
 
@@ -259,14 +259,25 @@ fn mirror_empty_value_bails() {
 #[test]
 fn proxy_off_succeeds_and_writes_config() {
     // `proxy off` just sets proxy_enabled=false in config; no network.
-    let (out, _dir) = run_isolated(&["proxy", "off"]);
+    let (out, dir) = run_isolated_en(&["proxy", "off"]);
     assert!(out.status.success(), "proxy off should succeed");
+
+    // The test is named for this and previously never checked it. The persisted
+    // flag is the actual contract — `build_http_client` reads config, not the
+    // confirmation text.
+    let raw = std::fs::read_to_string(dir.path().join("config.json"))
+        .expect("`proxy off` must write config.json");
+    let json: serde_json::Value = serde_json::from_str(&raw).expect("config.json must be valid");
+    assert_eq!(
+        json.get("proxy").and_then(|v| v.as_bool()),
+        Some(false),
+        "`proxy off` must persist proxy=false, got: {raw}"
+    );
+
     let s = stdout(&out);
     assert!(
-        s.to_lowercase().contains("off")
-            || s.to_lowercase().contains("direct")
-            || s.to_lowercase().contains("disabled"),
-        "expected 'off/disabled' message, got: {s}"
+        s.contains("Proxy disabled") && s.contains("direct connection"),
+        "expected the proxy_disabled confirmation, got: {s}"
     );
 }
 

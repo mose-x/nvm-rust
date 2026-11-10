@@ -3,20 +3,27 @@
 //! Covers offline error paths: version not installed, exec with no args,
 //! exec with a nonexistent command (against a fake version dir), and
 //! `which` with/without a version argument.
+//!
+//! Message assertions pin the UI language to English first, so they can compare
+//! against the exact `locales/en.toml` text. They previously used disjunctions
+//! such as `contains("current") || contains("no") || contains("version")`,
+//! where the two-letter `contains("no")` matched "node", "not" and
+//! "non-default" alike — the assertion passed on the wrong error and on other
+//! tests' output too.
 
 mod common;
-use common::{combined_output, create_fake_version, run_isolated, stdout};
+use common::{combined_output, create_fake_version, run_isolated_en, stdout};
 
 // --- `nvm run` ------------------------------------------------------------
 
 #[test]
 fn run_nonexistent_version_bails_not_installed() {
-    let (out, _dir) = run_isolated(&["run", "v99.99.99"]);
+    let (out, _dir) = run_isolated_en(&["run", "v99.99.99"]);
     assert!(!out.status.success(), "run v99.99.99 should fail");
     let s = combined_output(&out);
     assert!(
-        s.to_lowercase().contains("not installed") || s.to_lowercase().contains("99.99.99"),
-        "expected 'not installed', got: {s}"
+        s.contains("Version v99.99.99 is not installed"),
+        "expected not_installed naming the version, got: {s}"
     );
 }
 
@@ -24,26 +31,33 @@ fn run_nonexistent_version_bails_not_installed() {
 
 #[test]
 fn exec_without_args_bails_specify_command() {
-    // exec_version checks `args.is_empty()` before resolving the version.
-    let (out, _dir) = run_isolated(&["exec", "v99.99.99"]);
+    // exec_version checks `args.is_empty()` before resolving the version, so
+    // this reports the missing command rather than the uninstalled version.
+    // That ordering is the point of the assertion: were the version resolved
+    // first, the message would be "Version v99.99.99 is not installed".
+    let (out, _dir) = run_isolated_en(&["exec", "v99.99.99"]);
     assert!(!out.status.success(), "exec with no args should fail");
     let s = combined_output(&out);
     assert!(
-        s.to_lowercase().contains("specify") || s.to_lowercase().contains("command"),
-        "expected 'specify command', got: {s}"
+        s.contains("Specify a command to run"),
+        "the empty-args check must run before version resolution, got: {s}"
+    );
+    assert!(
+        !s.contains("is not installed"),
+        "version resolution must not happen first, got: {s}"
     );
 }
 
 #[test]
 fn exec_nonexistent_version_bails_not_installed() {
-    let (out, _dir) = run_isolated(&["exec", "v99.99.99", "echo", "hi"]);
+    let (out, _dir) = run_isolated_en(&["exec", "v99.99.99", "echo", "hi"]);
     assert!(!out.status.success(), "exec v99.99.99 should fail");
     let s = combined_output(&out);
+    // `not_installed_run_install`, which additionally tells the user the exact
+    // command to run. Plain `not_installed` (used by `run`/`which`) does not.
     assert!(
-        s.to_lowercase().contains("not installed")
-            || s.to_lowercase().contains("99.99.99")
-            || s.to_lowercase().contains("install"),
-        "expected 'not installed / run install', got: {s}"
+        s.contains("Version v99.99.99 is not installed. Run 'nvm install v99.99.99' first."),
+        "expected the not_installed_run_install hint, got: {s}"
     );
 }
 
@@ -52,25 +66,23 @@ fn exec_nonexistent_version_bails_not_installed() {
 #[test]
 fn which_no_version_no_current_bails() {
     // No version arg and no current version → bail `no_current_version_set`.
-    let (out, _dir) = run_isolated(&["which"]);
+    let (out, _dir) = run_isolated_en(&["which"]);
     assert!(!out.status.success(), "which with no current should fail");
     let s = combined_output(&out);
     assert!(
-        s.to_lowercase().contains("current")
-            || s.to_lowercase().contains("no")
-            || s.to_lowercase().contains("version"),
-        "expected 'no current version' message, got: {s}"
+        s.contains("No current version set"),
+        "expected no_current_version_set, got: {s}"
     );
 }
 
 #[test]
 fn which_nonexistent_version_bails_not_installed() {
-    let (out, _dir) = run_isolated(&["which", "v99.99.99"]);
+    let (out, _dir) = run_isolated_en(&["which", "v99.99.99"]);
     assert!(!out.status.success(), "which v99.99.99 should fail");
     let s = combined_output(&out);
     assert!(
-        s.to_lowercase().contains("not installed") || s.to_lowercase().contains("99.99.99"),
-        "expected 'not installed', got: {s}"
+        s.contains("Version v99.99.99 is not installed"),
+        "expected not_installed naming the version, got: {s}"
     );
 }
 
@@ -100,9 +112,16 @@ fn which_succeeds_when_version_installed() {
 fn auto_silent_no_nvmrc_bails() {
     // `auto` forwards to `use_version_silent(None, ...)`; with no .nvmrc /
     // .node-version / package.json it bails `specify_version`.
-    let (out, _dir) = run_isolated(&["auto", "--silent"]);
+    let (out, _dir) = run_isolated_en(&["auto", "--silent"]);
     assert!(
         !out.status.success(),
         "auto --silent with no .nvmrc should fail"
+    );
+    let s = combined_output(&out);
+    // All three project files are named, so a future detection source added
+    // without updating the message shows up here.
+    assert!(
+        s.contains(".nvmrc") && s.contains(".node-version") && s.contains("package.json"),
+        "the hint should name every file auto looks for, got: {s}"
     );
 }

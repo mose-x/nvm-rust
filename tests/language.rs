@@ -19,22 +19,57 @@ fn language_status_succeeds() {
 
 #[test]
 fn language_set_cn_then_en_roundtrip() {
-    // Set Chinese.
-    let (out_cn, _dir_cn) = run_isolated(&["language", "cn"]);
+    // ONE NVM_DIR for both steps. This previously called `run_isolated` twice,
+    // which mints a fresh tempdir per call, so the second command could never
+    // see what the first had written — it tested two independent sets and
+    // called the result a round-trip.
+    let (dir, nvm_dir) = isolated_nvm_dir();
+    let config = dir.path().join("config.json");
+
+    let set = |lang: &str| {
+        let mut cmd = Command::new(nvm_bin());
+        cmd.args(["language", lang])
+            .env("NVM_DIR", &nvm_dir)
+            .env("HOME", &nvm_dir);
+        #[cfg(windows)]
+        cmd.env("USERPROFILE", &nvm_dir);
+        cmd.output()
+            .unwrap_or_else(|e| panic!("run `nvm language {lang}`: {e}"))
+    };
+    let stored_language = || -> String {
+        let raw = std::fs::read_to_string(&config)
+            .expect("config.json must exist after `nvm language <x>`");
+        serde_json::from_str::<serde_json::Value>(&raw)
+            .expect("config.json must be valid JSON")
+            .get("language")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    // The persisted value is the contract; the printed confirmation is rendered
+    // in the language just selected, so it also proves the switch took effect
+    // in-process rather than only on disk.
+    let out_cn = set("cn");
     assert!(out_cn.status.success(), "language cn should exit 0");
-    let s_cn = stdout(&out_cn);
+    assert_eq!(stored_language(), "cn", "config.json must record `cn`");
     assert!(
-        s_cn.contains("中文") || s_cn.contains("cn") || s_cn.contains("语言"),
-        "language cn output unexpected: {s_cn}"
+        stdout(&out_cn).contains("中文"),
+        "the confirmation should be rendered in Chinese: {}",
+        stdout(&out_cn)
     );
 
-    // Set English.
-    let (out_en, _dir_en) = run_isolated(&["language", "en"]);
+    let out_en = set("en");
     assert!(out_en.status.success(), "language en should exit 0");
-    let s_en = stdout(&out_en);
+    assert_eq!(
+        stored_language(),
+        "en",
+        "the second set must overwrite the first in the same config"
+    );
     assert!(
-        s_en.contains("English") || s_en.contains("en") || s_en.contains("Language"),
-        "language en output unexpected: {s_en}"
+        stdout(&out_en).contains("English"),
+        "the confirmation should switch back to English: {}",
+        stdout(&out_en)
     );
 }
 
