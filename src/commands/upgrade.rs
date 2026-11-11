@@ -28,6 +28,45 @@ use crate::proxy::build_http_client;
 // Re-export extracted modules so `commands::*` call sites remain unchanged.
 pub(crate) use super::{binary_swap::*, download_verify::*, release_api::*};
 
+/// Rewrite a GitHub download URL to go through a mirror prefix.
+///
+/// `--from-mirror https://ghproxy.com/` turns
+/// `https://github.com/o/r/releases/download/v1/a.tar.gz` into
+/// `https://ghproxy.com/https://github.com/o/r/releases/download/v1/a.tar.gz`.
+///
+/// Two cases deliberately do NOT rewrite:
+/// - `from_gitee` — the Gitee API already returned Gitee-hosted URLs, and
+///   prefixing those with a GitHub mirror produces a nonsense URL.
+/// - any URL that is not `https://github.com/` — mirrors proxy GitHub raw
+///   download URLs, so rewriting anything else yields a broken URL.
+///
+/// Extracted because the asset URL and the checksums URL were two separate
+/// copies of this logic, and they must be rewritten identically: a checksum
+/// fetched from a different origin than the archive it verifies proves nothing
+/// about that archive.
+fn apply_mirror_prefix(url: String, mirror: Option<&str>, from_gitee: bool) -> String {
+    let Some(prefix) = mirror else {
+        return url;
+    };
+    if from_gitee || !url.starts_with("https://github.com/") {
+        return url;
+    }
+    format!("{}/{}", prefix.trim_end_matches('/'), url)
+}
+
+/// Pick this host's asset out of a release's asset list.
+///
+/// Matches on the `-<target>.<ext>` suffix *and* an `nvm-` name prefix. The
+/// prefix check is not cosmetic: `upgrade` swaps whatever this returns over the
+/// running binary, so without it any asset whose name merely ended with the
+/// host suffix — `notnvm-2.0.0-linux-x64.tar.gz`, say — would be installed.
+fn select_asset<'a>(assets: &'a [Asset], target: &str, ext: &str) -> Option<&'a Asset> {
+    let suffix = format!("-{target}.{ext}");
+    assets
+        .iter()
+        .find(|a| a.name.starts_with("nvm-") && a.name.ends_with(&suffix))
+}
+
 /// Entry point invoked from `main.rs` dispatch.
 ///
 /// `check`    — only print "newer version available" (or "up to date"), exit 0.
@@ -169,41 +208,21 @@ pub fn upgrade(
     //    `<os>-<arch>.<ext>` suffix, which is unique per release.
     let target = host_target()?;
     let ext = if cfg!(windows) { "zip" } else { "tar.gz" };
-    let suffix = format!("-{}.{}", target, ext);
-    let asset = assets
-        .iter()
-        .find(|a| a.name.ends_with(&suffix) && a.name.starts_with("nvm-"))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "{}",
-                format_t(
-                    "upgrade_no_asset",
-                    std::slice::from_ref(&format!("nvm-*{}.{}", target, ext))
-                )
+    let asset = select_asset(&assets, target, ext).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{}",
+            format_t(
+                "upgrade_no_asset",
+                std::slice::from_ref(&format!("nvm-*{target}.{ext}"))
             )
-        })?;
+        )
+    })?;
     let asset_name = asset.name.clone();
-    let asset_url = asset.url.clone();
 
-    // Apply a custom mirror prefix to the GitHub download URL.
-    // `--from-mirror https://ghproxy.com/` rewrites
-    //   https://github.com/.../nvm-2.0.0-linux-x64.tar.gz
-    // to
-    //   https://ghproxy.com/https://github.com/.../nvm-...tar.gz
-    // The API (version check) still hits github.com directly — mirrors
-    // usually only proxy raw download URLs, not the API. `--from-gitee`
-    // already gave us gitee URLs from the Gitee API; mirroring those is
-    // pointless, so we skip the rewrite in that case.
-    let asset_url = if let Some(prefix) = from_mirror.as_deref() {
-        if !from_gitee && asset_url.starts_with("https://github.com/") {
-            let trimmed = prefix.trim_end_matches('/');
-            format!("{}/{}", trimmed, asset_url)
-        } else {
-            asset_url
-        }
-    } else {
-        asset_url
-    };
+    // The API (version check) still hits github.com directly — mirrors usually
+    // only proxy raw download URLs, not the API. `apply_mirror_prefix` handles
+    // the `--from-gitee` and non-GitHub cases itself.
+    let asset_url = apply_mirror_prefix(asset.url.clone(), from_mirror.as_deref(), from_gitee);
 
     println!("  {} {}", T("url_label").dimmed(), asset_url);
 
@@ -216,20 +235,14 @@ pub fn upgrade(
 
     // 5. Verify SHA256 against sha256sums.txt from the same release.
     //    Defends against CDN tampering and mirror corruption.
-    //    Apply the same mirror rewrite as the asset URL.
+    //    Must go through the SAME rewrite as the asset URL above — that is why
+    //    the rewrite is a shared helper rather than two inline copies. A
+    //    checksum fetched from a different origin than the archive proves
+    //    nothing about it.
     let checksums_url = assets
         .iter()
         .find(|a| a.name == "sha256sums.txt")
-        .map(|a| a.url.clone())
-        .map(|url| {
-            if let Some(prefix) = from_mirror.as_deref() {
-                if !from_gitee && url.starts_with("https://github.com/") {
-                    let trimmed = prefix.trim_end_matches('/');
-                    return format!("{}/{}", trimmed, url);
-                }
-            }
-            url
-        });
+        .map(|a| apply_mirror_prefix(a.url.clone(), from_mirror.as_deref(), from_gitee));
     if let Some(url) = checksums_url {
         verify_sha256(&client, &url, &asset_name, &archive_path)?;
     } else {
@@ -638,6 +651,287 @@ mod tests {
 
             sync_user_dir_copy(&bin_path, &work.path().join("missing.exe"), true).unwrap();
             assert!(!guard._dir.path().join("bin").join("nvm.exe").exists());
+        }
+    }
+
+    // --- U-3: the parts of `upgrade()`'s main flow that are reachable --------
+    //
+    // `upgrade()` cannot be driven end to end from a test: `current_binary_path()`
+    // resolves `current_exe()`, which inside the test binary *is* the test
+    // binary, and the release API URLs are hardcoded constants. Redirecting them
+    // via an env override was considered and rejected — anyone able to set an env
+    // var could then point `nvm upgrade` at their own binary, and the SHA-256
+    // check would not help because `sha256sums.txt` comes from the same
+    // redirected origin.
+    //
+    // So the decision logic is extracted and tested directly. What remains
+    // untested here is the orchestration order and the network calls themselves.
+
+    fn asset(name: &str) -> Asset {
+        Asset {
+            name: name.to_string(),
+            url: format!("https://github.com/mose-x/nvm-rust/releases/download/v2.0.0/{name}"),
+        }
+    }
+
+    #[test]
+    fn mirror_prefix_rewrites_github_download_urls() {
+        let url = "https://github.com/mose-x/nvm-rust/releases/download/v2.0.0/nvm-2.0.0-linux-x64.tar.gz";
+        assert_eq!(
+            apply_mirror_prefix(url.to_string(), Some("https://ghproxy.com"), false),
+            format!("https://ghproxy.com/{url}")
+        );
+        // A trailing slash on the prefix must not produce `//`.
+        assert_eq!(
+            apply_mirror_prefix(url.to_string(), Some("https://ghproxy.com/"), false),
+            format!("https://ghproxy.com/{url}")
+        );
+        assert_eq!(
+            apply_mirror_prefix(url.to_string(), Some("https://ghproxy.com///"), false),
+            format!("https://ghproxy.com/{url}")
+        );
+    }
+
+    #[test]
+    fn mirror_prefix_leaves_gitee_and_non_github_urls_alone() {
+        let gitee = "https://gitee.com/mose-x/nvm-rust/releases/download/v2.0.0/nvm.tar.gz";
+        // The Gitee API already returned Gitee-hosted URLs; prefixing them with
+        // a GitHub mirror would produce a URL that resolves to nothing.
+        assert_eq!(
+            apply_mirror_prefix(gitee.to_string(), Some("https://ghproxy.com"), true),
+            gitee
+        );
+
+        let other = "https://example.invalid/nvm-2.0.0-linux-x64.tar.gz";
+        assert_eq!(
+            apply_mirror_prefix(other.to_string(), Some("https://ghproxy.com"), false),
+            other,
+            "mirrors proxy GitHub download URLs only"
+        );
+
+        // No mirror requested at all.
+        let gh = "https://github.com/mose-x/nvm-rust/x.tar.gz";
+        assert_eq!(apply_mirror_prefix(gh.to_string(), None, false), gh);
+    }
+
+    /// The `from_gitee` guard is only observable when a Gitee-sourced asset URL
+    /// *does* look like a GitHub download URL — which is legal, since a Gitee
+    /// release can link its assets anywhere. The gitee.com case above is already
+    /// excluded by the non-GitHub check, so without this test deleting the
+    /// `from_gitee` guard would change nothing and the deletion would go
+    /// unnoticed.
+    #[test]
+    fn mirror_prefix_skips_gitee_sourced_urls_that_point_at_github() {
+        let url = "https://github.com/mose-x/nvm-rust/releases/download/v2.0.0/nvm-2.0.0-linux-x64.tar.gz";
+        // `--from-gitee` means the Gitee API already chose the origin, so a
+        // GitHub mirror must not be layered on top of it.
+        assert_eq!(
+            apply_mirror_prefix(url.to_string(), Some("https://ghproxy.com"), true),
+            url,
+            "from_gitee must suppress the rewrite on its own"
+        );
+        // And the same URL *is* rewritten when not from Gitee, so the assertion
+        // above is not passing for some unrelated reason.
+        assert_ne!(
+            apply_mirror_prefix(url.to_string(), Some("https://ghproxy.com"), false),
+            url
+        );
+    }
+
+    /// The reason the rewrite was extracted: the archive and the checksum that
+    /// vouches for it must come from the *same* origin. Two inline copies could
+    /// drift, and a checksum fetched from GitHub while the archive comes from a
+    /// mirror proves nothing about the bytes actually installed.
+    #[test]
+    fn mirror_prefix_treats_the_asset_and_the_checksums_identically() {
+        let mirror = Some("https://ghproxy.com/");
+        let asset_url = apply_mirror_prefix(asset("nvm-2.0.0-linux-x64.tar.gz").url, mirror, false);
+        let sums_url = apply_mirror_prefix(asset("sha256sums.txt").url, mirror, false);
+
+        let origin = |u: &str| {
+            u.trim_start_matches("https://")
+                .split('/')
+                .next()
+                .unwrap_or("")
+                .to_string()
+        };
+        assert_eq!(origin(&asset_url), "ghproxy.com");
+        assert_eq!(
+            origin(&asset_url),
+            origin(&sums_url),
+            "archive and checksum must be fetched from the same origin"
+        );
+    }
+
+    /// Source-level guard on the refactor: the rewrite must stay in one place.
+    /// Locking only the call sites would let someone inline the logic back at
+    /// one of them and leave the helper as dead code.
+    #[test]
+    fn mirror_rewrite_is_not_re_inlined_at_the_call_sites() {
+        let src = include_str!("upgrade.rs");
+        // Only the production half: this test module itself calls the helper, so
+        // counting the whole file would include the tests' own call sites.
+        let production = src
+            .split("\nmod tests {")
+            .next()
+            .expect("upgrade.rs must contain a test module");
+        assert!(
+            production.len() < src.len(),
+            "the test-module boundary was not found; the guard would be vacuous"
+        );
+
+        let calls = production.matches("apply_mirror_prefix(").count();
+        // One definition + the asset URL + the checksums URL.
+        assert_eq!(
+            calls, 3,
+            "expected the definition plus exactly two call sites, found {calls}"
+        );
+        // The trailing-slash trim is the distinguishing part of the rewrite; if
+        // it appears more than once, a copy has been inlined somewhere.
+        assert_eq!(
+            production.matches("trim_end_matches('/')").count(),
+            1,
+            "the mirror rewrite must live only in apply_mirror_prefix"
+        );
+    }
+
+    #[test]
+    fn select_asset_picks_the_host_target_from_a_real_release() {
+        let assets = build_assets_from_tag("v2.0.0");
+        // Every target the release workflow publishes, with its own extension.
+        for (target, ext) in [
+            ("linux-x64", "tar.gz"),
+            ("linux-musl-x64", "tar.gz"),
+            ("linux-arm64", "tar.gz"),
+            ("linux-musl-arm64", "tar.gz"),
+            ("macos-x64", "tar.gz"),
+            ("macos-arm64", "tar.gz"),
+            ("windows-x64", "zip"),
+            ("windows-arm64", "zip"),
+        ] {
+            let picked = select_asset(&assets, target, ext)
+                .unwrap_or_else(|| panic!("no asset selected for {target}.{ext}"));
+            assert_eq!(
+                picked.name,
+                format!("nvm-2.0.0-{target}.{ext}"),
+                "wrong asset for {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn select_asset_does_not_confuse_musl_with_gnu() {
+        let assets = build_assets_from_tag("v2.0.0");
+        // `linux-x64` must not match `nvm-2.0.0-linux-musl-x64.tar.gz`: installing
+        // a musl build on a glibc host (or the reverse) produces a binary that
+        // fails to load at runtime, long after the upgrade reported success.
+        assert_eq!(
+            select_asset(&assets, "linux-x64", "tar.gz").map(|a| a.name.as_str()),
+            Some("nvm-2.0.0-linux-x64.tar.gz")
+        );
+        assert_eq!(
+            select_asset(&assets, "linux-musl-x64", "tar.gz").map(|a| a.name.as_str()),
+            Some("nvm-2.0.0-linux-musl-x64.tar.gz")
+        );
+        assert_eq!(
+            select_asset(&assets, "linux-arm64", "tar.gz").map(|a| a.name.as_str()),
+            Some("nvm-2.0.0-linux-arm64.tar.gz")
+        );
+    }
+
+    /// `upgrade` swaps whatever `select_asset` returns over the running binary,
+    /// so the `nvm-` prefix check is a security control, not tidiness.
+    #[test]
+    fn select_asset_rejects_lookalike_names() {
+        let assets = vec![
+            asset("notnvm-2.0.0-linux-x64.tar.gz"),
+            asset("evil-nvm-2.0.0-linux-x64.tar.gz"),
+            asset("xnvm-2.0.0-linux-x64.tar.gz"),
+        ];
+        assert!(
+            select_asset(&assets, "linux-x64", "tar.gz").is_none(),
+            "only names starting with `nvm-` may be installed"
+        );
+
+        // With a legitimate asset also present, it is the one chosen.
+        let mut mixed = assets;
+        mixed.push(asset("nvm-2.0.0-linux-x64.tar.gz"));
+        assert_eq!(
+            select_asset(&mixed, "linux-x64", "tar.gz").map(|a| a.name.as_str()),
+            Some("nvm-2.0.0-linux-x64.tar.gz")
+        );
+    }
+
+    #[test]
+    fn select_asset_never_picks_the_checksums_file() {
+        let assets = build_assets_from_tag("v2.0.0");
+        assert!(assets.iter().any(|a| a.name == "sha256sums.txt"));
+        for (target, ext) in [("linux-x64", "tar.gz"), ("windows-x64", "zip")] {
+            let picked = select_asset(&assets, target, ext).expect("an asset must match");
+            assert_ne!(picked.name, "sha256sums.txt");
+        }
+    }
+
+    #[test]
+    fn select_asset_is_extension_sensitive() {
+        let assets = build_assets_from_tag("v2.0.0");
+        // Windows assets ship as .zip; asking for .tar.gz must not silently
+        // match the zip (which `extract_binary` would then fail on).
+        assert!(
+            select_asset(&assets, "windows-x64", "tar.gz").is_none(),
+            "a .zip asset must not satisfy a .tar.gz request"
+        );
+        assert!(
+            select_asset(&assets, "linux-x64", "zip").is_none(),
+            "a .tar.gz asset must not satisfy a .zip request"
+        );
+    }
+
+    #[test]
+    fn select_asset_returns_none_when_the_host_is_absent() {
+        assert!(
+            select_asset(&[], "linux-x64", "tar.gz").is_none(),
+            "an empty asset list must yield no match"
+        );
+        let only_windows = build_assets_from_tag("v2.0.0")
+            .into_iter()
+            .filter(|a| a.name.contains("windows"))
+            .collect::<Vec<_>>();
+        assert!(
+            select_asset(&only_windows, "linux-x64", "tar.gz").is_none(),
+            "a release without this host's target must not fall back to another"
+        );
+    }
+
+    /// `upgrade()` rejects mutually-exclusive flags before it touches
+    /// `current_binary_path()` or the network, so this is directly callable.
+    /// `--check --rollback` used to silently run the rollback because rollback
+    /// returned first; the guard exists to make that a clear error instead.
+    #[test]
+    fn upgrade_rejects_conflicting_flags_before_any_io() {
+        // (check, force, rollback) — every combination with more than one set.
+        for (check, force, rollback) in [
+            (true, true, false),
+            (true, false, true),
+            (false, true, true),
+            (true, true, true),
+        ] {
+            let err = upgrade(check, force, false, None, rollback)
+                .expect_err("conflicting flags must be rejected");
+            let msg = format!("{err}");
+            // The flag names are interpolated into the message, so they are
+            // stable across locales (the surrounding wording is not).
+            for (flag, on) in [
+                ("--check", check),
+                ("--force", force),
+                ("--rollback", rollback),
+            ] {
+                assert_eq!(
+                    msg.contains(flag),
+                    on,
+                    "the error should name exactly the conflicting flags, got: {msg}"
+                );
+            }
         }
     }
 }
