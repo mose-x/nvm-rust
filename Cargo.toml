@@ -1,6 +1,6 @@
 [package]
 name = "nvm"
-version = "2.3.6"
+version = "2.4.0"
 edition = "2021"
 # Minimum supported Rust version. Bound by `sevenz-rust2` 0.21.6 (needs 1.93);
 # the next highest in the locked graph are `aes` 0.9.4 (1.89) and `zip` 9.4.1
