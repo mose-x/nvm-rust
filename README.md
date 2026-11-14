@@ -211,6 +211,18 @@ Supported platforms:
 - macOS: `macos-x64` (Intel), `macos-arm64` (Apple Silicon)
 - Windows: `windows-x64`, `windows-arm64`
 
+> **macOS**: release binaries are neither code-signed nor notarized, so a
+> browser download gets tagged with `com.apple.quarantine` and Gatekeeper
+> blocks the first run. Clear the attribute once after extracting:
+>
+> ```bash
+> xattr -dr com.apple.quarantine /path/to/nvm
+> ```
+>
+> Both the one-liner `curl | bash` install and `./install.sh` run from an
+> extracted archive clear it for you. Node.js versions installed by
+> `nvm install` are downloaded over plain HTTPS and never carry the attribute.
+
 ### Installation options
 
 | Scenario | Command |
@@ -227,6 +239,7 @@ Supported platforms:
 | `Failed to get latest version` | GitHub API rate-limited (60/hour) | `NVM_VERSION=v2.1.2 ... \| bash` |
 | Download slow / timeout | Network to GitHub slow | `GITHUB_MIRROR=ghproxy` or `export https_proxy=...` |
 | `curl: command not found` | curl not installed | Use `wget` or install via `brew install curl` |
+| macOS: "cannot be opened because the developer cannot be verified" | Browser download carries `com.apple.quarantine` and release binaries are unsigned | `xattr -dr com.apple.quarantine $(command -v nvm)`, or reinstall via `curl -fsSL ... \| bash` |
 
 ## Shell Integration
 

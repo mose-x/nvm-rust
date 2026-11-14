@@ -197,6 +197,16 @@ sudo cp target/release/nvm /usr/local/bin/
 - macOS: `macos-x64`（Intel）, `macos-arm64`（Apple Silicon）
 - Windows: `windows-x64`, `windows-arm64`
 
+> **macOS 注意**：发布产物未做代码签名与公证，浏览器下载会被打上
+> `com.apple.quarantine` 扩展属性，Gatekeeper 会拦截首次运行。解压后执行一次即可：
+>
+> ```bash
+> xattr -dr com.apple.quarantine /path/to/nvm
+> ```
+>
+> 一键安装（`curl | bash`）与解压后运行 `./install.sh` 都会自动清除该属性；
+> `nvm install` 下载的 Node.js 走普通 HTTPS，不会带上该属性，已安装的 Node 版本不受影响。
+
 ### 安装选项
 
 | 场景 | 命令 |
@@ -213,6 +223,7 @@ sudo cp target/release/nvm /usr/local/bin/
 | `Failed to get latest version` | GitHub API 限频（60次/小时） | `NVM_VERSION=v2.1.2 ... \| bash` |
 | 下载慢/超时 | 到 GitHub 网络慢 | `GITHUB_MIRROR=ghproxy` 或 `export https_proxy=...` |
 | `curl: command not found` | 未安装 curl | 用 `wget` 或 `brew install curl` |
+| macOS 提示「无法打开，因为它来自身份不明的开发者」 | 浏览器下载带 `com.apple.quarantine`，且发布产物未签名 | `xattr -dr com.apple.quarantine $(command -v nvm)`，或改用 `curl -fsSL ... \| bash` 重装 |
 
 ## Shell 集成
 
