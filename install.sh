@@ -305,6 +305,27 @@ SHIM_EOF
     done
 }
 
+# macOS Gatekeeper: an archive downloaded through a browser carries the
+# com.apple.quarantine xattr, Archive Utility copies it onto every extracted
+# file, and `cp -f` preserves it — so the binary installed above would stay
+# quarantined. Release binaries are unsigned, so Gatekeeper then refuses to
+# run them ("cannot be opened because the developer cannot be verified").
+# Only that single attribute is removed: com.apple.provenance and friends are
+# left alone. This is a no-op on Linux and on the `curl | bash` path (curl
+# never sets quarantine). Failure is non-fatal — the files are already in
+# place, so warn with the manual command instead of aborting the install.
+clear_quarantine() {
+    [ "$(uname -s)" = "Darwin" ] || return 0
+    command -v xattr >/dev/null 2>&1 || return 0
+
+    local target
+    for target in "$@"; do
+        [ -e "$target" ] || continue
+        xattr -dr com.apple.quarantine "$target" 2>/dev/null || \
+            warn "Could not clear com.apple.quarantine on ${target} — run: xattr -dr com.apple.quarantine ${target}"
+    done
+}
+
 main() {
     info "Installing nvm-rs..."
 
@@ -439,6 +460,10 @@ main() {
             download_file "${raw_base}/main/shell/nvm.psm1"  "${shell_dir}/nvm.psm1" 2>/dev/null || true
         success "Shell integration scripts installed (downloaded)"
     fi
+
+    # Drop any Gatekeeper quarantine inherited from a browser-downloaded
+    # release archive (the offline install path). No-op on other platforms.
+    clear_quarantine "/usr/local/bin/${BINARY_NAME}" "${INSTALL_DIR}" "${shell_dir}"
 
     # Detect shell and add to PATH
     local shell_profile=""
