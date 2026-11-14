@@ -1,26 +1,26 @@
 class NvmRust < Formula
   desc "A blazing-fast Node version manager written in Rust"
   homepage "https://github.com/mose-x/nvm-rust"
-  version "2.0.0"
+  version "2.4.0"
   license "MIT"
 
   on_macos do
     if Hardware::CPU.intel?
-      url "https://github.com/mose-x/nvm-rust/releases/download/v2.0.0/nvm-2.0.0-macos-x64.tar.gz"
-      sha256 "8af3dc4a4d9391cfb849dea2f78b64850b538a085f79e41906638c22b13c3cb3"
+      url "https://github.com/mose-x/nvm-rust/releases/download/v2.4.0/nvm-2.4.0-macos-x64.tar.gz"
+      sha256 "9f2d4b57727429449d6b96afd1ab18ce81aabcb1724fbe9632a20bad5c45863f"
     elsif Hardware::CPU.arm?
-      url "https://github.com/mose-x/nvm-rust/releases/download/v2.0.0/nvm-2.0.0-macos-arm64.tar.gz"
-      sha256 "f8da8705f1ccb21e14bb6f0f9168df654786a50909798a8e02f44bde173cf756"
+      url "https://github.com/mose-x/nvm-rust/releases/download/v2.4.0/nvm-2.4.0-macos-arm64.tar.gz"
+      sha256 "109d5ecf4a275fe9eb034f381b7110ae093f8f2a4090b93edf525718c3aecd23"
     end
   end
 
   on_linux do
     if Hardware::CPU.intel?
-      url "https://github.com/mose-x/nvm-rust/releases/download/v2.0.0/nvm-2.0.0-linux-x64.tar.gz"
-      sha256 "a10055b2940600c406a28897b63fdbd56644c5a86f26fa6bb6dabf02a35154a7"
+      url "https://github.com/mose-x/nvm-rust/releases/download/v2.4.0/nvm-2.4.0-linux-x64.tar.gz"
+      sha256 "67b85f6ecbd5fe37abf93b3eeb5d2475eb2a6682d86364f448d6dd15bf9c8509"
     elsif Hardware::CPU.arm?
-      url "https://github.com/mose-x/nvm-rust/releases/download/v2.0.0/nvm-2.0.0-linux-arm64.tar.gz"
-      sha256 "7a17351b58937a5801934250c5b85bd056407893d0939e194bfe0ec90b6d9465"
+      url "https://github.com/mose-x/nvm-rust/releases/download/v2.4.0/nvm-2.4.0-linux-arm64.tar.gz"
+      sha256 "abaaeb509366db34a22b6a335c0c9dcf12f17ab69248de6c8a0d1659865114c0"
     end
   end
 
