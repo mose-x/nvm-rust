@@ -172,12 +172,21 @@ $env:GITHUB_MIRROR = 'ghproxy'
 irm https://ghproxy.com/https://raw.githubusercontent.com/mose-x/nvm-rust/main/install.ps1 | iex
 ```
 
-### Homebrew（macOS）
+### Homebrew（macOS / Linux）
 
 ```bash
 brew tap mose-x/tap
-brew install nvm-rust
+brew install mose-x/tap/nvm-rust
 ```
+
+安装的是最新 release 的预编译二进制。formula 放在
+[mose-x/homebrew-tap](https://github.com/mose-x/homebrew-tap)，那边的定时任务每天
+按已发布的 release 资源重写版本号并重算全部 `sha256`，不会像放在本仓库里的副本那样
+慢慢落后于 release。
+
+Homebrew 6 默认不加载未信任的第三方 tap：上面的全限定名总是可用；如果还想用短名
+`brew install nvm-rust`，先执行一次 `brew trust mose-x/tap`
+（`brew untrust mose-x/tap` 可撤销）。
 
 ### 从源码编译
 

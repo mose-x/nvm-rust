@@ -178,12 +178,22 @@ $env:GITHUB_MIRROR = 'ghproxy'
 irm https://ghproxy.com/https://raw.githubusercontent.com/mose-x/nvm-rust/main/install.ps1 | iex
 ```
 
-### Homebrew (macOS)
+### Homebrew (macOS / Linux)
 
 ```bash
 brew tap mose-x/tap
-brew install nvm-rust
+brew install mose-x/tap/nvm-rust
 ```
+
+Installs the prebuilt binary of the latest release. The formula lives in
+[mose-x/homebrew-tap](https://github.com/mose-x/homebrew-tap), where a daily
+workflow rewrites the version and recomputes every `sha256` from the published
+release assets, so it cannot drift the way a copy inside this repo did.
+
+Homebrew 6 does not load a third-party tap's entries until that tap is trusted.
+The fully qualified name above always works; to use the short form
+(`brew install nvm-rust`) as well, run `brew trust mose-x/tap` once —
+`brew untrust mose-x/tap` undoes it.
 
 ### Build from source (requires Rust toolchain)
 
