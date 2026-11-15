@@ -175,6 +175,7 @@ irm https://ghproxy.com/https://raw.githubusercontent.com/mose-x/nvm-rust/main/i
 ### Homebrew（macOS / Linux）
 
 ```bash
+brew trust mose-x/tap
 brew tap mose-x/tap
 brew install mose-x/tap/nvm-rust
 ```
@@ -184,9 +185,17 @@ brew install mose-x/tap/nvm-rust
 按已发布的 release 资源重写版本号并重算全部 `sha256`，不会像放在本仓库里的副本那样
 慢慢落后于 release。
 
-Homebrew 6 默认不加载未信任的第三方 tap：上面的全限定名总是可用；如果还想用短名
-`brew install nvm-rust`，先执行一次 `brew trust mose-x/tap`
-（`brew untrust mose-x/tap` 可撤销）。
+Homebrew 7 会拒绝加载未信任第三方 tap 的**任何**条目，上面的全限定名也不例外，所以
+`brew trust mose-x/tap` 要放在最前面。它是幂等的，而且不要求 tap 已经存在，因此这个
+顺序在从没见过该 tap 的机器上同样成立。Homebrew 6 只对短名（`brew install nvm-rust`）
+要求信任；两者都可以用 `brew untrust mose-x/tap` 撤销。
+
+信任状态按用户记录在 `~/.homebrew/trust.json`（设置了 `$XDG_CONFIG_HOME` 时是
+`$XDG_CONFIG_HOME/homebrew/trust.json`），不在 tap 目录里，所以 `brew untap`/`brew tap`
+和 `brew update` 都不会清掉它 —— 但重装 Homebrew、换机器或换用户账号都要再执行一次。
+`brew trust` 命令本身需要 Homebrew 5.1.15 及以上；更老的版本既不强制信任也没有这个
+命令。执行之前 `brew tap-info mose-x/tap` 会显示 `Untrusted`，这是预期且无害的。请用
+它而不是 `HOMEBREW_NO_REQUIRE_TAP_TRUST` —— 后者已被上游标记为废弃并将移除。
 
 ### 从源码编译
 
