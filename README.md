@@ -181,6 +181,7 @@ irm https://ghproxy.com/https://raw.githubusercontent.com/mose-x/nvm-rust/main/i
 ### Homebrew (macOS / Linux)
 
 ```bash
+brew trust mose-x/tap
 brew tap mose-x/tap
 brew install mose-x/tap/nvm-rust
 ```
@@ -190,10 +191,22 @@ Installs the prebuilt binary of the latest release. The formula lives in
 workflow rewrites the version and recomputes every `sha256` from the published
 release assets, so it cannot drift the way a copy inside this repo did.
 
-Homebrew 6 does not load a third-party tap's entries until that tap is trusted.
-The fully qualified name above always works; to use the short form
-(`brew install nvm-rust`) as well, run `brew trust mose-x/tap` once —
-`brew untrust mose-x/tap` undoes it.
+Homebrew 7 refuses to load *any* entry of an untrusted third-party tap, the
+fully qualified name above included, which is why `brew trust mose-x/tap` comes
+first. It is idempotent and does not need the tap to exist yet, so that order is
+also correct on a machine that has never seen it. Homebrew 6 only required trust
+for the short form (`brew install nvm-rust`); `brew untrust mose-x/tap` undoes it
+on either.
+
+Trust is recorded per user in `~/.homebrew/trust.json`
+(`$XDG_CONFIG_HOME/homebrew/trust.json` when that is set), not inside the tap, so
+it survives `brew untap`/`brew tap` and `brew update` — but a fresh Homebrew
+install, a new machine or another user account has to run it once more.
+`brew trust` itself needs Homebrew 5.1.15 or newer; older releases neither
+enforce trust nor ship the command. Until it runs, `brew tap-info mose-x/tap`
+reports `Untrusted`, which is expected and harmless. Prefer it over
+`HOMEBREW_NO_REQUIRE_TAP_TRUST`, which upstream has deprecated and slated for
+removal.
 
 ### Build from source (requires Rust toolchain)
 
