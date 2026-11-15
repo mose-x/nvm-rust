@@ -10,10 +10,11 @@
 //! rewrites the urls and recomputes every `sha256` from the published assets.
 //!
 //! These tests pin that decision down. They fail if a formula copy comes back,
-//! and if either README stops documenting the install path that actually works
-//! on Homebrew 6: the fully qualified `mose-x/tap/nvm-rust`, which loads
-//! without `brew trust`, plus the trust hint for anyone who wants the short
-//! name.
+//! and if either README stops documenting an install path that actually works:
+//! `brew trust mose-x/tap` first, then `brew tap`, then the fully qualified
+//! `mose-x/tap/nvm-rust`. Homebrew 7 refuses every entry of an untrusted tap,
+//! the fully qualified name included, so trusting is no longer just a hint for
+//! short-name users and its position in the block matters.
 
 use std::fs;
 use std::path::Path;
@@ -102,28 +103,30 @@ fn readmes_install_from_the_tap_by_its_full_name() {
         );
         assert!(
             block.contains("brew install mose-x/tap/nvm-rust"),
-            "{name} must install by the fully qualified name, which needs no \
-             `brew trust`: {block}"
+            "{name} must install by the fully qualified name, which stays \
+             unambiguous once the tap is trusted: {block}"
         );
-        // The bare short name is exactly what Homebrew 6 refuses to load from
-        // an untrusted tap, so it must not be the documented install command.
+        // The short name only resolves once the tap is both tapped and trusted,
+        // and stays ambiguous against any other tap shipping an `nvm-rust`. The
+        // fully qualified form has neither problem, so that is what gets
+        // documented.
         for line in block.lines() {
             assert_ne!(
                 line.trim(),
                 "brew install nvm-rust",
-                "{name} documents the short name, which fails on Homebrew 6 \
-                 until the reader runs `brew trust mose-x/tap`"
+                "{name} documents the short name, which needs a trusted and \
+                 tapped mose-x/tap and is ambiguous besides"
             );
         }
     }
 }
 
 #[test]
-fn readmes_explain_the_homebrew_6_trust_requirement() {
+fn readmes_explain_the_homebrew_trust_requirement() {
     for (name, section) in homebrew_sections() {
         assert!(
             section.contains("brew trust mose-x/tap"),
-            "{name} must tell short-name users to run `brew trust mose-x/tap`"
+            "{name} must tell readers to run `brew trust mose-x/tap`"
         );
         assert!(
             section.contains("brew untrust mose-x/tap"),
@@ -133,5 +136,41 @@ fn readmes_explain_the_homebrew_6_trust_requirement() {
             section.contains("mose-x/homebrew-tap"),
             "{name} must link the tap repo that now owns the formula"
         );
+        // Homebrew 7 requires trust for the fully qualified name too, and the
+        // record is per user rather than per tap checkout. Both facts have to be
+        // spelled out, or readers assume one `brew trust` covers every install
+        // form and every machine.
+        for fact in ["Homebrew 7", "trust.json"] {
+            assert!(
+                section.contains(fact),
+                "{name} must mention {fact:?} so the trust requirement and its \
+                 per-user scope stay explicit"
+            );
+        }
+    }
+}
+
+/// `brew trust` is idempotent and does not need the tap to exist yet, so trusting
+/// first is the only ordering that is right both on a machine that never saw
+/// mose-x/tap and on one that already tapped it.
+#[test]
+fn readmes_trust_the_tap_before_installing() {
+    for (name, section) in homebrew_sections() {
+        let block = bash_block(name, &section);
+        let install_line = block
+            .lines()
+            .position(|line| line.trim() == "brew install mose-x/tap/nvm-rust");
+        let trust_line = block
+            .lines()
+            .position(|line| line.trim() == "brew trust mose-x/tap")
+            .unwrap_or_else(|| {
+                panic!("{name} must run `brew trust mose-x/tap` in its install block: {block}")
+            });
+        if let Some(install_line) = install_line {
+            assert!(
+                trust_line < install_line,
+                "{name} must run `brew trust mose-x/tap` before installing: {block}"
+            );
+        }
     }
 }
