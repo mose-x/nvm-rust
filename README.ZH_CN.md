@@ -210,6 +210,9 @@ sudo cp target/release/nvm /usr/local/bin/
 
 从 [Releases 页面](https://github.com/mose-x/nvm-rust/releases) 下载最新的二进制文件并加入 PATH。
 
+下载包的分步安装说明（解压、离线执行 `./install.sh`、Gatekeeper、升级、卸载）：
+见 [INSTALL.ZH_CN.md](INSTALL.ZH_CN.md)。
+
 支持的平台（资源命名：`nvm-<version>-<os>-<arch>.<ext>`）：
 - Linux: `linux-x64`, `linux-arm64`, `linux-musl-x64`（Alpine）
 - macOS: `macos-x64`（Intel）, `macos-arm64`（Apple Silicon）

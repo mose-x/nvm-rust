@@ -227,6 +227,9 @@ to `~/.nvm.rust/bin/` with a warning.
 
 Download the latest binary from the [Releases page](https://github.com/mose-x/nvm-rust/releases) and add it to your PATH.
 
+Step-by-step guide for a downloaded archive (extract, offline `./install.sh`,
+Gatekeeper, upgrade, uninstall): [INSTALL.md](INSTALL.md).
+
 Asset naming: `nvm-<version>-<os>-<arch>.<ext>`
 
 Supported platforms:
