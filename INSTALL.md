@@ -7,8 +7,10 @@ that file — online or fully offline.
 中文版本：[INSTALL.ZH_CN.md](INSTALL.ZH_CN.md)
 
 Rather not handle archives at all? Use the one-liner installer
-([README → Quick Start](README.md#quick-start)), or
-`brew install mose-x/tap/nvm-rust` on macOS / Linux.
+([README → Quick Start](README.md#quick-start)), or Homebrew on macOS /
+Linux: `brew trust mose-x/tap` first — Homebrew 7 refuses an untrusted tap —
+then `brew install mose-x/tap/nvm-rust`
+([README → Homebrew](README.md#homebrew-macos--linux)).
 
 ## What is inside the archive
 
