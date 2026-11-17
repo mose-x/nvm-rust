@@ -7,7 +7,9 @@
 English: [INSTALL.md](INSTALL.md)
 
 不想折腾压缩包？用一键安装脚本（[README → 快速开始](README.ZH_CN.md#快速开始)），
-或者在 macOS / Linux 上 `brew install mose-x/tap/nvm-rust`。
+或者在 macOS / Linux 上走 Homebrew：先 `brew trust mose-x/tap`（Homebrew 7 会拒绝
+未信任的 tap），再 `brew install mose-x/tap/nvm-rust`
+（[README → Homebrew](README.ZH_CN.md#homebrewmacos--linux)）。
 
 ## 包里有什么
 

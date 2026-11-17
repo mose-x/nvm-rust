@@ -174,3 +174,42 @@ fn readmes_trust_the_tap_before_installing() {
         }
     }
 }
+
+/// The archive install guides name Homebrew as the no-archive alternative, so
+/// they inherit the trap the READMEs document: under Homebrew 7 a bare
+/// `brew install mose-x/tap/nvm-rust` is refused until the tap is trusted.
+///
+/// The anchors are literal because GitHub slugs the two headings differently —
+/// it drops the full-width parentheses of the Chinese one without leaving a
+/// hyphen behind, so `homebrew-macos--linux` and `homebrewmacos--linux` are
+/// both correct and neither is guessable from the other. `install_docs.rs`
+/// re-derives every guide link from the README headings, so a renamed heading
+/// fails there.
+#[test]
+fn install_guides_trust_the_tap_too() {
+    for (guide, readme, anchor) in [
+        ("INSTALL.md", "README.md", "homebrew-macos--linux"),
+        (
+            "INSTALL.ZH_CN.md",
+            "README.ZH_CN.md",
+            "homebrewmacos--linux",
+        ),
+    ] {
+        let content = read_root_file(guide);
+        let trust = content.find("brew trust mose-x/tap").unwrap_or_else(|| {
+            panic!("{guide} offers Homebrew as an alternative, so it must give the trust step")
+        });
+        let install = content
+            .find("brew install mose-x/tap/nvm-rust")
+            .unwrap_or_else(|| panic!("{guide} must install by the fully qualified name"));
+        assert!(
+            trust < install,
+            "{guide} must run `brew trust mose-x/tap` before installing"
+        );
+        assert!(
+            content.contains(&format!("]({readme}#{anchor})")),
+            "{guide} must point at the Homebrew section of {readme}, which is \
+             where the trust requirement and its per-user scope are explained"
+        );
+    }
+}
