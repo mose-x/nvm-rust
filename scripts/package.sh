@@ -7,7 +7,8 @@
 #   - CI (release.yml): after cross-compile build, run this
 #
 # Single source of truth for the "friendly-pack" layout: binary at root,
-# README + LICENSE + install scripts + shell integration files beside it.
+# README + install guides + LICENSE + install scripts + shell integration
+# files beside it.
 #
 # Usage:
 #   scripts/package.sh <binary_path> <version> <os> <arch> [output_dir]
@@ -61,6 +62,8 @@ cp "$BINARY" "$STAGE/$(basename "$BINARY")"
 # Documentation
 cp "$PROJECT_ROOT/README.md" "$STAGE/README.md"
 cp "$PROJECT_ROOT/README.ZH_CN.md" "$STAGE/README.ZH_CN.md"
+cp "$PROJECT_ROOT/INSTALL.md" "$STAGE/INSTALL.md"
+cp "$PROJECT_ROOT/INSTALL.ZH_CN.md" "$STAGE/INSTALL.ZH_CN.md"
 cp "$PROJECT_ROOT/LICENSE" "$STAGE/LICENSE"
 
 # Install scripts

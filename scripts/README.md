@@ -80,7 +80,8 @@ bash scripts/package.sh target/release/nvm.exe 2.1.0 windows x64
 # → nvm-9.9.9-linux-x64.tar.gz
 ```
 
-The archive contains: binary + README (en/cn) + LICENSE + install scripts
+The archive contains: binary + README (en/cn) + install guides
+(`INSTALL.md` + `INSTALL.ZH_CN.md`) + LICENSE + install scripts
 (`install.sh` + `install.ps1`) + shell integration (`nvm.sh` + `nvm.fish`
 + `nvm.psm1`) — the same "friendly-pack" that CI produces.
 
